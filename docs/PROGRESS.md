@@ -3,7 +3,7 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB, MSI 3.29 MB, setup 2.41 MB, ≈120 MB private idle RAM on Windows); Linux goes native via ADR-0004; CI now builds downloadable artifacts (Windows installers, Linux binary + spike measure) and the workspace MSRV moved to 1.90.
+Last updated: 2026-10-16 — CI fully green (Windows + Ubuntu + deny at `c8dddbe`); the artifacts workflow ran green: Windows installers + the Linux GTK shell binary (3.09 MB) with spike numbers (cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
 
 ## Current state
 
@@ -40,8 +40,16 @@ Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB
   the Linux binary + headless spike measurement (`workflow_dispatch` or a `v*`
   tag). WSL2 was shelved — the cafe test box resets on reboot; Linux
   measurements run in CI, interactive/IME acceptance on the user's laptop.
-- The app has not been tested on Linux or Android yet (the GTK4 spike is the
-  first Linux work).
+- GTK4 spike (M3.5) status: `app-linux/` compiles and its unit tests run on the
+  ubuntu CI job (all jobs green at `c8dddbe`, run 38912122366); the artifacts
+  workflow also ran green (run 38912602349) — Linux release binary 3.09 MB,
+  headless Xvfb measure: cold start 166 ms, idle RSS ≈131 MB (software
+  rendering; above the <100 MB budget — re-measure on real hardware).
+  `writan-windows-x64` and `writan-linux-x64` are downloadable from that run
+  (kept 90 days).
+- The app has not been tested on Linux or Android interactively yet — the GTK4
+  spike compiles and runs headless in CI; interactive feel + ibus/fcitx5 IME
+  acceptance happen on the user's laptop.
 
 ## Milestone log
 
@@ -189,18 +197,26 @@ Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB
   setup) and `linux` job (release binary + `measure.txt` from an xvfb run);
   Android parked for M5 (needs `tauri android init` + SDK/NDK first).
 - Evidence: 69 tests green on Windows; the ubuntu job iterated to green after
-  the alias fix (see the Actions history for this commit range).
+  five small fix rounds (GTK API nits, borrow fixes, one let-chain; final
+  commit `c8dddbe`, run 38912122366 — windows + ubuntu + deny all pass).
+- Spike measurements (run 38912602349, ubuntu-latest, headless Xvfb +
+  `GSK_RENDERER=cairo` software rendering): release binary **3.09 MB**;
+  cold start → window **166 ms**; idle RSS **≈131 MB** (130.7 MB). Caveat:
+  software rendering inflates RSS and there is no compositor — the <100 MB
+  idle budget needs a real-hardware re-measure with a GPU.
+- Artifacts from the same run: `writan-windows-x64` (portable exe + MSI + NSIS
+  setup) and `writan-linux-x64` (binary + `measure.txt`).
 
 ## Next actions
 
 Next (order is a suggestion, not a constraint):
-1. GTK4 spike (ADR-0004): the scaffold (`app-linux/`) is committed and green
-   on Windows (10 unit tests). The ubuntu CI job is now the Linux compiler —
-   iterate it until green (expect small GTK API nits in
-   `app-linux/src/app.rs`), then run the `artifacts` workflow and read
-   `measure.txt` (cold start, idle RSS) + the binary size; append the outcome
-   to ADR-0004. Interactive / IME acceptance (ibus + fcitx5) happens on the
-   user's Linux laptop.
+1. GTK4 spike (ADR-0004): scaffold committed and green everywhere; ubuntu CI
+   is now the Linux compiler (five fix rounds, green at `c8dddbe`) and the
+   artifacts workflow produced the binary + measurements (see the M3.5
+   section). Remaining: interactive smoke + IME acceptance (ibus + fcitx5) and
+   a real-hardware idle-RAM re-measure on the user's Linux laptop; then append
+   the final spike outcome to ADR-0004 and start the full shell (M3.5) after
+   M3.
    Android (M5): run `npm --prefix app run tauri -- android init` with JDK 17
    + Android SDK/NDK, commit `app/src-tauri/gen/android`, then add an
    `android` job to `artifacts.yml` (debug APK upload).

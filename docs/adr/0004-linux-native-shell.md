@@ -66,3 +66,20 @@ Status: accepted, spike-gated. Date: 2026-10-16.
 - The Linux WebKitGTK IME/contenteditable risk is retired. WebView2 on
   Windows and the Android webview are unaffected.
 - Cost if the spike fails: ≈4 days of work; Linux stays on the Tauri shell.
+
+## Spike outcome (2026-10-16)
+
+- The `app-linux/` scaffold compiles and passes its unit tests on real Linux:
+  the ubuntu CI job went green on run 38912122366 (`c8dddbe`) after five small
+  fix rounds (crate alias names, `CssProvider` data API, `gtk::glib` re-export,
+  text-tag setters, borrow fixes, one let-chain).
+- Release binary: **3.09 MB** (`writan-linux-x64` artifact from run
+  38912602349).
+- Headless measurement (xvfb + `GSK_RENDERER=cairo`, software rendering):
+  cold start → window **166 ms**; idle RSS **≈131 MB** (130.7 MB).
+- Caveat: software rendering inflates RSS and the run has no compositor; the
+  < 100 MB idle budget (Consequences) needs a real-hardware re-measure with a
+  GPU before it can be judged. Interactive feel + ibus/fcitx5 IME acceptance
+  remain on the user's laptop.
+- Verdict: the gate is passed on both build and runtime viability — the full
+  native shell proceeds as milestone M3.5 after M3 (sync v1 + E2EE).
