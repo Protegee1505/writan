@@ -1,6 +1,6 @@
 # Writan — implementation plan
 
-Status: M2 in progress (2026-10-16). M1 complete (commit 24c2654). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`.
+Status: M2.5 complete (2026-10-16) — preferences panel, rebindable shortcuts, custom logo, live-search polish. M2 desktop MVP first pass complete (commit 18264d6); M2 exit items still open (IME smoke, runtime perf budgets). M1 complete (commit 24c2654). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`.
 Living progress log: `docs/PROGRESS.md` · Agent guide: `AGENTS.md`.
 
 ## Milestones and exit criteria
@@ -10,12 +10,13 @@ Living progress log: `docs/PROGRESS.md` · Agent guide: `AGENTS.md`.
 | M0 | Bootstrap (0.5–1 wk) | Rust + MSVC toolchain on Windows; git repo; workspace (`writan-core/-crypto/-sync/-server` + `app/`); CI (fmt, clippy `-D warnings`, tests, cargo-deny) on Windows and Ubuntu; ADR-0001. |
 | M1 | Vault core (2–3 wk) | Vault open/create; note CRUD on Markdown files with frontmatter (`id`/`title`/`tags`); SQLite index + FTS5 (trigram for CJK) rebuildable from files; file watcher reconciles external edits; trash + pinning. |
 | M2 | Desktop MVP (3–4 wk) | Tauri app: three-pane UI (folders/tags, note list, editor); CodeMirror 6 live preview; search; themes; attachments; shortcuts + command palette; IME test on Windows/Linux passes. One-week Freya spike at the end decides if native-Skia UI is warranted. |
+| M2.5 | Preferences & polish (0.5–1 wk) | Settings panel (appearance / editor / view / shortcuts / search / general / advanced) reachable from the command palette and `Ctrl+,`; every option live-applies and persists in app-data `config.json` (ADR-0003); theme modes incl. follow-OS + accent + scale; editor font/size/line-height; rebindable global shortcuts with conflict detection; top-bar logo only; search filters while typing. |
 | M3 | Sync v1 + E2EE (2–3 wk) | Version vectors; encrypted blob upload/download to folder + S3 targets; bounded diff3 merge with visible conflict copies; recovery-key export; keychain unlock; N-device sync simulator green in nightly CI. |
 | M4 | noteserver (1–2 wk) | axum + SQLite server: email+password and QR pairing, blob API, SSE change events; Docker image; deploy doc for free tiers (Oracle Always Free caveat: idle reclaim — run companions or switch to PAYG). |
 | M5 | Android (2–3 wk) | Tauri Android build (NDK r27+), responsive layout, share-target capture, Keystore-backed unlock, opt-in 15-min WorkManager sync; APK attached to releases (F-Droid metadata later). |
 | M6 | Hardening & release (1–2 wk) | Perf budgets verified; MSI/.deb/AppImage/APK pipelines; desktop updater (not on Android); export/backup; LICENSE files; docs. |
 
-Total estimate: ≈12–18 weeks part-time.
+Total estimate: ≈13–19 weeks part-time (includes M2.5).
 
 ## Performance budgets
 
@@ -38,8 +39,9 @@ Total estimate: ≈12–18 weeks part-time.
 
 ## v1 scope / non-goals
 
-In: live-preview Markdown editing, folders + tags, FTS incl. CJK, themes,
-attachments, shortcuts + command palette, pinning, trash, export/import,
+In: live-preview Markdown editing, folders + tags, FTS incl. CJK, themes
+(incl. follow-OS + accent), preferences panel (fonts, text size, rebindable
+shortcuts), attachments, command palette, pinning, trash, export/import,
 E2EE sync, Android share-target.
 
 Out (v1): realtime collaboration, web app, plugin API, graph view, iOS,

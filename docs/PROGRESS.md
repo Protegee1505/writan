@@ -3,16 +3,23 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — M2: live preview, tags & folders, command palette, attachments landed; 57 tests green.
+Last updated: 2026-10-16 — M2.5 landed: preferences, rebindable shortcuts, custom logo, live-search polish; 59 tests green.
 
 ## Current state
 
-- Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete.**
+- Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete,
+  M2.5 preferences & polish complete.**
   M2 remaining: IME/Freya check, runtime smoke test + perf budgets (see Next
   actions), then M3 (sync v1 + E2EE).
 - Verification at the last commit: `cargo fmt --check` clean, `cargo clippy
   --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
   57 tests green, `svelte-check` 0 errors, frontend `npm run build` OK.
+- Verification after M2.5: fmt/clippy clean, `cargo test --workspace` 59 tests
+  green, `svelte-check` 0 errors / 0 warnings, frontend build OK, app launched
+  via `tauri dev`.
+- This dev box had been re-imaged without a Rust toolchain; on 2026-10-16 Rust
+  1.99.1 (rustup) and VS 2022 Build Tools (MSVC 14.44.35207, Windows SDK
+  10.0.26100) were installed here.
 - The app has not yet had a full manual smoke run in the Tauri window, and has
   not been tested on Linux or Android at all.
 
@@ -91,6 +98,36 @@ Last updated: 2026-10-16 — M2: live preview, tags & folders, command palette, 
 - Evidence: 57 tests green (incl. an attachment-naming test in the app crate);
   svelte-check clean; frontend build OK. OS drag & drop is not wired yet
   (paste + file dialog only).
+
+### M2.5 — preferences & polish (2026-10-16)
+- Preferences: opaque `settings` object in `<app-data>/config.json` with new
+  `get_settings` / `save_settings` commands (object-checked, 256 KiB cap,
+  atomic temp+rename writes; ADR-0003). TS registry
+  `app/src/lib/settings.svelte.ts` owns schema/defaults/deep-merge; ~30 options
+  across appearance (theme light/dark/system, 6 accent presets, UI scale),
+  editor (font, size, line height, wrap, live preview, autosave delay), view
+  (list density, word count, date format), search (search-while-typing,
+  debounce), general (confirm delete, reopen last note) and advanced (data
+  folder, rebuild index, reset all).
+- `SettingsPanel.svelte`: filterable panel reachable from `Ctrl+,` and the
+  command palette ("Open settings…"; the palette also fuzzy-matches individual
+  options and deep-links into the panel). Live-apply, per-option reset,
+  keyboard-shortcut recorder that rejects conflicts and reserved keys
+  (`app/src/lib/keymap.ts`). All window shortcuts now dispatch through the
+  keymap service, and the editor's save key follows the configured binding.
+- Live search polish: debounce from settings (default 150 ms), stale-response
+  guard, clear button, "Searching…" indicator, `<mark>` highlighting of titles
+  and snippets, Enter commits, Esc clears.
+- Logo: custom W mark (rounded square + stroke W) — `branding/writan-icon.svg`
+  plus a 1024 px PNG master; in-app `Logo.svelte` renders it with the live
+  theme accent; the top bar shows the logo only (wordmark stays in the OS
+  window title). All bundle icons regenerated with `tauri icon`
+  (Windows/macOS/iOS/Android).
+- Session state: `settings.session.lastNoteId` reopens the last note; one-time
+  migration off the legacy `writan-theme` localStorage key.
+- Evidence: 59 tests green (new: `settings_roundtrip_and_defaults`,
+  `config_without_settings_key_still_loads` in `app/src-tauri/src/state.rs`);
+  fmt/clippy clean; svelte-check clean; frontend build OK.
 
 ## Next actions
 
