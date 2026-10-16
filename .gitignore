@@ -1,0 +1,25 @@
+# Rust
+/target
+**/target/
+Cargo.lock.orig
+
+# Node / frontend
+node_modules/
+dist/
+.svelte-kit/
+*.local
+
+# Tauri
+/app/src-tauri/gen/
+
+# Editors & OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Local data
+*.db
+*.db-journal
+*.db-wal

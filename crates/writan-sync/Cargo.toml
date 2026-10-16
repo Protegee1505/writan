@@ -1,0 +1,14 @@
+[package]
+name = "writan-sync"
+description = "Writan sync primitives: version vectors, merge logic, storage targets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
