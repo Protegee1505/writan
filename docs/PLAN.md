@@ -1,6 +1,6 @@
 # Writan — implementation plan
 
-Status: M1 complete (2026-10-16, commit 24c2654). M0 complete (commit 0324dc5). Next: M2 desktop MVP. Stack rationale: `docs/adr/0001-stack.md`.
+Status: M2 in progress (2026-10-16). M1 complete (commit 24c2654). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`.
 
 ## Milestones and exit criteria
 

@@ -1,156 +1,168 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { store } from "$lib/store.svelte";
+  import TopBar from "$lib/components/TopBar.svelte";
+  import NoteList from "$lib/components/NoteList.svelte";
+  import EditorPane from "$lib/components/EditorPane.svelte";
+  import TrashPanel from "$lib/components/TrashPanel.svelte";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let unlisten: (() => void) | null = null;
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  onMount(() => {
+    void (async () => {
+      await store.init();
+      unlisten = await listen<string[]>("vault-changed", (event) => {
+        void store.onExternalChange(event.payload);
+      });
+    })();
+    return () => {
+      unlisten?.();
+      unlisten = null;
+    };
+  });
+
+  function onKey(e: KeyboardEvent) {
+    const mod = e.ctrlKey || e.metaKey;
+    if (!mod) return;
+    if (e.key === "n" && store.status.vaultPath) {
+      e.preventDefault();
+      void store.createNote();
+    } else if (e.key === "f") {
+      e.preventDefault();
+      (document.getElementById("writan-search") as HTMLInputElement | null)?.focus();
+    } else if (e.key === "s") {
+      void store.saveNow();
+    }
   }
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<svelte:window onkeydown={onKey} />
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+{#if !store.ready}
+  <div class="splash">Writan</div>
+{:else if store.status.vaultPath === null}
+  <main class="welcome">
+    <div class="card">
+      <h1>Writan</h1>
+      <p class="tagline">A fast, local-first notebook. Your notes are plain Markdown files in a folder you own.</p>
+      <button class="cta" onclick={() => store.chooseVault()}>Choose notes folder</button>
+      <p class="hint">Nothing leaves your machine.</p>
+    </div>
+  </main>
+{:else}
+  <div class="app">
+    <TopBar />
+    <div class="main">
+      <NoteList />
+      <EditorPane />
+    </div>
+    {#if store.trashOpen}
+      <TrashPanel />
+    {/if}
+    {#if store.error}
+      <div class="toast">
+        <span>{store.error}</span>
+        <button onclick={() => (store.error = null)}>Dismiss</button>
+      </div>
+    {/if}
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+{/if}
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  .splash {
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-muted);
+    font-weight: 650;
+    letter-spacing: 0.04em;
   }
 
-  a:hover {
-    color: #24c8db;
+  .welcome {
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .card {
+    max-width: 420px;
+    text-align: center;
+    padding: 36px 32px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--bg-elevated);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08);
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  h1 {
+    margin: 0 0 10px;
+    font-size: 26px;
+    color: var(--accent);
+    letter-spacing: 0.01em;
+  }
+
+  .tagline {
+    margin: 0 0 24px;
+    color: var(--fg-muted);
+    line-height: 1.6;
+  }
+
+  .cta {
+    padding: 11px 20px;
+    border-radius: var(--radius);
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .cta:hover {
+    filter: brightness(1.08);
+  }
+
+  .hint {
+    margin: 18px 0 0;
+    font-size: 12.5px;
+    color: var(--fg-muted);
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  .main {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--danger);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    z-index: 60;
+    max-width: 80vw;
+  }
+
+  .toast button {
+    color: var(--fg);
+    padding: 3px 8px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+  }
 </style>
