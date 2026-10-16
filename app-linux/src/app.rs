@@ -9,7 +9,6 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use adw::prelude::*;
-use gtk::prelude::*;
 use sourceview5::prelude::*;
 
 use writan_core::{Note, NoteId, SearchQuery, Workspace};
@@ -54,7 +53,7 @@ fn build(application: &adw::Application) {
         rows: Vec::new(),
         current: None,
         config_path: config::default_config_path(),
-        data_dir: config::default_state_dir(),
+        data_dir: config::state_dir(),
     }));
 
     let window = adw::ApplicationWindow::builder()
@@ -527,7 +526,7 @@ fn load_css() {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(
+    provider.load_from_data(
         "scrolledwindow.preview-pane { background-color: alpha(currentColor, 0.04); }",
     );
     gtk::style_context_add_provider_for_display(

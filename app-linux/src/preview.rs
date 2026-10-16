@@ -92,7 +92,7 @@ fn insert_runs(buffer: &gtk::TextBuffer, end: &mut gtk::TextIter, runs: &[Run], 
 }
 
 fn add_tags(buffer: &gtk::TextBuffer) {
-    let tags: &[(&str, &[(&str, &dyn glib::ToValue)])] = &[
+    let tags: &[(&str, &[(&str, &dyn gtk::glib::ToValue)])] = &[
         (
             "h1",
             &[
