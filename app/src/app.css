@@ -9,6 +9,7 @@
   --accent: #5b6ee0;
   --accent-soft: rgba(91, 110, 224, 0.16);
   --danger: #c0503a;
+  --code-bg: #f0ece3;
   --radius: 10px;
   --font-sans: ui-sans-serif, system-ui, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
@@ -25,6 +26,7 @@
   --accent: #93a0ff;
   --accent-soft: rgba(147, 160, 255, 0.18);
   --danger: #e0796a;
+  --code-bg: #262420;
 }
 
 * {

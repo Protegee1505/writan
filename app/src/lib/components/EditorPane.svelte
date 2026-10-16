@@ -12,6 +12,7 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { markdown } from "@codemirror/lang-markdown";
   import { oneDark } from "@codemirror/theme-one-dark";
+  import { livePreview } from "$lib/editor/markdown-live";
   import { store } from "$lib/store.svelte";
 
   let host: HTMLDivElement | undefined = $state();
@@ -52,6 +53,7 @@
           highlightSpecialChars(),
           EditorView.lineWrapping,
           markdown(),
+          livePreview(),
           placeholder("Start writing…"),
           keymap.of([
             {
