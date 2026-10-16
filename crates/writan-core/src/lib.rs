@@ -1,9 +1,22 @@
 //! Core domain types for the Writan note vault.
 //!
 //! Markdown files with YAML frontmatter are the source of truth; everything
-//! in this crate must be rebuildable from the vault directory alone.
+//! else (the SQLite index, trash state) must be rebuildable from the vault
+//! directory alone.
 
 #![forbid(unsafe_code)]
+
+pub mod index;
+pub mod trash;
+pub mod vault;
+pub mod watch;
+pub mod workspace;
+
+pub use index::{Index, IndexError, IndexedNote, SearchHit, SearchQuery};
+pub use trash::{Trash, TrashEntry, TrashError};
+pub use vault::{FileStat, Note, ParsedFile, Vault, VaultError};
+pub use watch::{VaultEvent, VaultWatcher, WatchError};
+pub use workspace::{ReconcileStats, Workspace, WorkspaceError};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -15,8 +28,30 @@ pub type NoteId = Uuid;
 pub struct NoteMeta {
     pub id: Uuid,
     pub title: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// RFC 3339 timestamp in UTC for the current moment.
+pub fn now_rfc3339() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| String::from("1970-01-01T00:00:00Z"))
+}
+
+/// Content hash used for change detection and, later, sync.
+pub fn content_hash(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
 }
 
 /// Split a document into its frontmatter block and its body.
@@ -93,5 +128,22 @@ mod tests {
     #[test]
     fn empty_document() {
         assert_eq!(split_frontmatter(""), (None, ""));
+    }
+
+    #[test]
+    fn meta_serialization_skips_defaults() {
+        let meta = NoteMeta {
+            id: Uuid::nil(),
+            title: "Hi".into(),
+            tags: Vec::new(),
+            pinned: false,
+            created: None,
+            updated: None,
+        };
+        let yaml = serde_yaml_ng::to_string(&meta).expect("serialize");
+        assert_eq!(
+            yaml,
+            "id: 00000000-0000-0000-0000-000000000000\ntitle: Hi\n"
+        );
     }
 }

@@ -1,6 +1,6 @@
 # Writan — implementation plan
 
-Status: M0 in progress (2026-10-16). Stack rationale: `docs/adr/0001-stack.md`.
+Status: M1 in progress (2026-10-16). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`.
 
 ## Milestones and exit criteria
 
