@@ -341,7 +341,7 @@ fn build(application: &adw::Application) {
                 started.elapsed().as_millis()
             );
             let window = window_for_map.clone();
-            gtk::glib::timeout_add_seconds(3, move || {
+            gtk::glib::timeout_add_seconds_local(3, move || {
                 eprintln!("writan-measure idle-rss-kb: {}", read_vm_rss_kb());
                 if let Some(application) = window.application() {
                     application.quit();

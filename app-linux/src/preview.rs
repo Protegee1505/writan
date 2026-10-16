@@ -92,73 +92,62 @@ fn insert_runs(buffer: &gtk::TextBuffer, end: &mut gtk::TextIter, runs: &[Run], 
 }
 
 fn add_tags(buffer: &gtk::TextBuffer) {
-    let tags: &[(&str, &[(&str, &dyn gtk::glib::ToValue)])] = &[
-        (
-            "h1",
-            &[
-                ("weight", &700i32),
-                ("scale", &1.7f64),
-                ("pixels-above-lines", &14i32),
-                ("pixels-below-lines", &6i32),
-            ],
-        ),
-        (
-            "h2",
-            &[
-                ("weight", &700i32),
-                ("scale", &1.4f64),
-                ("pixels-above-lines", &10i32),
-                ("pixels-below-lines", &4i32),
-            ],
-        ),
-        (
-            "h3",
-            &[
-                ("weight", &700i32),
-                ("scale", &1.2f64),
-                ("pixels-above-lines", &8i32),
-                ("pixels-below-lines", &3i32),
-            ],
-        ),
-        ("bold", &[("weight", &700i32)]),
-        ("italic", &[("style", &gtk::pango::Style::Italic)]),
-        (
-            "inline-code",
-            &[
-                ("family", &"monospace"),
-                ("background", &"rgba(128,128,128,0.15)"),
-            ],
-        ),
-        (
-            "code-block",
-            &[
-                ("family", &"monospace"),
-                ("background", &"rgba(128,128,128,0.12)"),
-                ("left-margin", &12i32),
-                ("right-margin", &12i32),
-                ("pixels-above-lines", &6i32),
-                ("pixels-below-lines", &6i32),
-            ],
-        ),
-        (
-            "quote",
-            &[
-                ("style", &gtk::pango::Style::Italic),
-                ("left-margin", &14i32),
-                ("foreground", &"rgba(128,128,128,0.95)"),
-            ],
-        ),
-        ("item", &[("left-margin", &16i32)]),
-        ("rule", &[("foreground", &"rgba(128,128,128,0.6)")]),
-        (
-            "link",
-            &[
-                ("foreground", &"#6d7fe8"),
-                ("underline", &gtk::pango::Underline::Single),
-            ],
-        ),
-    ];
-    for (name, properties) in tags {
-        buffer.create_tag(Some(name), properties);
+    let table = buffer.tag_table();
+    let push = |tag: gtk::TextTag| {
+        table.add(&tag);
+    };
+
+    for (name, scale, above, below) in [
+        ("h1", 1.7f64, 14i32, 6i32),
+        ("h2", 1.4, 10, 4),
+        ("h3", 1.2, 8, 3),
+    ] {
+        let tag = gtk::TextTag::new(Some(name));
+        tag.set_weight(700);
+        tag.set_scale(scale);
+        tag.set_pixels_above_lines(above);
+        tag.set_pixels_below_lines(below);
+        push(tag);
     }
+
+    let bold = gtk::TextTag::new(Some("bold"));
+    bold.set_weight(700);
+    push(bold);
+
+    let italic = gtk::TextTag::new(Some("italic"));
+    italic.set_style(gtk::pango::Style::Italic);
+    push(italic);
+
+    let inline_code = gtk::TextTag::new(Some("inline-code"));
+    inline_code.set_family(Some("monospace"));
+    inline_code.set_background(Some("rgba(128,128,128,0.15)"));
+    push(inline_code);
+
+    let code_block = gtk::TextTag::new(Some("code-block"));
+    code_block.set_family(Some("monospace"));
+    code_block.set_background(Some("rgba(128,128,128,0.12)"));
+    code_block.set_left_margin(12);
+    code_block.set_right_margin(12);
+    code_block.set_pixels_above_lines(6);
+    code_block.set_pixels_below_lines(6);
+    push(code_block);
+
+    let quote = gtk::TextTag::new(Some("quote"));
+    quote.set_style(gtk::pango::Style::Italic);
+    quote.set_left_margin(14);
+    quote.set_foreground(Some("rgba(128,128,128,0.95)"));
+    push(quote);
+
+    let item = gtk::TextTag::new(Some("item"));
+    item.set_left_margin(16);
+    push(item);
+
+    let rule = gtk::TextTag::new(Some("rule"));
+    rule.set_foreground(Some("rgba(128,128,128,0.6)"));
+    push(rule);
+
+    let link = gtk::TextTag::new(Some("link"));
+    link.set_foreground(Some("#6d7fe8"));
+    link.set_underline(gtk::pango::Underline::Single);
+    push(link);
 }
