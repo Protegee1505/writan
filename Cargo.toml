@@ -6,6 +6,7 @@ members = [
     "crates/writan-sync",
     "crates/writan-server",
     "app/src-tauri",
+    "app-linux",
 ]
 
 [workspace.package]
@@ -27,6 +28,10 @@ argon2 = "0.6"
 axum = "0.8"
 blake3 = "1.8"
 chacha20poly1305 = "0.11"
+gtk4 = "0.9"
+libadwaita = "0.7"
+sourceview5 = "0.9"
+pulldown-cmark = "0.13"
 notify = "8.2"
 rand = "0.9"
 rusqlite = { version = "0.40", features = ["bundled"] }

@@ -20,11 +20,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Linux system dependencies (Tauri)
+      - name: Linux system dependencies (Tauri + GTK shell)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libssl-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libssl-dev libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check

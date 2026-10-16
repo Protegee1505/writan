@@ -163,7 +163,9 @@ Next (order is a suggestion, not a constraint):
    `writan-core` — libadwaita three-pane, GtkSourceView editing, preview
    pane; build/smoke in WSL2 + WSLg here; measure cold start, idle RAM,
    binary size; final ibus/fcitx5 IME acceptance on the user's Linux laptop;
-   append the outcome to ADR-0004.
+   append the outcome to ADR-0004. Scaffold is written and green on Windows
+   (`app-linux` stub + `spans`/`config` unit tests; 10 tests) — first Linux
+   compile happens in WSL2 next (the WSL feature needs one reboot).
 2. Perf budgets still open: cold start < 400 ms (≈396 ms measured), search
    < 30 ms at 10k notes (not measured yet), RAM < 150 MB idle (≈120 MB
    private measured; the working set is higher with WebView2).

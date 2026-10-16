@@ -1,0 +1,25 @@
+[package]
+name = "writan-linux"
+description = "Native GTK4 shell for Writan on Linux (spike for ADR-0004)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "writan"
+path = "src/main.rs"
+
+[dependencies]
+writan-core.workspace = true
+serde_json.workspace = true
+pulldown-cmark.workspace = true
+
+# The GTK stack only exists below; on other targets this crate compiles as a
+# stub so `cargo clippy/test --workspace` stays green on Windows (ADR-0004).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = { workspace = true, features = ["v4_10"] }
+libadwaita = { workspace = true, features = ["v1_4"] }
+sourceview5.workspace = true
