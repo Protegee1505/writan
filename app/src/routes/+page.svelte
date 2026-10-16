@@ -6,8 +6,10 @@
   import NoteList from "$lib/components/NoteList.svelte";
   import EditorPane from "$lib/components/EditorPane.svelte";
   import TrashPanel from "$lib/components/TrashPanel.svelte";
+  import CommandPalette from "$lib/components/CommandPalette.svelte";
 
   let unlisten: (() => void) | null = null;
+  let paletteOpen = $state(false);
 
   onMount(() => {
     void (async () => {
@@ -25,7 +27,10 @@
   function onKey(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
     if (!mod) return;
-    if (e.key === "n" && store.status.vaultPath) {
+    if (e.key === "p" || e.key === "k") {
+      e.preventDefault();
+      paletteOpen = true;
+    } else if (e.key === "n" && store.status.vaultPath) {
       e.preventDefault();
       void store.createNote();
     } else if (e.key === "f") {
@@ -59,6 +64,13 @@
     </div>
     {#if store.trashOpen}
       <TrashPanel />
+    {/if}
+    <CommandPalette bind:open={paletteOpen} onclose={() => (paletteOpen = false)} />
+    {#if store.notice}
+      <div class="toast notice">
+        <span>{store.notice}</span>
+        <button onclick={() => (store.notice = null)}>Dismiss</button>
+      </div>
     {/if}
     {#if store.error}
       <div class="toast">
@@ -157,6 +169,10 @@
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
     z-index: 60;
     max-width: 80vw;
+  }
+
+  .toast.notice {
+    color: var(--fg);
   }
 
   .toast button {

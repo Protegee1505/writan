@@ -3,7 +3,7 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — M2: live preview + tags & folders landed; 56 tests green.
+Last updated: 2026-10-16 — M2: live preview, tags & folders, command palette landed; 56 tests green.
 
 ## Current state
 
@@ -77,15 +77,20 @@ Last updated: 2026-10-16 — M2: live preview + tags & folders landed; 56 tests 
 - Evidence: 56 tests green (34 core + 10 integration + 7 crypto + 1 server +
   4 sync); svelte-check clean; frontend build OK.
 
+### M2 — command palette (2026-10-16)
+- `Ctrl+P` / `Ctrl+K` opens a command palette: new note, save, theme switch,
+  trash, rebuild index, pin/unpin, and a note switcher; arrow-key navigation,
+  Enter runs, Esc closes. Rebuilding the index reports stats in a toast.
+- Evidence: svelte-check clean (0 warnings); frontend build OK.
+
 ## Next actions
 
 M2 remaining (order is a suggestion, not a constraint):
-1. Command palette (`Ctrl+P`) incl. a rebuild-index action.
-2. Attachments (paste/drag into `attachments/`, relative links) — planned M2
+1. Attachments (paste/drag into `attachments/`, relative links) — planned M2
    scope.
-3. IME smoke test on Windows and Linux; decide on the 1-week Freya spike
+2. IME smoke test on Windows and Linux; decide on the 1-week Freya spike
    (M2 exit item).
-4. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
+3. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
    bounded diff3 with visible conflict copies, recovery-key export, keychain
    unlock, N-device sync simulator in nightly CI. The primitives already exist
    in `writan-sync` (version vectors) and `writan-crypto` (Argon2id +

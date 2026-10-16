@@ -12,6 +12,7 @@ class AppStore {
   note = $state<Note | null>(null);
   saveState = $state<SaveState>("idle");
   error = $state<string | null>(null);
+  notice = $state<string | null>(null);
   theme = $state<"light" | "dark">("light");
   trash = $state<TrashEntry[]>([]);
   trashOpen = $state(false);
@@ -23,6 +24,7 @@ class AppStore {
   // Not reactive on purpose.
   saveTimer: ReturnType<typeof setTimeout> | null = null;
   searchTimer: ReturnType<typeof setTimeout> | null = null;
+  noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
   get visible(): (Summary | Hit)[] {
     return this.hits ?? this.notes;
@@ -110,6 +112,25 @@ class AppStore {
     try {
       this.tags = await api.listTags();
       this.folders = await api.listFolders();
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
+  notify(message: string) {
+    this.notice = message;
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => (this.notice = null), 2600);
+  }
+
+  async rebuildIndex() {
+    try {
+      const stats = await api.rebuild();
+      this.notify(
+        `Index rebuilt: ${stats.added} added, ${stats.updated} updated, ${stats.removed} removed.`,
+      );
+      await this.refresh();
+      void this.loadFacets();
     } catch (e) {
       this.error = String(e);
     }
