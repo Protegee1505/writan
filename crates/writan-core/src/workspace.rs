@@ -2,7 +2,7 @@
 //! index in step with the files — whether they changed through the app or
 //! outside it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
@@ -279,6 +279,24 @@ impl Workspace {
 
     pub fn list(&self, limit: usize) -> Result<Vec<IndexedNote>, WorkspaceError> {
         Ok(self.index.list(limit)?)
+    }
+
+    /// Tag names with their note counts, most used first.
+    pub fn tag_counts(&self) -> Result<Vec<(String, i64)>, WorkspaceError> {
+        Ok(self.index.tag_counts()?)
+    }
+
+    /// Top-level folder names with their note counts, sorted by name.
+    pub fn folder_counts(&self) -> Result<Vec<(String, i64)>, WorkspaceError> {
+        let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+        for path in self.index.all_paths()? {
+            if let Some((dir, _rest)) = path.split_once('/')
+                && !dir.is_empty()
+            {
+                *counts.entry(dir.to_string()).or_insert(0) += 1;
+            }
+        }
+        Ok(counts.into_iter().collect())
     }
 
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, WorkspaceError> {

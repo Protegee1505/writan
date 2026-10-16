@@ -116,6 +116,23 @@ impl Index {
         Ok(out)
     }
 
+    pub fn tag_counts(&self) -> Result<Vec<(String, i64)>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT value AS tag, COUNT(*) AS n
+             FROM notes, json_each(notes.tags)
+             GROUP BY value
+             ORDER BY n DESC, tag ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn get(&self, id: &NoteId) -> Result<Option<IndexedNote>, IndexError> {
         let row = self
             .conn
@@ -638,6 +655,21 @@ mod tests {
         seed(&mut index);
         let listed = index.list(10).expect("list");
         assert_eq!(listed[0].title, "Beta");
+    }
+
+    #[test]
+    fn tag_counts_aggregate() {
+        let mut index = Index::open_in_memory().expect("open");
+        seed(&mut index);
+        let counts = index.tag_counts().expect("counts");
+        assert_eq!(
+            counts.iter().find(|(t, _)| t == "work").map(|(_, n)| *n),
+            Some(2)
+        );
+        assert_eq!(
+            counts.iter().find(|(t, _)| t == "fun").map(|(_, n)| *n),
+            Some(1)
+        );
     }
 
     #[test]

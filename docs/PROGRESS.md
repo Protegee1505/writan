@@ -3,15 +3,16 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — M2 desktop-MVP first pass committed; repository published.
+Last updated: 2026-10-16 — M2: live preview + tags & folders landed; 56 tests green.
 
 ## Current state
 
 - Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete.**
-  M2 exit items remain (see Next actions), then M3 (sync v1 + E2EE).
+  M2 remaining: command palette, attachments, IME/Freya check (see Next
+  actions), then M3 (sync v1 + E2EE).
 - Verification at the last commit: `cargo fmt --check` clean, `cargo clippy
   --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
-  54 tests green, `svelte-check` 0 errors, frontend `npm run build` OK.
+  56 tests green, `svelte-check` 0 errors, frontend `npm run build` OK.
 - The app has not yet had a full manual smoke run in the Tauri window, and has
   not been tested on Linux or Android at all.
 
@@ -60,19 +61,31 @@ Last updated: 2026-10-16 — M2 desktop-MVP first pass committed; repository pub
   `lib/store.svelte.ts`.
 - Evidence: frontend build + svelte-check clean; workspace clippy/tests clean.
 
+### M2 — live preview (commit 9f834ec)
+- `app/src/lib/editor/markdown-live.ts` — CodeMirror 6 view plugin styling
+  headings, quotes, code blocks and links via decorations; syntax marks are
+  dimmed — and hidden away from the cursor — while the source stays Markdown.
+- Evidence: svelte-check clean; frontend build OK.
+
+### M2 — tags & folders (2026-10-16)
+- Core: `Index::tag_counts()` (JSON1 aggregation over indexed tags),
+  `Workspace::tag_counts()` / `folder_counts()`; new commands `list_tags` /
+  `list_folders`; `search_notes` now accepts tags/folder/pinned filters;
+  `save_note` persists tags.
+- UI: sidebar filter chips (folders + tags with counts; Clear button); tag
+  editor row in the note header (Enter/comma adds a tag, × removes it).
+- Evidence: 56 tests green (34 core + 10 integration + 7 crypto + 1 server +
+  4 sync); svelte-check clean; frontend build OK.
+
 ## Next actions
 
 M2 remaining (order is a suggestion, not a constraint):
-1. Live-preview decorations in the editor (CM6 decorations styling
-   headings/bold/italic and de-emphasizing markup; source stays Markdown).
-2. Tags & folders UI (tag filter chips, folder tree/breadcrumb; the core
-   filter API already supports both).
-3. Command palette (`Ctrl+P`) incl. a rebuild-index action.
-4. Attachments (paste/drag into `attachments/`, relative links) — planned M2
+1. Command palette (`Ctrl+P`) incl. a rebuild-index action.
+2. Attachments (paste/drag into `attachments/`, relative links) — planned M2
    scope.
-5. IME smoke test on Windows and Linux; decide on the 1-week Freya spike
+3. IME smoke test on Windows and Linux; decide on the 1-week Freya spike
    (M2 exit item).
-6. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
+4. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
    bounded diff3 with visible conflict copies, recovery-key export, keychain
    unlock, N-device sync simulator in nightly CI. The primitives already exist
    in `writan-sync` (version vectors) and `writan-crypto` (Argon2id +

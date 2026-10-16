@@ -164,12 +164,17 @@ pub fn list_notes(state: State<'_, AppState>, limit: Option<usize>) -> CmdResult
 pub fn search_notes(
     state: State<'_, AppState>,
     text: String,
+    tags: Option<Vec<String>>,
+    folder: Option<String>,
     pinned_only: Option<bool>,
     limit: Option<usize>,
 ) -> CmdResult<Vec<HitDto>> {
     let text = text.trim().to_string();
+    let tags = tags.unwrap_or_default();
+    let folder = folder.filter(|f| !f.trim().is_empty());
+    let pinned_only = pinned_only.unwrap_or(false);
     with_ws(&state, |workspace| {
-        if text.is_empty() {
+        if text.is_empty() && tags.is_empty() && folder.is_none() && !pinned_only {
             let notes = workspace
                 .list(limit.unwrap_or(500))
                 .map_err(|e| e.to_string())?;
@@ -187,9 +192,9 @@ pub fn search_notes(
         }
         let query = SearchQuery {
             text,
-            tags: Vec::new(),
-            folder: None,
-            pinned_only: pinned_only.unwrap_or(false),
+            tags,
+            folder,
+            pinned_only,
             limit,
         };
         let hits = workspace.search(&query).map_err(|e| e.to_string())?;
@@ -230,7 +235,12 @@ pub fn create_note(state: State<'_, AppState>, title: Option<String>) -> CmdResu
 }
 
 #[tauri::command]
-pub fn save_note(state: State<'_, AppState>, id: String, body: String) -> CmdResult<NoteDto> {
+pub fn save_note(
+    state: State<'_, AppState>,
+    id: String,
+    body: String,
+    tags: Option<Vec<String>>,
+) -> CmdResult<NoteDto> {
     let id = parse_id(&id)?;
     with_ws(&state, |workspace| {
         let mut note = workspace
@@ -238,6 +248,9 @@ pub fn save_note(state: State<'_, AppState>, id: String, body: String) -> CmdRes
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "note not found".to_string())?;
         note.body = body;
+        if let Some(tags) = tags {
+            note.meta.tags = tags;
+        }
         workspace.save_note(&mut note).map_err(|e| e.to_string())?;
         Ok(note_dto(&note))
     })
@@ -333,5 +346,36 @@ pub fn rebuild_index(state: State<'_, AppState>) -> CmdResult<ReconcileDto> {
             unchanged: stats.unchanged,
             errors: stats.errors,
         })
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CountDto {
+    pub name: String,
+    pub count: i64,
+}
+
+#[tauri::command]
+pub fn list_tags(state: State<'_, AppState>) -> CmdResult<Vec<CountDto>> {
+    with_ws(&state, |workspace| {
+        Ok(workspace
+            .tag_counts()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(name, count)| CountDto { name, count })
+            .collect())
+    })
+}
+
+#[tauri::command]
+pub fn list_folders(state: State<'_, AppState>) -> CmdResult<Vec<CountDto>> {
+    with_ws(&state, |workspace| {
+        Ok(workspace
+            .folder_counts()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(name, count)| CountDto { name, count })
+            .collect())
     })
 }

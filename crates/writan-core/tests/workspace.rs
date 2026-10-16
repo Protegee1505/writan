@@ -175,3 +175,27 @@ fn save_note_updates_updated_and_index() {
         .expect("search");
     assert_eq!(hits.len(), 1);
 }
+
+#[test]
+fn facets_reports_tags_and_folders() {
+    let (v, _s, mut ws) = workspace();
+    ws.create_note("Alpha", &["work".to_string(), "rust".to_string()])
+        .expect("a");
+    ws.create_note("Beta", &["work".to_string()]).expect("b");
+    fs::create_dir_all(v.path().join("projects")).expect("mkdir");
+    fs::write(v.path().join("projects/external.md"), "# External\n\nbody").expect("write");
+    ws.reconcile().expect("reconcile");
+
+    let tags = ws.tag_counts().expect("tags");
+    assert_eq!(
+        tags.iter().find(|(t, _)| t == "work").map(|(_, n)| *n),
+        Some(2)
+    );
+    assert_eq!(
+        tags.iter().find(|(t, _)| t == "rust").map(|(_, n)| *n),
+        Some(1)
+    );
+
+    let folders = ws.folder_counts().expect("folders");
+    assert_eq!(folders, vec![("projects".to_string(), 1)]);
+}

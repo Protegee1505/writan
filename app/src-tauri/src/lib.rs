@@ -39,6 +39,8 @@ pub fn run() {
             commands::purge_note,
             commands::set_pinned,
             commands::rebuild_index,
+            commands::list_tags,
+            commands::list_folders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

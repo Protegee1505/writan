@@ -1,4 +1,4 @@
-import { api, type Hit, type Note, type Status, type Summary, type TrashEntry } from "./api";
+import { api, type CountEntry, type Hit, type Note, type Status, type Summary, type TrashEntry } from "./api";
 
 export type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
@@ -15,6 +15,10 @@ class AppStore {
   theme = $state<"light" | "dark">("light");
   trash = $state<TrashEntry[]>([]);
   trashOpen = $state(false);
+  tags = $state<CountEntry[]>([]);
+  folders = $state<CountEntry[]>([]);
+  tagFilter = $state<string | null>(null);
+  folderFilter = $state<string | null>(null);
 
   // Not reactive on purpose.
   saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -29,6 +33,10 @@ class AppStore {
     return body.split(/\s+/).filter(Boolean).length;
   }
 
+  get filtered(): boolean {
+    return this.tagFilter !== null || this.folderFilter !== null;
+  }
+
   async init() {
     const stored = localStorage.getItem("writan-theme");
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -38,6 +46,7 @@ class AppStore {
       this.status = await api.status();
       if (this.status.vaultPath) {
         await this.refresh();
+        await this.loadFacets();
         const first = this.notes[0];
         if (first) await this.select(first.id);
       }
@@ -70,7 +79,10 @@ class AppStore {
       this.selectedId = null;
       this.query = "";
       this.hits = null;
+      this.tagFilter = null;
+      this.folderFilter = null;
       await this.refresh();
+      await this.loadFacets();
     } catch (e) {
       this.error = String(e);
     }
@@ -78,8 +90,13 @@ class AppStore {
 
   async refresh() {
     try {
-      if (this.query.trim()) {
-        this.hits = await api.search(this.query.trim());
+      if (this.query.trim() || this.tagFilter || this.folderFilter) {
+        this.hits = await api.search({
+          text: this.query,
+          tags: this.tagFilter ? [this.tagFilter] : [],
+          folder: this.folderFilter,
+          limit: 500,
+        });
       } else {
         this.hits = null;
         this.notes = await api.list();
@@ -87,6 +104,31 @@ class AppStore {
     } catch (e) {
       this.error = String(e);
     }
+  }
+
+  async loadFacets() {
+    try {
+      this.tags = await api.listTags();
+      this.folders = await api.listFolders();
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
+  toggleTag(tag: string) {
+    this.tagFilter = this.tagFilter === tag ? null : tag;
+    void this.refresh();
+  }
+
+  toggleFolder(folder: string) {
+    this.folderFilter = this.folderFilter === folder ? null : folder;
+    void this.refresh();
+  }
+
+  async clearFilters() {
+    this.tagFilter = null;
+    this.folderFilter = null;
+    await this.refresh();
   }
 
   setQuery(q: string) {
@@ -119,6 +161,7 @@ class AppStore {
       this.query = "";
       this.hits = null;
       await this.refresh();
+      void this.loadFacets();
       await this.select(note.id);
     } catch (e) {
       this.error = String(e);
@@ -131,6 +174,15 @@ class AppStore {
     this.saveState = "dirty";
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => void this.saveNow(), 700);
+  }
+
+  async setTags(tags: string[]) {
+    const note = this.note;
+    if (!note) return;
+    note.tags = tags;
+    this.saveState = "dirty";
+    await this.saveNow();
+    void this.loadFacets();
   }
 
   async flushSave() {
@@ -152,7 +204,7 @@ class AppStore {
     const body = note.body;
     this.saveState = "saving";
     try {
-      const saved = await api.save(note.id, body);
+      const saved = await api.save(note.id, body, note.tags);
       if (this.note?.id === saved.id) {
         this.note.updated = saved.updated;
         if (this.note.body !== body) {
@@ -160,6 +212,7 @@ class AppStore {
           this.saveTimer = setTimeout(() => void this.saveNow(), 700);
         } else {
           this.saveState = "saved";
+          void this.loadFacets();
         }
       } else {
         this.saveState = "idle";
@@ -206,6 +259,7 @@ class AppStore {
       this.note = null;
       this.selectedId = null;
       await this.refresh();
+      void this.loadFacets();
       if (this.trashOpen) await this.loadTrash();
     } catch (e) {
       this.error = String(e);
@@ -230,6 +284,7 @@ class AppStore {
       await api.restore(trashId);
       await this.loadTrash();
       await this.refresh();
+      void this.loadFacets();
     } catch (e) {
       this.error = String(e);
     }
@@ -246,6 +301,7 @@ class AppStore {
 
   async onExternalChange(rels: string[]) {
     await this.refresh();
+    void this.loadFacets();
     const note = this.note;
     if (!note || !rels.includes(note.relPath)) return;
     if (this.saveState === "dirty" || this.saveState === "saving") return;

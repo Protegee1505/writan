@@ -11,6 +11,52 @@
 </script>
 
 <aside class="sidebar">
+  {#if store.tags.length || store.folders.length || store.filtered}
+    <div class="filters">
+      {#if store.filtered}
+        <div class="chipRow">
+          {#if store.folderFilter}
+            <button class="chip active" onclick={() => store.toggleFolder(store.folderFilter!)}>
+              {store.folderFilter}<span class="x">×</span>
+            </button>
+          {/if}
+          {#if store.tagFilter}
+            <button class="chip active" onclick={() => store.toggleTag(store.tagFilter!)}>
+              #{store.tagFilter}<span class="x">×</span>
+            </button>
+          {/if}
+          <button class="clear" onclick={() => store.clearFilters()}>Clear</button>
+        </div>
+      {/if}
+      {#if store.folders.length}
+        <div class="chipRow">
+          {#each store.folders as folder (folder.name)}
+            <button
+              class="chip"
+              class:active={store.folderFilter === folder.name}
+              onclick={() => store.toggleFolder(folder.name)}
+            >
+              {folder.name}<span class="count">{folder.count}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+      {#if store.tags.length}
+        <div class="chipRow">
+          {#each store.tags.slice(0, 18) as tag (tag.name)}
+            <button
+              class="chip"
+              class:active={store.tagFilter === tag.name}
+              onclick={() => store.toggleTag(tag.name)}
+            >
+              #{tag.name}<span class="count">{tag.count}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   <div class="listHead">
     {#if store.hits !== null}
       Results ({store.hits.length})
@@ -46,6 +92,8 @@
       <div class="empty">
         {#if store.query.trim()}
           No notes match “{store.query.trim()}”.
+        {:else if store.filtered}
+          No notes match the current filter.
         {:else}
           No notes yet.<br />Press Ctrl+N to create one.
         {/if}
@@ -64,6 +112,54 @@
     flex-direction: column;
     min-height: 0;
     background: var(--bg);
+  }
+
+  .filters {
+    padding: 10px 12px 2px;
+    border-bottom: 1px solid var(--border);
+    max-height: 168px;
+    overflow-y: auto;
+  }
+
+  .chipRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 8px;
+  }
+
+  .chip {
+    font-size: 11.5px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .chip:hover {
+    color: var(--fg);
+  }
+
+  .chip.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .count {
+    opacity: 0.65;
+    margin-left: 2px;
+  }
+
+  .x {
+    margin-left: 2px;
+  }
+
+  .clear {
+    font-size: 11.5px;
+    padding: 3px 6px;
+    color: var(--fg-muted);
+    text-decoration: underline;
   }
 
   .listHead {

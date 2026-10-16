@@ -21,6 +21,7 @@
   let applying = false;
   let titleDraft = $state("");
   let lastTitleId: string | null = null;
+  let tagDraft = $state("");
 
   const themeComp = new Compartment();
 
@@ -109,6 +110,7 @@
     if (id !== lastTitleId) {
       lastTitleId = id;
       titleDraft = store.note?.title ?? "";
+      tagDraft = "";
     }
   });
 
@@ -121,6 +123,20 @@
       return;
     }
     if (clean !== note.title) void store.rename(clean);
+  }
+
+  function addTag() {
+    const note = store.note;
+    const clean = tagDraft.trim().replace(/^#/, "");
+    tagDraft = "";
+    if (!note || !clean || note.tags.includes(clean)) return;
+    void store.setTags([...note.tags, clean]);
+  }
+
+  function removeTag(tag: string) {
+    const note = store.note;
+    if (!note) return;
+    void store.setTags(note.tags.filter((t) => t !== tag));
   }
 
   const saveLabel = $derived(
@@ -167,6 +183,29 @@
       {/if}
     </div>
   </div>
+
+  {#if store.note}
+    <div class="tagRow">
+      {#each store.note.tags as tag (tag)}
+        <button class="tagChip" onclick={() => removeTag(tag)} title="Remove tag">
+          #{tag}<span class="x">×</span>
+        </button>
+      {/each}
+      <input
+        class="tagInput"
+        placeholder="Add tag…"
+        bind:value={tagDraft}
+        spellcheck="false"
+        onkeydown={(e) => {
+          if (e.key === "Enter" || e.key === ",") {
+            e.preventDefault();
+            addTag();
+          }
+        }}
+        onblur={addTag}
+      />
+    </div>
+  {/if}
 
   <div class="editorBody">
     <div class="cmHost" bind:this={host}></div>
@@ -242,6 +281,40 @@
 
   .danger {
     color: var(--danger);
+  }
+
+  .tagRow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 16px 7px 28px;
+    border-bottom: 1px solid var(--border);
+    min-height: 35px;
+  }
+
+  .tagChip {
+    font-size: 11.5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .tagChip .x {
+    margin-left: 3px;
+    opacity: 0.7;
+  }
+
+  .tagInput {
+    font-size: 12.5px;
+    min-width: 90px;
+    flex: 1;
+    padding: 2px 0;
+  }
+
+  .tagInput::placeholder {
+    color: var(--fg-muted);
   }
 
   .editorBody {
