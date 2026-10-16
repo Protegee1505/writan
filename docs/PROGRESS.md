@@ -3,25 +3,33 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — M2.5 landed: preferences, rebindable shortcuts, custom logo, live-search polish; 59 tests green.
+Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB, MSI 3.29 MB, setup 2.41 MB, ≈120 MB private idle RAM on Windows); Linux goes native via ADR-0004.
 
 ## Current state
 
 - Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete,
-  M2.5 preferences & polish complete.**
-  M2 remaining: IME/Freya check, runtime smoke test + perf budgets (see Next
-  actions), then M3 (sync v1 + E2EE).
-- Verification at the last commit: `cargo fmt --check` clean, `cargo clippy
-  --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
-  57 tests green, `svelte-check` 0 errors, frontend `npm run build` OK.
+  M2.5 preferences & polish complete, release build verified.**
+  M2 remaining: IME acceptance now rides on the GTK4 shell (ADR-0004), plus the
+  runtime perf budgets; then M3 (sync v1 + E2EE), then M3.5 (native Linux shell,
+  ADR-0004).
 - Verification after M2.5: fmt/clippy clean, `cargo test --workspace` 59 tests
   green, `svelte-check` 0 errors / 0 warnings, frontend build OK, app launched
   via `tauri dev`.
+- Release build (2026-10-16, Windows): `tauri build` exit 0 — exe 6.53 MB
+  (codegen-units 1, LTO, strip), MSI 3.29 MB, NSIS setup 2.41 MB; cold start to
+  window ≈396 ms; idle ≈120 MB private / ≈249 MB working set (the app process
+  itself is 4.4 MB private — the rest is WebView2). npm Tauri packages pinned
+  to 2.11.1 / 2.7.3 / 2.5.5 so the release build's version gate passes (the
+  dev build only warns).
+- Real-session verification: the user ran the app, chose
+  `C:\Users\Administrator\Downloads` as the vault, switched the theme to dark
+  and reopened the last note after relaunch — settings/session round-trip
+  through app-data `config.json` confirmed.
 - This dev box had been re-imaged without a Rust toolchain; on 2026-10-16 Rust
   1.99.1 (rustup) and VS 2022 Build Tools (MSVC 14.44.35207, Windows SDK
   10.0.26100) were installed here.
-- The app has not yet had a full manual smoke run in the Tauri window, and has
-  not been tested on Linux or Android at all.
+- The app has not been tested on Linux or Android yet (the GTK4 spike is the
+  first Linux work).
 
 ## Milestone log
 
@@ -129,18 +137,41 @@ Last updated: 2026-10-16 — M2.5 landed: preferences, rebindable shortcuts, cus
   `config_without_settings_key_still_loads` in `app/src-tauri/src/state.rs`);
   fmt/clippy clean; svelte-check clean; frontend build OK.
 
+### M2.5 — release build & measurement (2026-10-16)
+- `npm --prefix app run tauri build` green after pinning `@tauri-apps/api`
+  2.11.1, `@tauri-apps/plugin-dialog` 2.7.3 and `@tauri-apps/plugin-opener`
+  2.5.5 (the release build treats mismatched npm/Rust Tauri versions as a
+  hard error; `tauri dev` only warns).
+- Artifacts: `writan-app.exe` 6.53 MB, `Writan_0.1.0_x64_en-US.msi` 3.29 MB,
+  `Writan_0.1.0_x64-setup.exe` 2.41 MB.
+- Measured: cold start → window ≈396 ms; idle ≈120 MB private / ≈249 MB
+  working set across 7 processes (app 4.4 MB private) — the webview helpers
+  are the whole weight, which is the motivation note behind ADR-0004.
+- Notes: the bundle id `com.writan.app` ends in `.app` (Tauri warning;
+  harmless for our targets, decide before M3 whether to rename — it moves
+  `%APPDATA%\com.writan.app`); one 563 kB JS chunk (CodeMirror) triggers
+  vite's size hint (gzip 195 kB; candidate for code splitting later).
+- Lessons: close every running `writan-app` before `tauri build` — the
+  bundler patches `writan-app.exe` between installers, so a running instance
+  fails the build with `os error 32` / `os error 5`.
+- Evidence: `svelte-check` 0/0, vite build OK, `tauri build` exit 0.
+
 ## Next actions
 
-M2 remaining (order is a suggestion, not a constraint):
-1. IME smoke test on Windows and Linux; decide on the 1-week Freya spike
-   (M2 exit item).
-2. Runtime smoke test & perf budget check on the dev box (cold start
-   < 400 ms, search < 30 ms at 10k notes, RAM < 150 MB).
+Next (order is a suggestion, not a constraint):
+1. GTK4 spike (ADR-0004): minimal `app-linux/` opens a real vault through
+   `writan-core` — libadwaita three-pane, GtkSourceView editing, preview
+   pane; build/smoke in WSL2 + WSLg here; measure cold start, idle RAM,
+   binary size; final ibus/fcitx5 IME acceptance on the user's Linux laptop;
+   append the outcome to ADR-0004.
+2. Perf budgets still open: cold start < 400 ms (≈396 ms measured), search
+   < 30 ms at 10k notes (not measured yet), RAM < 150 MB idle (≈120 MB
+   private measured; the working set is higher with WebView2).
 3. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
    bounded diff3 with visible conflict copies, recovery-key export, keychain
    unlock, N-device sync simulator in nightly CI. The primitives already exist
    in `writan-sync` (version vectors) and `writan-crypto` (Argon2id +
-   XChaCha20-Poly1305).
+   XChaCha20-Poly1305); the native Linux shell (M3.5, ADR-0004) follows.
 
 ## How to run & verify
 

@@ -1,6 +1,6 @@
 # Writan — implementation plan
 
-Status: M2.5 complete (2026-10-16) — preferences panel, rebindable shortcuts, custom logo, live-search polish. M2 desktop MVP first pass complete (commit 18264d6); M2 exit items still open (IME smoke, runtime perf budgets). M1 complete (commit 24c2654). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`.
+Status: M2.5 complete (2026-10-16); release build verified (exe 6.53 MB, ≈120 MB private idle RAM). Linux goes native: ADR-0004 (GTK4, no webview) — spike now, full shell is M3.5. M2 exit items still open (IME acceptance on the GTK4 shell, runtime perf budgets). M1 complete (commit 24c2654). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`.
 Living progress log: `docs/PROGRESS.md` · Agent guide: `AGENTS.md`.
 
 ## Milestones and exit criteria
@@ -9,20 +9,21 @@ Living progress log: `docs/PROGRESS.md` · Agent guide: `AGENTS.md`.
 |---|-------|---------------|
 | M0 | Bootstrap (0.5–1 wk) | Rust + MSVC toolchain on Windows; git repo; workspace (`writan-core/-crypto/-sync/-server` + `app/`); CI (fmt, clippy `-D warnings`, tests, cargo-deny) on Windows and Ubuntu; ADR-0001. |
 | M1 | Vault core (2–3 wk) | Vault open/create; note CRUD on Markdown files with frontmatter (`id`/`title`/`tags`); SQLite index + FTS5 (trigram for CJK) rebuildable from files; file watcher reconciles external edits; trash + pinning. |
-| M2 | Desktop MVP (3–4 wk) | Tauri app: three-pane UI (folders/tags, note list, editor); CodeMirror 6 live preview; search; themes; attachments; shortcuts + command palette; IME test on Windows/Linux passes. One-week Freya spike at the end decides if native-Skia UI is warranted. |
+| M2 | Desktop MVP (3–4 wk) | Tauri app: three-pane UI (folders/tags, note list, editor); CodeMirror 6 live preview; search; themes; attachments; shortcuts + command palette; IME test on Windows passes. Linux editor/IME acceptance moved to the GTK4 shell (ADR-0004, spike gate); the Freya spike is dropped in its favour. |
 | M2.5 | Preferences & polish (0.5–1 wk) | Settings panel (appearance / editor / view / shortcuts / search / general / advanced) reachable from the command palette and `Ctrl+,`; every option live-applies and persists in app-data `config.json` (ADR-0003); theme modes incl. follow-OS + accent + scale; editor font/size/line-height; rebindable global shortcuts with conflict detection; top-bar logo only; search filters while typing. |
 | M3 | Sync v1 + E2EE (2–3 wk) | Version vectors; encrypted blob upload/download to folder + S3 targets; bounded diff3 merge with visible conflict copies; recovery-key export; keychain unlock; N-device sync simulator green in nightly CI. |
+| M3.5 | Native Linux shell (1.5–3 wk) | `app-linux/` GTK4 + libadwaita + GtkSourceView (ADR-0004): three-pane UI, Markdown highlighting + rendered preview pane, command palette, settings (same app-data `config.json`), trash, attachments; parity checklist vs the Tauri shell green; Linux idle RAM < 100 MB measured; IME verified with ibus + fcitx5 on real hardware. |
 | M4 | noteserver (1–2 wk) | axum + SQLite server: email+password and QR pairing, blob API, SSE change events; Docker image; deploy doc for free tiers (Oracle Always Free caveat: idle reclaim — run companions or switch to PAYG). |
 | M5 | Android (2–3 wk) | Tauri Android build (NDK r27+), responsive layout, share-target capture, Keystore-backed unlock, opt-in 15-min WorkManager sync; APK attached to releases (F-Droid metadata later). |
-| M6 | Hardening & release (1–2 wk) | Perf budgets verified; MSI/.deb/AppImage/APK pipelines; desktop updater (not on Android); export/backup; LICENSE files; docs. |
+| M6 | Hardening & release (1–2 wk) | Perf budgets verified; MSI/.deb/Flatpak/AppImage/APK pipelines; desktop updater (not on Android); export/backup; LICENSE files; docs. |
 
-Total estimate: ≈13–19 weeks part-time (includes M2.5).
+Total estimate: ≈15–22 weeks part-time (includes M2.5 and the native Linux shell).
 
 ## Performance budgets
 
 - Cold start < 400 ms (desktop).
 - Search < 30 ms at 10 000 notes.
-- Desktop RAM < 150 MB idle.
+- Desktop RAM < 150 MB idle (Windows/webview); the native Linux shell < 100 MB idle.
 - No telemetry, ever.
 
 ## Sync model (summary)
@@ -39,7 +40,9 @@ Total estimate: ≈13–19 weeks part-time (includes M2.5).
 
 ## v1 scope / non-goals
 
-In: live-preview Markdown editing, folders + tags, FTS incl. CJK, themes
+In: Markdown editing (inline live preview on Windows/Android; Linux:
+syntax highlight + rendered preview pane, ADR-0004), folders + tags, FTS
+incl. CJK, themes
 (incl. follow-OS + accent), preferences panel (fonts, text size, rebindable
 shortcuts), attachments, command palette, pinning, trash, export/import,
 E2EE sync, Android share-target.
@@ -49,8 +52,11 @@ AI/OCR features, FCM push.
 
 ## Known risks
 
-- Linux WebKitGTK: contenteditable/IME bugs — validate in week 1 of M2;
-  fallbacks: pin webkit version, split edit/preview mode, Freya spike.
+- Native Linux shell (ADR-0004): dual-frontend parity drift — mitigate with
+  UI-thin shells (no logic outside core) + the parity checklist; GTK4 /
+  libadwaita / GtkSourceView as system dependencies (Flatpak covers other
+  distros); final IME acceptance needs real Linux hardware (user's laptop).
+  The old WebKitGTK risk is retired for Linux.
 - Android background limits: 15-min WorkManager floor is the realistic
   cadence; instant delivery would need FCM (out of scope).
 - Windows 10 LTSC: WebView2 must be present (already installed on the
