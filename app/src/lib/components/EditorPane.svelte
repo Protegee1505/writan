@@ -13,6 +13,7 @@
   import { markdown } from "@codemirror/lang-markdown";
   import { oneDark } from "@codemirror/theme-one-dark";
   import { livePreview } from "$lib/editor/markdown-live";
+  import { api } from "$lib/api";
   import { store } from "$lib/store.svelte";
 
   let host: HTMLDivElement | undefined = $state();
@@ -55,6 +56,15 @@
           EditorView.lineWrapping,
           markdown(),
           livePreview(),
+          EditorView.domEventHandlers({
+            paste: (event, view) => {
+              const files = Array.from(event.clipboardData?.files ?? []);
+              if (files.length === 0) return false;
+              event.preventDefault();
+              void attachFiles(files, view);
+              return true;
+            },
+          }),
           placeholder("Start writing…"),
           keymap.of([
             {
@@ -78,8 +88,13 @@
         ],
       }),
     });
+    const onInsert = (e: Event) => {
+      insertText((e as CustomEvent<string>).detail);
+    };
+    window.addEventListener("writan-insert", onInsert);
     lastId = store.note?.id ?? null;
     return () => {
+      window.removeEventListener("writan-insert", onInsert);
       view?.destroy();
       view = null;
     };
@@ -137,6 +152,41 @@
     const note = store.note;
     if (!note) return;
     void store.setTags(note.tags.filter((t) => t !== tag));
+  }
+
+  async function attachFiles(files: File[], view: EditorView) {
+    for (const file of files) {
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const rel = await api.saveAttachment(file.name || "pasted.png", Array.from(bytes));
+        insertSnippet(view, file.name || "attachment", file.type, rel);
+        store.notify(`Attached ${file.name || "image"}`);
+      } catch (e) {
+        store.error = String(e);
+      }
+    }
+  }
+
+  function insertSnippet(view: EditorView, name: string, mime: string, rel: string) {
+    const isImage =
+      mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i.test(name);
+    const alt = name.replace(/\.[^.]+$/, "") || "image";
+    const snippet = isImage ? `![${alt}](${rel})\n` : `[${name}](${rel})\n`;
+    insertTextAt(view, snippet);
+  }
+
+  function insertTextAt(view: EditorView, text: string) {
+    const pos = view.state.selection.main.from;
+    view.dispatch({
+      changes: { from: pos, insert: text },
+      selection: { anchor: pos + text.length },
+    });
+    view.focus();
+  }
+
+  function insertText(text: string) {
+    if (!view) return;
+    insertTextAt(view, text);
   }
 
   const saveLabel = $derived(

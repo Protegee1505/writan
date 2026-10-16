@@ -41,6 +41,8 @@ pub fn run() {
             commands::rebuild_index,
             commands::list_tags,
             commands::list_folders,
+            commands::save_attachment,
+            commands::import_attachment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

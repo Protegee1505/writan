@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, State};
 use uuid::Uuid;
@@ -378,4 +378,94 @@ pub fn list_folders(state: State<'_, AppState>) -> CmdResult<Vec<CountDto>> {
             .map(|(name, count)| CountDto { name, count })
             .collect())
     })
+}
+
+const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+
+/// Deterministic attachment file name: `<slug>-<hash8>.<ext>`.
+fn attachment_name(file_name: &str, bytes: &[u8]) -> String {
+    let path = Path::new(file_name);
+    let mut stem =
+        writan_core::vault::slugify(path.file_stem().and_then(|s| s.to_str()).unwrap_or("file"));
+    if stem.is_empty() {
+        stem = "file".to_string();
+    }
+    let ext: String = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let hash = blake3::hash(bytes);
+    let short = &hash.to_hex()[..8];
+    if ext.is_empty() {
+        format!("{stem}-{short}")
+    } else {
+        format!("{stem}-{short}.{ext}")
+    }
+}
+
+fn write_attachment(workspace: &Workspace, file_name: &str, bytes: &[u8]) -> CmdResult<String> {
+    if bytes.is_empty() {
+        return Err("attachment is empty".to_string());
+    }
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err("attachment is larger than 25 MB".to_string());
+    }
+    let name = attachment_name(file_name, bytes);
+    let dir = workspace.vault().root().join("attachments");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create attachments dir: {e}"))?;
+    let path = dir.join(&name);
+    if !path.exists() {
+        std::fs::write(&path, bytes).map_err(|e| format!("write attachment: {e}"))?;
+    }
+    Ok(format!("attachments/{name}"))
+}
+
+/// Store pasted/dropped bytes as a vault attachment; returns its vault-relative path.
+#[tauri::command]
+pub fn save_attachment(
+    state: State<'_, AppState>,
+    file_name: String,
+    bytes: Vec<u8>,
+) -> CmdResult<String> {
+    with_ws(&state, |workspace| {
+        write_attachment(workspace, &file_name, &bytes)
+    })
+}
+
+/// Copy a file from disk into the vault's attachments folder.
+#[tauri::command]
+pub fn import_attachment(state: State<'_, AppState>, source: String) -> CmdResult<String> {
+    with_ws(&state, |workspace| {
+        let data = std::fs::read(&source).map_err(|e| format!("read {source}: {e}"))?;
+        let name = Path::new(&source)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        write_attachment(workspace, &name, &data)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachment_names_are_slugged_and_hashed() {
+        let name = attachment_name("My Photo (1).PNG", b"hello");
+        assert!(name.starts_with("my-photo"), "{name}");
+        assert!(name.ends_with(".png"), "{name}");
+        let other = attachment_name("renamed.image.png", b"hello");
+        assert_eq!(
+            name.rsplit_once('-').map(|(_, r)| r.to_string()),
+            other.rsplit_once('-').map(|(_, r)| r.to_string()),
+        );
+        let no_ext = attachment_name("notes", b"x");
+        assert!(!no_ext.contains('.'), "{no_ext}");
+    }
 }

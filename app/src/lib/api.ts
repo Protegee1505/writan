@@ -85,4 +85,7 @@ export const api = {
   rebuild: () => invoke<ReconcileStats>("rebuild_index"),
   listTags: () => invoke<CountEntry[]>("list_tags"),
   listFolders: () => invoke<CountEntry[]>("list_folders"),
+  saveAttachment: (fileName: string, bytes: number[]) =>
+    invoke<string>("save_attachment", { fileName, bytes }),
+  importAttachment: (source: string) => invoke<string>("import_attachment", { source }),
 };

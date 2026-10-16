@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { api } from "$lib/api";
   import { store } from "$lib/store.svelte";
 
   let { open = $bindable(), onclose }: { open: boolean; onclose: () => void } = $props();
@@ -19,6 +21,25 @@
     if (store.status.vaultPath) {
       all.push({ id: "new", label: "New note", hint: "Ctrl+N", run: () => store.createNote() });
       all.push({ id: "save", label: "Save now", hint: "Ctrl+S", run: () => store.saveNow() });
+      all.push({
+        id: "attach",
+        label: "Attach file…",
+        hint: "Attachment",
+        run: async () => {
+          const path = await openDialog({ multiple: false, directory: false, title: "Attach file" });
+          if (typeof path !== "string") return;
+          try {
+            const rel = await api.importAttachment(path);
+            const name = path.split(/[\\/]/).pop() ?? "file";
+            window.dispatchEvent(
+              new CustomEvent("writan-insert", { detail: `[${name}](${rel})\n` }),
+            );
+            store.notify(`Attached ${name}`);
+          } catch (e) {
+            store.error = String(e);
+          }
+        },
+      });
     }
     all.push({
       id: "theme",

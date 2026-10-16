@@ -3,16 +3,16 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — M2: live preview, tags & folders, command palette landed; 56 tests green.
+Last updated: 2026-10-16 — M2: live preview, tags & folders, command palette, attachments landed; 57 tests green.
 
 ## Current state
 
 - Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete.**
-  M2 remaining: command palette, attachments, IME/Freya check (see Next
+  M2 remaining: IME/Freya check, runtime smoke test + perf budgets (see Next
   actions), then M3 (sync v1 + E2EE).
 - Verification at the last commit: `cargo fmt --check` clean, `cargo clippy
   --workspace --all-targets -- -D warnings` clean, `cargo test --workspace`
-  56 tests green, `svelte-check` 0 errors, frontend `npm run build` OK.
+  57 tests green, `svelte-check` 0 errors, frontend `npm run build` OK.
 - The app has not yet had a full manual smoke run in the Tauri window, and has
   not been tested on Linux or Android at all.
 
@@ -83,13 +83,22 @@ Last updated: 2026-10-16 — M2: live preview, tags & folders, command palette l
   Enter runs, Esc closes. Rebuilding the index reports stats in a toast.
 - Evidence: svelte-check clean (0 warnings); frontend build OK.
 
+### M2 — attachments (2026-10-16)
+- Paste an image/file into the editor, or use the palette's "Attach file…":
+  bytes are stored in `<vault>/attachments/<slug>-<hash8>.<ext>` (deduped by
+  content hash, 25 MB cap) and a relative Markdown link is inserted at the
+  cursor. Commands: `save_attachment` (bytes), `import_attachment` (path).
+- Evidence: 57 tests green (incl. an attachment-naming test in the app crate);
+  svelte-check clean; frontend build OK. OS drag & drop is not wired yet
+  (paste + file dialog only).
+
 ## Next actions
 
 M2 remaining (order is a suggestion, not a constraint):
-1. Attachments (paste/drag into `attachments/`, relative links) — planned M2
-   scope.
-2. IME smoke test on Windows and Linux; decide on the 1-week Freya spike
+1. IME smoke test on Windows and Linux; decide on the 1-week Freya spike
    (M2 exit item).
+2. Runtime smoke test & perf budget check on the dev box (cold start
+   < 400 ms, search < 30 ms at 10k notes, RAM < 150 MB).
 3. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
    bounded diff3 with visible conflict copies, recovery-key export, keychain
    unlock, N-device sync simulator in nightly CI. The primitives already exist
