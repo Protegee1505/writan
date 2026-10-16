@@ -321,11 +321,11 @@ fn build(application: &adw::Application) {
     let initial = std::env::var_os("WRITAN_VAULT")
         .map(PathBuf::from)
         .or_else(|| config::load_vault_path(&config_path));
-    if let Some(path) = initial {
-        if open_vault(&state, &path).is_ok() {
-            stack.set_visible_child_name("content");
-            refresh(&state, &ui, "");
-        }
+    if let Some(path) = initial
+        && open_vault(&state, &path).is_ok()
+    {
+        stack.set_visible_child_name("content");
+        refresh(&state, &ui, "");
     }
 
     // Spike measurement hooks: WRITAN_MEASURE=1 prints timings and exits.
