@@ -275,12 +275,12 @@ fn build(application: &adw::Application) {
 
     // Choose folder (header button and welcome page).
     {
-        let state = state.clone();
-        let ui = ui.clone();
-        open_button.connect_clicked(move |_| choose_folder(&state, &ui));
-        let state = state.clone();
-        let ui = ui.clone();
-        welcome_button.connect_clicked(move |_| choose_folder(&state, &ui));
+        let state_for_open = state.clone();
+        let ui_for_open = ui.clone();
+        let state_for_welcome = state.clone();
+        let ui_for_welcome = ui.clone();
+        open_button.connect_clicked(move |_| choose_folder(&state_for_open, &ui_for_open));
+        welcome_button.connect_clicked(move |_| choose_folder(&state_for_welcome, &ui_for_welcome));
     }
 
     // Save (Ctrl+S).
@@ -361,28 +361,25 @@ fn choose_folder(state: &Rc<RefCell<State>>, ui: &Ui) {
         .build();
     let state = state.clone();
     let ui = ui.clone();
-    dialog.select_folder(
-        Some(&ui.window),
-        gtk::gio::Cancellable::NONE,
-        move |result| {
-            let Ok(folder) = result else {
-                return;
-            };
-            let Some(path) = folder.path() else {
-                return;
-            };
-            match open_vault(&state, &path) {
-                Ok(()) => {
-                    ui.stack.set_visible_child_name("content");
-                    refresh(&state, &ui, "");
-                }
-                Err(error) => {
-                    ui.toast
-                        .add_toast(adw::Toast::new(&format!("Could not open vault: {error}")));
-                }
+    let parent = ui.window.clone();
+    dialog.select_folder(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
+        let Ok(folder) = result else {
+            return;
+        };
+        let Some(path) = folder.path() else {
+            return;
+        };
+        match open_vault(&state, &path) {
+            Ok(()) => {
+                ui.stack.set_visible_child_name("content");
+                refresh(&state, &ui, "");
             }
-        },
-    );
+            Err(error) => {
+                ui.toast
+                    .add_toast(adw::Toast::new(&format!("Could not open vault: {error}")));
+            }
+        }
+    });
 }
 
 fn open_vault(state: &Rc<RefCell<State>>, path: &Path) -> Result<(), String> {
@@ -470,6 +467,7 @@ fn save_current(state: &Rc<RefCell<State>>, ui: &Ui) -> bool {
         .text(&buffer.start_iter(), &buffer.end_iter(), false)
         .to_string();
     let mut st = state.borrow_mut();
+    let st: &mut State = &mut st;
     let (Some(workspace), Some(note)) = (st.workspace.as_mut(), st.current.as_mut()) else {
         return true;
     };
