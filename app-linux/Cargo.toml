@@ -20,6 +20,6 @@ pulldown-cmark.workspace = true
 # The GTK stack only exists below; on other targets this crate compiles as a
 # stub so `cargo clippy/test --workspace` stays green on Windows (ADR-0004).
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk4 = { workspace = true, features = ["v4_10"] }
-libadwaita = { workspace = true, features = ["v1_4"] }
+gtk = { workspace = true, features = ["v4_10"] }
+adw = { workspace = true, features = ["v1_4"] }
 sourceview5.workspace = true

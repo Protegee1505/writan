@@ -1,6 +1,6 @@
 # Writan — implementation plan
 
-Status: M2.5 complete (2026-10-16); release build verified (exe 6.53 MB, ≈120 MB private idle RAM). Linux goes native: ADR-0004 (GTK4, no webview) — spike now, full shell is M3.5. M2 exit items still open (IME acceptance on the GTK4 shell, runtime perf budgets). M1 complete (commit 24c2654). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`.
+Status: M2.5 complete (2026-10-16); release build verified (exe 6.53 MB, ≈120 MB private idle RAM). Linux goes native: ADR-0004 (GTK4, no webview) — spike now, full shell is M3.5. M2 exit items still open (IME acceptance on the GTK4 shell, runtime perf budgets). M1 complete (commit 24c2654). M0 complete (commit 0324dc5). Stack rationale: `docs/adr/0001-stack.md`. CI (`artifacts.yml`) publishes downloadable Windows installers + the Linux binary; workspace MSRV is Rust 1.90.
 Living progress log: `docs/PROGRESS.md` · Agent guide: `AGENTS.md`.
 
 ## Milestones and exit criteria

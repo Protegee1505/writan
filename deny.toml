@@ -1,5 +1,23 @@
 [advisories]
 version = 2
+# The entries below are unmaintained-crate flags (no known exploit) with no
+# fixed release available — everything else must stay clean. The fixable
+# `time` / `quick-xml` DoS advisories were resolved by raising MSRV to 1.90
+# and updating (see docs/PROGRESS.md, "CI & builds").
+ignore = [
+    # glib-macros 0.18 <- glib 0.18 (Tauri's Linux GTK3 chain)
+    "RUSTSEC-2024-0370",
+    # urlpattern 0.3 <- unic-* 0.9 (tauri-utils)
+    "RUSTSEC-2025-0075",
+    "RUSTSEC-2025-0080",
+    "RUSTSEC-2025-0081",
+    "RUSTSEC-2025-0098",
+    "RUSTSEC-2025-0100",
+    # unsafe-libyaml 0.2.11 <- serde_yaml_ng 0.10 (writan-core): archived
+    # upstream. Swap the YAML parser (saphyr / serde-saphyr) before M3 —
+    # see PROGRESS.md Next actions.
+    "RUSTSEC-2024-0449",
+]
 
 [licenses]
 version = 2

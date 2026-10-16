@@ -3,7 +3,7 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB, MSI 3.29 MB, setup 2.41 MB, ≈120 MB private idle RAM on Windows); Linux goes native via ADR-0004.
+Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB, MSI 3.29 MB, setup 2.41 MB, ≈120 MB private idle RAM on Windows); Linux goes native via ADR-0004; CI now builds downloadable artifacts (Windows installers, Linux binary + spike measure) and the workspace MSRV moved to 1.90.
 
 ## Current state
 
@@ -28,6 +28,18 @@ Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB
 - This dev box had been re-imaged without a Rust toolchain; on 2026-10-16 Rust
   1.99.1 (rustup) and VS 2022 Build Tools (MSVC 14.44.35207, Windows SDK
   10.0.26100) were installed here.
+- Workspace MSRV is now Rust 1.90 (was 1.85) so `cargo update` can take patched
+  dependencies: `time` 0.3.55 and (via `plist` 1.10.1) `quick-xml` 0.42.0 fixed
+  the three RustSec DoS advisories. `cargo-deny` advisories is green with
+  documented ignores in `deny.toml` for the unfixable unmaintained crates
+  (Tauri's `proc-macro-error` + the `unic-*` family, and `unsafe-libyaml`
+  behind `serde_yaml_ng` — parser swap planned, see Next actions).
+- CI: `.github/workflows/ci.yml` (fmt/clippy/tests on Windows + Ubuntu, deny)
+  doubles as the free Linux compiler for the GTK shell;
+  `.github/workflows/artifacts.yml` builds downloadable Windows installers and
+  the Linux binary + headless spike measurement (`workflow_dispatch` or a `v*`
+  tag). WSL2 was shelved — the cafe test box resets on reboot; Linux
+  measurements run in CI, interactive/IME acceptance on the user's laptop.
 - The app has not been tested on Linux or Android yet (the GTK4 spike is the
   first Linux work).
 
@@ -156,20 +168,50 @@ Last updated: 2026-10-16 — M2.5 landed and release build verified (exe 6.53 MB
   fails the build with `os error 32` / `os error 5`.
 - Evidence: `svelte-check` 0/0, vite build OK, `tauri build` exit 0.
 
+### M3.5 — GTK4 spike scaffold + CI builds (2026-10-16)
+- `app-linux/` scaffold committed (`bd556ae`): libadwaita three-pane shell,
+  GtkSourceView Markdown editor, rendered preview pane, XDG config reuse,
+  `WRITAN_MEASURE=1` harness (prints cold start + idle RSS, then quits);
+  10 unit tests (`spans` parser + `config`).
+- The first real Linux compile (ubuntu CI) caught the crate aliases: gtk4 and
+  libadwaita export library names `gtk4` / `libadwaita`. The workspace now
+  renames them to the in-code names (`gtk = { package = "gtk4", … }`,
+  `adw = { package = "libadwaita", … }`), so `app-linux` code reads
+  `gtk::` / `adw::` like the ecosystem examples.
+- MSRV 1.90 + `cargo update -p time -p plist -p quick-xml`: three RustSec
+  advisories resolved (time 0.3.55, plist 1.10.1, quick-xml 0.42.0);
+  `deny.toml` carries documented ignores for the unfixable unmaintained
+  crates (`proc-macro-error`, `unic-*`, `unsafe-libyaml` — the last one via a
+  planned YAML-parser swap).
+- Two `collapsible_if` clippy nits in `writan-core` (`index.rs`, `vault.rs`)
+  collapsed into let-chains (edition 2024).
+- `.github/workflows/artifacts.yml`: `windows` job (portable exe + MSI + NSIS
+  setup) and `linux` job (release binary + `measure.txt` from an xvfb run);
+  Android parked for M5 (needs `tauri android init` + SDK/NDK first).
+- Evidence: 69 tests green on Windows; the ubuntu job iterated to green after
+  the alias fix (see the Actions history for this commit range).
+
 ## Next actions
 
 Next (order is a suggestion, not a constraint):
-1. GTK4 spike (ADR-0004): minimal `app-linux/` opens a real vault through
-   `writan-core` — libadwaita three-pane, GtkSourceView editing, preview
-   pane; build/smoke in WSL2 + WSLg here; measure cold start, idle RAM,
-   binary size; final ibus/fcitx5 IME acceptance on the user's Linux laptop;
-   append the outcome to ADR-0004. Scaffold is written and green on Windows
-   (`app-linux` stub + `spans`/`config` unit tests; 10 tests) — first Linux
-   compile happens in WSL2 next (the WSL feature needs one reboot).
+1. GTK4 spike (ADR-0004): the scaffold (`app-linux/`) is committed and green
+   on Windows (10 unit tests). The ubuntu CI job is now the Linux compiler —
+   iterate it until green (expect small GTK API nits in
+   `app-linux/src/app.rs`), then run the `artifacts` workflow and read
+   `measure.txt` (cold start, idle RSS) + the binary size; append the outcome
+   to ADR-0004. Interactive / IME acceptance (ibus + fcitx5) happens on the
+   user's Linux laptop.
+   Android (M5): run `npm --prefix app run tauri -- android init` with JDK 17
+   + Android SDK/NDK, commit `app/src-tauri/gen/android`, then add an
+   `android` job to `artifacts.yml` (debug APK upload).
 2. Perf budgets still open: cold start < 400 ms (≈396 ms measured), search
    < 30 ms at 10k notes (not measured yet), RAM < 150 MB idle (≈120 MB
    private measured; the working set is higher with WebView2).
-3. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
+3. YAML parser swap: `serde_yaml_ng` pulls the archived `unsafe-libyaml`
+   (deny ignore RUSTSEC-2024-0449). Replace it with a maintained parser
+   (`serde-saphyr` on `saphyr`) and update ADR-0002 before M3; the frontmatter
+   round-trip tests in `writan-core` are the safety net.
+4. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
    bounded diff3 with visible conflict copies, recovery-key export, keychain
    unlock, N-device sync simulator in nightly CI. The primitives already exist
    in `writan-sync` (version vectors) and `writan-crypto` (Argon2id +
@@ -188,7 +230,28 @@ npm --prefix app install
 npm --prefix app run check     # svelte-check
 npm --prefix app run build
 npm --prefix app run tauri dev # opens the app window (first compile is slow)
+
+# release installers (Windows) / Linux GTK shell (Linux only)
+npm --prefix app run tauri build
+cargo build --release -p writan-linux
 ```
+
+## CI & builds
+
+- `.github/workflows/ci.yml` (every push): `fmt` / `clippy -D warnings` /
+  `test` on windows-latest + ubuntu-latest, plus `cargo-deny` (licenses, bans,
+  advisories). The ubuntu job is the free Linux compiler for the GTK shell.
+- `.github/workflows/artifacts.yml` (Actions tab → "Run workflow", or push a
+  `v*` tag): publishes downloadable artifacts — `writan-windows-x64`
+  (portable exe, MSI, NSIS setup) and `writan-linux-x64` (release binary +
+  `measure.txt` with cold-start and idle-RSS numbers, captured headless under
+  xvfb). Download with
+  `gh run download -R Protegee1505/writan -n writan-windows-x64` (artifact
+  names as above); artifacts are kept for 90 days.
+- Fresh machine (the cafe test box resets on reboot): the durable workspace is
+  the repo + CI. Push edits and let CI build/verify; install Rust + Node
+  locally only for interactive `tauri dev`.
+- Android is parked for M5 — exact init steps under Next actions.
 
 ## Environment notes (reference dev machine)
 

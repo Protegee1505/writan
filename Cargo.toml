@@ -13,7 +13,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.90"
 authors = ["Protegee1505 <118532261+Protegee1505@users.noreply.github.com>"]
 repository = "https://github.com/Protegee1505/writan"
 
@@ -28,8 +28,10 @@ argon2 = "0.6"
 axum = "0.8"
 blake3 = "1.8"
 chacha20poly1305 = "0.11"
-gtk4 = "0.9"
-libadwaita = "0.7"
+# The gtk-rs crates are renamed to their in-code names here (the crates'
+# library names are `gtk4` / `libadwaita`; ecosystem code says `gtk::`/`adw::`).
+gtk = { package = "gtk4", version = "0.9" }
+adw = { package = "libadwaita", version = "0.7" }
 sourceview5 = "0.9"
 pulldown-cmark = "0.13"
 notify = "8.2"

@@ -162,11 +162,11 @@ impl Index {
                 |row| row.get(0),
             )
             .optional()?;
-        if let Some(other) = existing {
-            if other != id {
-                tx.execute("DELETE FROM notes WHERE id = ?1", [&other])?;
-                tx.execute("DELETE FROM notes_fts WHERE id = ?1", [&other])?;
-            }
+        if let Some(other) = existing
+            && other != id
+        {
+            tx.execute("DELETE FROM notes WHERE id = ?1", [&other])?;
+            tx.execute("DELETE FROM notes_fts WHERE id = ?1", [&other])?;
         }
 
         tx.execute(

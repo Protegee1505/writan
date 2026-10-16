@@ -146,10 +146,11 @@ impl Vault {
             let file_type = entry.file_type().map_err(|e| io_err(&path, e))?;
             if file_type.is_dir() {
                 self.walk_dir(&path, out)?;
-            } else if file_type.is_file() && is_markdown(name) {
-                if let Some(rel) = self.rel_path(&path) {
-                    out.push(rel);
-                }
+            } else if file_type.is_file()
+                && is_markdown(name)
+                && let Some(rel) = self.rel_path(&path)
+            {
+                out.push(rel);
             }
         }
         Ok(())

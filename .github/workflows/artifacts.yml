@@ -1,0 +1,78 @@
+# Downloadable builds: run this from the Actions tab ("Run workflow") or push
+# a v* tag. All artifacts stay downloadable for 90 days (Actions run page, or
+# `gh run download -R Protegee1505/writan`).
+#
+# - windows: Writan .msi + NSIS setup + portable writan-app.exe
+# - linux:   release GTK shell binary + headless spike measurement
+#            (WRITAN_MEASURE prints cold start + idle RSS under xvfb)
+#
+# Android is parked for milestone M5: it first needs
+# `npm --prefix app run tauri -- android init` (JDK 17 + Android SDK/NDK)
+# and `app/src-tauri/gen/android` committed, then an `android` job here that
+# builds a debug APK and uploads it like the other two.
+name: artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-bundle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix app
+      - name: Build installers
+        run: npm --prefix app run tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: writan-windows-x64
+          if-no-files-found: error
+          path: |
+            target/release/writan-app.exe
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+
+  linux:
+    name: Linux binary + spike measure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux system dependencies (GTK shell)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev xvfb
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-bundle
+      - name: Build release binary
+        run: cargo build --release -p writan-linux
+      - name: Headless spike measurement (software rendering)
+        run: |
+          xvfb-run -a env GSK_RENDERER=cairo WRITAN_MEASURE=1 ./target/release/writan | tee measure.txt
+      - name: Show measurements
+        run: grep -E "writan-measure" measure.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: writan-linux-x64
+          if-no-files-found: error
+          path: |
+            target/release/writan
+            measure.txt
