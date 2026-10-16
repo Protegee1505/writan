@@ -9,6 +9,9 @@ use writan_core::Workspace;
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AppConfig {
     pub vault_path: Option<PathBuf>,
+    /// UI preferences: opaque JSON owned by the frontend settings registry.
+    #[serde(default)]
+    pub settings: serde_json::Value,
 }
 
 #[derive(Default)]
@@ -84,9 +87,84 @@ impl AppState {
         Ok(())
     }
 
-    fn save_config(&self, inner: &Inner) {
-        if let Ok(json) = serde_json::to_string_pretty(&inner.config) {
-            let _ = fs::write(&self.config_path, json);
+    /// The persisted UI preferences (`{}` when nothing was saved yet).
+    pub fn settings(&self) -> serde_json::Value {
+        match self.inner.lock() {
+            Ok(inner) => {
+                if inner.config.settings.is_null() {
+                    serde_json::json!({})
+                } else {
+                    inner.config.settings.clone()
+                }
+            }
+            Err(_) => serde_json::json!({}),
         }
+    }
+
+    /// Replace the UI preferences. Must be a JSON object, size-capped.
+    pub fn save_settings(&self, value: serde_json::Value) -> Result<(), String> {
+        if !value.is_object() {
+            return Err("settings must be a JSON object".to_string());
+        }
+        if value.to_string().len() > 256 * 1024 {
+            return Err("settings payload too large".to_string());
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        inner.config.settings = value;
+        self.save_config(&inner);
+        Ok(())
+    }
+
+    fn save_config(&self, inner: &Inner) {
+        let Ok(json) = serde_json::to_string_pretty(&inner.config) else {
+            return;
+        };
+        let _ = fs::create_dir_all(&self.state_dir);
+        // Write a temp file first so a crash mid-write cannot corrupt config.json.
+        let tmp = self.config_path.with_extension("json.tmp");
+        if fs::write(&tmp, json).is_ok() {
+            let _ = fs::rename(&tmp, &self.config_path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_state() -> (AppState, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("writan-state-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (AppState::new(dir.clone()), dir)
+    }
+
+    #[test]
+    fn settings_roundtrip_and_defaults() {
+        let (state, dir) = temp_state();
+        assert_eq!(state.settings(), serde_json::json!({}));
+        let value = serde_json::json!({
+            "appearance": { "theme": "system", "accent": "indigo" },
+            "shortcuts": { "command-palette": "Ctrl+P" },
+        });
+        state.save_settings(value.clone()).unwrap();
+        assert_eq!(state.settings(), value);
+        let reloaded = AppState::new(dir.clone());
+        reloaded.load_config();
+        assert_eq!(reloaded.settings(), value);
+        assert!(state.save_settings(serde_json::json!(5)).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_without_settings_key_still_loads() {
+        let (state, dir) = temp_state();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{ "vault_path": null }"#).unwrap();
+        state.load_config();
+        assert_eq!(state.settings(), serde_json::json!({}));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -15,6 +15,8 @@
   import { livePreview } from "$lib/editor/markdown-live";
   import { api } from "$lib/api";
   import { store } from "$lib/store.svelte";
+  import { settings } from "$lib/settings.svelte";
+  import { effectiveBinding, toCodeMirrorBinding } from "$lib/keymap";
 
   let host: HTMLDivElement | undefined = $state();
   let view: EditorView | null = null;
@@ -23,12 +25,21 @@
   let titleDraft = $state("");
   let lastTitleId: string | null = null;
   let tagDraft = $state("");
+  let deleteArmed = $state(false);
+  let deleteTimer: ReturnType<typeof setTimeout> | null = null;
 
   const themeComp = new Compartment();
+  const wrapComp = new Compartment();
+  const previewComp = new Compartment();
+  const saveKeyComp = new Compartment();
 
   const baseTheme = EditorView.theme({
     "&": { height: "100%", backgroundColor: "var(--bg-elevated)", color: "var(--fg)" },
-    ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "14.5px", lineHeight: "1.7" },
+    ".cm-scroller": {
+      fontFamily: "var(--editor-font)",
+      fontSize: "var(--editor-font-size)",
+      lineHeight: "var(--editor-line-height)",
+    },
     ".cm-content": { padding: "22px 0", caretColor: "var(--accent)" },
     ".cm-line": { padding: "0 28px" },
     "&.cm-focused": { outline: "none" },
@@ -39,7 +50,23 @@
   });
 
   function currentTheme() {
-    return store.theme === "dark" ? oneDark : [];
+    return settings.dark ? oneDark : [];
+  }
+
+  /** CodeMirror save binding follows the rebindable "Save note" action. */
+  function saveKeymap(binding: string | null) {
+    const key = toCodeMirrorBinding(binding);
+    if (!key) return [];
+    return keymap.of([
+      {
+        key,
+        preventDefault: true,
+        run: () => {
+          void store.saveNow();
+          return true;
+        },
+      },
+    ]);
   }
 
   onMount(() => {
@@ -53,9 +80,9 @@
           drawSelection(),
           highlightActiveLine(),
           highlightSpecialChars(),
-          EditorView.lineWrapping,
+          wrapComp.of(settings.value.editor.wrap ? EditorView.lineWrapping : []),
           markdown(),
-          livePreview(),
+          previewComp.of(settings.value.editor.livePreview ? livePreview() : []),
           EditorView.domEventHandlers({
             paste: (event, view) => {
               const files = Array.from(event.clipboardData?.files ?? []);
@@ -66,19 +93,8 @@
             },
           }),
           placeholder("Start writing…"),
-          keymap.of([
-            {
-              key: "Mod-s",
-              preventDefault: true,
-              run: () => {
-                void store.saveNow();
-                return true;
-              },
-            },
-            ...defaultKeymap,
-            ...historyKeymap,
-            indentWithTab,
-          ]),
+          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          saveKeyComp.of(saveKeymap(effectiveBinding("save-note"))),
           baseTheme,
           themeComp.of(currentTheme()),
           EditorView.updateListener.of((update) => {
@@ -116,8 +132,24 @@
   });
 
   $effect(() => {
-    const dark = store.theme === "dark";
+    const dark = settings.dark;
     if (view) view.dispatch({ effects: themeComp.reconfigure(dark ? oneDark : []) });
+  });
+
+  $effect(() => {
+    const wrap = settings.value.editor.wrap;
+    if (view) view.dispatch({ effects: wrapComp.reconfigure(wrap ? EditorView.lineWrapping : []) });
+  });
+
+  $effect(() => {
+    const on = settings.value.editor.livePreview;
+    if (view) view.dispatch({ effects: previewComp.reconfigure(on ? livePreview() : []) });
+  });
+
+  $effect(() => {
+    const binding = effectiveBinding("save-note");
+    const extension = saveKeymap(binding);
+    if (view) view.dispatch({ effects: saveKeyComp.reconfigure(extension) });
   });
 
   $effect(() => {
@@ -126,6 +158,7 @@
       lastTitleId = id;
       titleDraft = store.note?.title ?? "";
       tagDraft = "";
+      deleteArmed = false;
     }
   });
 
@@ -152,6 +185,21 @@
     const note = store.note;
     if (!note) return;
     void store.setTags(note.tags.filter((t) => t !== tag));
+  }
+
+  function deleteNote() {
+    if (!settings.value.general.confirmDelete) {
+      void store.removeNote();
+      return;
+    }
+    if (deleteTimer) clearTimeout(deleteTimer);
+    if (!deleteArmed) {
+      deleteArmed = true;
+      deleteTimer = setTimeout(() => (deleteArmed = false), 3000);
+      return;
+    }
+    deleteArmed = false;
+    void store.removeNote();
   }
 
   async function attachFiles(files: File[], view: EditorView) {
@@ -189,6 +237,8 @@
     insertTextAt(view, text);
   }
 
+  const newNoteHint = $derived(effectiveBinding("new-note") ?? "Ctrl+N");
+
   const saveLabel = $derived(
     store.saveState === "saving"
       ? "Saving…"
@@ -217,7 +267,9 @@
     />
     <div class="meta">
       {#if store.note}
-        <span class="muted">{store.wordCount} words</span>
+        {#if settings.value.view.showWordCount}
+          <span class="muted">{store.wordCount} words</span>
+        {/if}
         <span class="muted save" class:error={store.saveState === "error"}>{saveLabel}</span>
         <button
           class="pinBtn"
@@ -227,8 +279,13 @@
         >
           {store.note.pinned ? "Pinned" : "Pin"}
         </button>
-        <button class="danger" onclick={() => store.removeNote()} title="Move to trash">
-          Delete
+        <button
+          class="danger"
+          class:armed={deleteArmed}
+          onclick={deleteNote}
+          title={settings.value.general.confirmDelete ? "Click again to confirm" : "Move to trash"}
+        >
+          {deleteArmed ? "Confirm delete" : "Delete"}
         </button>
       {/if}
     </div>
@@ -261,7 +318,7 @@
     <div class="cmHost" bind:this={host}></div>
     {#if !store.note}
       <div class="overlay">
-        <p>Select a note on the left — or press <kbd>Ctrl</kbd>+<kbd>N</kbd> for a new one.</p>
+        <p>Select a note on the left — or press <kbd>{newNoteHint}</kbd> for a new one.</p>
       </div>
     {/if}
   </div>
@@ -331,6 +388,11 @@
 
   .danger {
     color: var(--danger);
+  }
+
+  .danger.armed {
+    background: var(--danger);
+    color: #fff;
   }
 
   .tagRow {

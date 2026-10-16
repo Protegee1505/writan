@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Hit, Summary } from "$lib/api";
-  import { fmtDate } from "$lib/format";
+  import { fmtDate, highlightParts } from "$lib/format";
+  import { settings } from "$lib/settings.svelte";
   import { store } from "$lib/store.svelte";
 
   const items = $derived(store.visible);
@@ -10,7 +11,7 @@
   }
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" class:compact={settings.value.view.listDensity === "compact"}>
   {#if store.tags.length || store.folders.length || store.filtered}
     <div class="filters">
       {#if store.filtered}
@@ -58,10 +59,15 @@
   {/if}
 
   <div class="listHead">
-    {#if store.hits !== null}
-      Results ({store.hits.length})
-    {:else}
-      Notes ({store.notes.length})
+    <span>
+      {#if store.hits !== null}
+        Results ({store.hits.length})
+      {:else}
+        Notes ({store.notes.length})
+      {/if}
+    </span>
+    {#if store.searching}
+      <span class="searching">Searching…</span>
     {/if}
   </div>
 
@@ -74,13 +80,21 @@
       >
         <span class="titleRow">
           {#if item.pinned}<span class="pin">●</span>{/if}
-          <span class="title">{item.title || "Untitled"}</span>
+          <span class="title">
+            {#if !isSummary(item) && store.query.trim()}
+              {#each highlightParts(item.title || "Untitled", store.query) as part, i (i)}{#if part.hit}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}
+            {:else}
+              {item.title || "Untitled"}
+            {/if}
+          </span>
         </span>
         {#if !isSummary(item) && item.snippet}
-          <span class="snippet">{item.snippet}</span>
+          <span class="snippet">
+            {#each highlightParts(item.snippet, store.query) as part, i (i)}{#if part.hit}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}
+          </span>
         {/if}
         <span class="meta">
-          {#if isSummary(item) && item.updated}{fmtDate(item.updated)}{/if}
+          {#if isSummary(item) && item.updated}{fmtDate(item.updated, settings.value.view.dateFormat)}{/if}
           {#if item.tags.length}
             {#if isSummary(item) && item.updated} · {/if}{item.tags.join(", ")}
           {/if}
@@ -163,6 +177,10 @@
   }
 
   .listHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     padding: 10px 14px 6px;
     font-size: 11.5px;
     font-weight: 600;
@@ -171,6 +189,13 @@
     color: var(--fg-muted);
     -webkit-user-select: none;
     user-select: none;
+  }
+
+  .searching {
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: var(--accent);
   }
 
   .list {
@@ -234,6 +259,27 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  mark {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+
+  .compact .item {
+    padding: 5px 9px;
+    gap: 2px;
+  }
+
+  .compact .snippet {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+
+  .compact .meta {
+    font-size: 11px;
   }
 
   .empty {

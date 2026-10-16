@@ -2,8 +2,18 @@
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { api } from "$lib/api";
   import { store } from "$lib/store.svelte";
+  import { settings, searchSettings, SECTIONS } from "$lib/settings.svelte";
+  import { effectiveBinding, type ActionId } from "$lib/keymap";
 
-  let { open = $bindable(), onclose }: { open: boolean; onclose: () => void } = $props();
+  let { open = $bindable(), onclose, onsettings }: {
+    open: boolean;
+    onclose: () => void;
+    onsettings: (path: string | null) => void;
+  } = $props();
+
+  function keyHint(id: ActionId): string {
+    return effectiveBinding(id) ?? "";
+  }
 
   let query = $state("");
   let active = $state(0);
@@ -19,8 +29,8 @@
   const items = $derived.by(() => {
     const all: Item[] = [];
     if (store.status.vaultPath) {
-      all.push({ id: "new", label: "New note", hint: "Ctrl+N", run: () => store.createNote() });
-      all.push({ id: "save", label: "Save now", hint: "Ctrl+S", run: () => store.saveNow() });
+      all.push({ id: "new", label: "New note", hint: keyHint("new-note"), run: () => store.createNote() });
+      all.push({ id: "save", label: "Save now", hint: keyHint("save-note"), run: () => store.saveNow() });
       all.push({
         id: "attach",
         label: "Attach file…",
@@ -43,9 +53,15 @@
     }
     all.push({
       id: "theme",
-      label: store.theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
-      hint: "Theme",
+      label: settings.dark ? "Switch to light theme" : "Switch to dark theme",
+      hint: keyHint("toggle-theme") || "Theme",
       run: () => store.toggleTheme(),
+    });
+    all.push({
+      id: "settings",
+      label: "Open settings…",
+      hint: keyHint("open-settings"),
+      run: () => onsettings(null),
     });
     if (store.status.vaultPath) {
       all.push({
@@ -79,7 +95,16 @@
     }
     const q = query.trim().toLowerCase();
     if (!q) return all;
-    return all.filter((item) => item.label.toLowerCase().includes(q));
+    const filtered = all.filter((item) => item.label.toLowerCase().includes(q));
+    for (const spec of searchSettings(q)) {
+      filtered.push({
+        id: `setting-${spec.path}`,
+        label: `Settings: ${spec.label}`,
+        hint: SECTIONS.find((s) => s.id === spec.section)?.label ?? "Setting",
+        run: () => onsettings(spec.path),
+      });
+    }
+    return filtered;
   });
 
   $effect(() => {

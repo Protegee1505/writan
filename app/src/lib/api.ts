@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 export interface Status {
   vaultPath: string | null;
   noteCount: number;
+  dataDir: string;
 }
 
 export interface Summary {
@@ -62,6 +63,9 @@ export interface SearchFilters {
 
 export const api = {
   status: () => invoke<Status>("get_status"),
+  getSettings: () => invoke<Record<string, unknown>>("get_settings"),
+  saveSettings: (settings: Record<string, unknown>) =>
+    invoke<void>("save_settings", { settings }),
   openVault: (path: string) => invoke<Status>("open_vault", { path }),
   list: (limit?: number) => invoke<Summary[]>("list_notes", { limit }),
   search: (filters: SearchFilters = {}) =>

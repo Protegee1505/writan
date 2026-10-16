@@ -32,6 +32,7 @@ fn with_ws<T>(
 pub struct StatusDto {
     pub vault_path: Option<String>,
     pub note_count: usize,
+    pub data_dir: String,
 }
 
 #[derive(serde::Serialize)]
@@ -119,10 +120,12 @@ pub fn get_status(state: State<'_, AppState>) -> CmdResult<StatusDto> {
                 .as_ref()
                 .map(|p| p.display().to_string()),
             note_count: workspace.index().count().map_err(|e| e.to_string())? as usize,
+            data_dir: state.state_dir.display().to_string(),
         }),
         None => Ok(StatusDto {
             vault_path: None,
             note_count: 0,
+            data_dir: state.state_dir.display().to_string(),
         }),
     }
 }
@@ -449,6 +452,18 @@ pub fn import_attachment(state: State<'_, AppState>, source: String) -> CmdResul
             .to_string();
         write_attachment(workspace, &name, &data)
     })
+}
+
+/// The persisted UI preferences (opaque JSON owned by the frontend registry).
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
+    Ok(state.settings())
+}
+
+/// Replace the UI preferences; validated as a size-capped JSON object.
+#[tauri::command]
+pub fn save_settings(state: State<'_, AppState>, settings: serde_json::Value) -> CmdResult<()> {
+    state.save_settings(settings)
 }
 
 #[cfg(test)]

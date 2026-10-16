@@ -2,14 +2,19 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { store } from "$lib/store.svelte";
+  import { matchesAction } from "$lib/keymap";
   import TopBar from "$lib/components/TopBar.svelte";
   import NoteList from "$lib/components/NoteList.svelte";
   import EditorPane from "$lib/components/EditorPane.svelte";
   import TrashPanel from "$lib/components/TrashPanel.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
+  import SettingsPanel from "$lib/components/SettingsPanel.svelte";
+  import Logo from "$lib/components/Logo.svelte";
 
   let unlisten: (() => void) | null = null;
   let paletteOpen = $state(false);
+  let settingsOpen = $state(false);
+  let settingsFocus = $state<string | null>(null);
 
   onMount(() => {
     void (async () => {
@@ -24,20 +29,35 @@
     };
   });
 
+  function openSettings(path: string | null = null) {
+    settingsFocus = path;
+    settingsOpen = true;
+  }
+
   function onKey(e: KeyboardEvent) {
-    const mod = e.ctrlKey || e.metaKey;
-    if (!mod) return;
-    if (e.key === "p" || e.key === "k") {
+    if (matchesAction(e, "command-palette")) {
       e.preventDefault();
       paletteOpen = true;
-    } else if (e.key === "n" && store.status.vaultPath) {
+    } else if (matchesAction(e, "new-note") && store.status.vaultPath) {
       e.preventDefault();
       void store.createNote();
-    } else if (e.key === "f") {
+    } else if (matchesAction(e, "focus-search")) {
       e.preventDefault();
       (document.getElementById("writan-search") as HTMLInputElement | null)?.focus();
-    } else if (e.key === "s") {
+    } else if (matchesAction(e, "save-note")) {
       void store.saveNow();
+    } else if (matchesAction(e, "open-settings")) {
+      e.preventDefault();
+      openSettings(null);
+    } else if (matchesAction(e, "toggle-theme")) {
+      e.preventDefault();
+      store.toggleTheme();
+    } else if (matchesAction(e, "toggle-trash")) {
+      e.preventDefault();
+      void store.toggleTrash();
+    } else if (matchesAction(e, "pin-note")) {
+      e.preventDefault();
+      void store.togglePin();
     }
   }
 </script>
@@ -45,10 +65,14 @@
 <svelte:window onkeydown={onKey} />
 
 {#if !store.ready}
-  <div class="splash">Writan</div>
+  <div class="splash">
+    <Logo size={40} />
+    <span>Writan</span>
+  </div>
 {:else if store.status.vaultPath === null}
   <main class="welcome">
     <div class="card">
+      <Logo size={44} />
       <h1>Writan</h1>
       <p class="tagline">A fast, local-first notebook. Your notes are plain Markdown files in a folder you own.</p>
       <button class="cta" onclick={() => store.chooseVault()}>Choose notes folder</button>
@@ -57,7 +81,7 @@
   </main>
 {:else}
   <div class="app">
-    <TopBar />
+    <TopBar onsettings={() => openSettings(null)} />
     <div class="main">
       <NoteList />
       <EditorPane />
@@ -65,7 +89,12 @@
     {#if store.trashOpen}
       <TrashPanel />
     {/if}
-    <CommandPalette bind:open={paletteOpen} onclose={() => (paletteOpen = false)} />
+    <CommandPalette
+      bind:open={paletteOpen}
+      onclose={() => (paletteOpen = false)}
+      onsettings={openSettings}
+    />
+    <SettingsPanel bind:open={settingsOpen} focusPath={settingsFocus} />
     {#if store.notice}
       <div class="toast notice">
         <span>{store.notice}</span>
@@ -85,8 +114,10 @@
   .splash {
     height: 100vh;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 14px;
     color: var(--fg-muted);
     font-weight: 650;
     letter-spacing: 0.04em;
@@ -111,7 +142,7 @@
   }
 
   h1 {
-    margin: 0 0 10px;
+    margin: 14px 0 10px;
     font-size: 26px;
     color: var(--accent);
     letter-spacing: 0.01em;

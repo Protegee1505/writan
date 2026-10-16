@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <title>Writan</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6d7fe8" />
+      <stop offset="1" stop-color="#4956c6" />
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="24" fill="url(#bg)" />
+  <path
+    d="M4.6 6.4 L 8.3 17.6 L 12 9.8 L 15.7 17.6 L 19.4 6.4"
+    transform="translate(12 12) scale(3)"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="2.45"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

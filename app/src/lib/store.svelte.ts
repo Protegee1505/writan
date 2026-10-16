@@ -1,10 +1,12 @@
 import { api, type CountEntry, type Hit, type Note, type Status, type Summary, type TrashEntry } from "./api";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { settings } from "./settings.svelte";
 
 export type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 class AppStore {
   ready = $state(false);
-  status = $state<Status>({ vaultPath: null, noteCount: 0 });
+  status = $state<Status>({ vaultPath: null, noteCount: 0, dataDir: "" });
   notes = $state<Summary[]>([]);
   hits = $state<Hit[] | null>(null);
   query = $state("");
@@ -13,7 +15,7 @@ class AppStore {
   saveState = $state<SaveState>("idle");
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
-  theme = $state<"light" | "dark">("light");
+  searching = $state(false);
   trash = $state<TrashEntry[]>([]);
   trashOpen = $state(false);
   tags = $state<CountEntry[]>([]);
@@ -25,6 +27,7 @@ class AppStore {
   saveTimer: ReturnType<typeof setTimeout> | null = null;
   searchTimer: ReturnType<typeof setTimeout> | null = null;
   noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  searchSeq = 0;
 
   get visible(): (Summary | Hit)[] {
     return this.hits ?? this.notes;
@@ -39,18 +42,18 @@ class AppStore {
     return this.tagFilter !== null || this.folderFilter !== null;
   }
 
+  get theme(): "light" | "dark" {
+    return settings.dark ? "dark" : "light";
+  }
+
   async init() {
-    const stored = localStorage.getItem("writan-theme");
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    this.theme = stored === "light" || stored === "dark" ? stored : prefersDark ? "dark" : "light";
-    this.applyTheme();
+    await settings.init();
     try {
       this.status = await api.status();
       if (this.status.vaultPath) {
         await this.refresh();
         await this.loadFacets();
-        const first = this.notes[0];
-        if (first) await this.select(first.id);
+        await this.reopenOrSelectFirst();
       }
     } catch (e) {
       this.error = String(e);
@@ -59,21 +62,22 @@ class AppStore {
     }
   }
 
-  applyTheme() {
-    if (typeof document !== "undefined") {
-      document.documentElement.dataset.theme = this.theme;
+  private async reopenOrSelectFirst() {
+    const last = settings.value.general.reopenLastNote ? settings.lastNoteId : null;
+    if (last) {
+      await this.select(last);
+      if (this.note) return;
     }
-    localStorage.setItem("writan-theme", this.theme);
+    const first = this.notes[0];
+    if (first) await this.select(first.id);
   }
 
   toggleTheme() {
-    this.theme = this.theme === "dark" ? "light" : "dark";
-    this.applyTheme();
+    settings.set("appearance.theme", settings.dark ? "light" : "dark");
   }
 
   async chooseVault() {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const path = await open({ directory: true, title: "Choose your notes folder" });
+    const path = await openDialog({ directory: true, title: "Choose your notes folder" });
     if (typeof path !== "string") return;
     try {
       this.status = await api.openVault(path);
@@ -91,20 +95,29 @@ class AppStore {
   }
 
   async refresh() {
+    const seq = ++this.searchSeq;
+    const filtering = Boolean(this.query.trim() || this.tagFilter || this.folderFilter);
+    if (filtering) this.searching = true;
     try {
-      if (this.query.trim() || this.tagFilter || this.folderFilter) {
-        this.hits = await api.search({
+      if (filtering) {
+        const hits = await api.search({
           text: this.query,
           tags: this.tagFilter ? [this.tagFilter] : [],
           folder: this.folderFilter,
           limit: 500,
         });
+        if (seq !== this.searchSeq) return;
+        this.hits = hits;
       } else {
+        const notes = await api.list();
+        if (seq !== this.searchSeq) return;
         this.hits = null;
-        this.notes = await api.list();
+        this.notes = notes;
       }
     } catch (e) {
-      this.error = String(e);
+      if (seq === this.searchSeq) this.error = String(e);
+    } finally {
+      if (seq === this.searchSeq) this.searching = false;
     }
   }
 
@@ -154,8 +167,27 @@ class AppStore {
 
   setQuery(q: string) {
     this.query = q;
-    if (this.searchTimer) clearTimeout(this.searchTimer);
-    this.searchTimer = setTimeout(() => void this.refresh(), 250);
+    if (this.searchTimer) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = null;
+    }
+    if (!settings.value.search.live) return;
+    this.searchTimer = setTimeout(() => void this.refresh(), settings.value.search.debounceMs);
+  }
+
+  /** Run the search immediately (Enter in the search field, or clear). */
+  commitQuery() {
+    if (this.searchTimer) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = null;
+    }
+    void this.refresh();
+  }
+
+  clearQuery() {
+    if (!this.query) return;
+    this.query = "";
+    this.commitQuery();
   }
 
   async select(id: string) {
@@ -167,6 +199,7 @@ class AppStore {
       const note = await api.get(id);
       if (note) {
         this.note = note;
+        settings.setLastNote(id);
       } else {
         this.selectedId = null;
         await this.refresh();
@@ -194,7 +227,7 @@ class AppStore {
     this.note.body = body;
     this.saveState = "dirty";
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => void this.saveNow(), 700);
+    this.saveTimer = setTimeout(() => void this.saveNow(), settings.value.editor.autosaveMs);
   }
 
   async setTags(tags: string[]) {
@@ -230,7 +263,10 @@ class AppStore {
         this.note.updated = saved.updated;
         if (this.note.body !== body) {
           this.saveState = "dirty";
-          this.saveTimer = setTimeout(() => void this.saveNow(), 700);
+          this.saveTimer = setTimeout(
+            () => void this.saveNow(),
+            settings.value.editor.autosaveMs,
+          );
         } else {
           this.saveState = "saved";
           void this.loadFacets();
@@ -279,6 +315,7 @@ class AppStore {
       await api.remove(note.id);
       this.note = null;
       this.selectedId = null;
+      settings.setLastNote(null);
       await this.refresh();
       void this.loadFacets();
       if (this.trashOpen) await this.loadTrash();

@@ -59,6 +59,11 @@ All green. Add tests for new core behavior: unit tests live next to modules in
 - Frontend: Svelte 5 runes (`$state`/`$effect`, stores in `.svelte.ts`),
   TypeScript strict; talk to Rust only through `lib/api.ts`.
 - Tauri 2 auto-converts camelCase JS arguments to snake_case Rust parameters.
+- Settings-first: every new user-visible feature registers its options in the
+  settings registry (`app/src/lib/settings.svelte.ts`), exposes its actions in
+  the command palette, and adds global shortcuts to `app/src/lib/keymap.ts` —
+  no hardcoded key handlers. Preferences persist to app-data `config.json`
+  (ADR-0003), never to localStorage or the vault.
 - Commit messages: `Mn: summary` for milestone work, `docs:` / `fix:` otherwise.
 
 ## Environment notes
