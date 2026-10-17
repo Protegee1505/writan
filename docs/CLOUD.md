@@ -23,9 +23,9 @@ is the workflow guide for that setup.
    Codespaces). Resuming takes ~30 s; creating a fresh one builds the
    devcontainer (a few minutes, once).
 2. **Open the agent UI** — Ports tab → port 3000 ("OpenChamber"); optionally
-   install it as a PWA. First time in a fresh codespace: sign in to the model
-   provider (`/connect` in OpenCode or OpenChamber → Providers — the free
-   `opencode/deepseek-v4.1-flash-free` model works like on the cafe box).
+   install it as a PWA. First time in a fresh codespace: pick a model-access
+   path — the free `opencode/*` models do *not* answer from cloud IPs, see
+   "Model access from the cloud" below.
 3. **Work.** Agents edit files and run `cargo fmt/clippy/test`,
    `npm --prefix app run check` — the image carries the same apt deps as CI,
    so compiles work here.
@@ -36,6 +36,23 @@ is the workflow guide for that setup.
 
 CLI alternative: `gh codespace list|start|stop|ssh -c <name>` — needs the
 `codespace` scope once: `gh auth refresh -s codespace`.
+
+## Model access from the cloud
+
+Free `opencode/*` models are rate-limited from cloud IPs: called from a
+codespace (anonymous) every one of them answers
+`Error: Rate limit exceeded. Please try again later.` — measured 2026-10-17
+with deepseek, glm, mimo and space-bunny over 15+ minutes, while the same
+model answers instantly from the cafe box. Cloud agents need one of:
+
+- a sign-in from the cloud (OpenChamber → Providers, or `opencode auth` in a
+  terminal) — untested whether it lifts the anonymous limit;
+- a free, no-card API key from another provider (Google AI Studio, Groq,
+  OpenRouter `:free`, ...): put it in a Codespaces secret (repo → Settings →
+  Secrets and variables → Codespaces) or run `opencode auth login <provider>`
+  once inside a codespace (auth survives until the codespace is deleted);
+- GitHub Copilot via `opencode auth login github-copilot` (needs a seat or
+  the free tier; the cafe box's `GITHUB_TOKEN` integration is not licensed).
 
 ## Quota discipline (personal free tier, no card)
 
@@ -117,4 +134,13 @@ Everything here is additive — the local workflow is untouched:
 
 - OpenChamber missing after a resume: `bash .devcontainer/post-start.sh`, or
   check `openchamber status` / `~/.openchamber-server.log`.
-- Fresh codespace missing tools: re-run `bash .devcontainer/post-create.sh`.
+- Fresh codespace missing tools: re-run `bash .devcontainer/post-create.sh`
+  (its output is logged to `~/.devcontainer-post-create.log`).
+- `gh codespace ssh` on Windows can hang after printing output. Prefer a
+  direct ssh: `gh codespace ssh --config | Out-File -FilePath $env:TEMP\cs-ssh.cfg`
+  then `ssh -F $env:TEMP\cs-ssh.cfg cs.<name>.main '<base64-decode | bash>'` —
+  with `GH_TOKEN`/`GITHUB_TOKEN` cleared in the shell (the env token has no
+  `codespace` scope).
+- First bring-up (2026-10-17) needed: the `sshd` devcontainer feature for
+  `gh codespace ssh`, and Node ≥24 for OpenChamber (now pinned in
+  `.devcontainer/`).

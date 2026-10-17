@@ -431,7 +431,12 @@ cargo build --release -p writan-linux
 - Cloud dev environment: `.devcontainer/` boots a Codespaces image with the
   full toolchain, installs OpenCode + OpenChamber, and auto-starts the agent
   UI on port 3000; `docs/CLOUD.md` is the workflow guide (daily flow, quota
-  discipline, platform builds, rollback).
+  discipline, platform builds, rollback). Brought up 2026-10-17
+  (`writan-cloud-7q7p996gwr53rg5w`): toolchain, agent UI on the private
+  forwarded URL, and the Pages preview all verified. Known blocker: the free
+  `opencode/*` models rate-limit cloud IPs; cloud model access needs a fresh
+  sign-in or a free provider key (see CLOUD.md, "Model access from the
+  cloud").
 - Android is parked for M5 — exact init steps under Next actions.
 
 ## Environment notes (reference dev machine)
