@@ -428,15 +428,14 @@ cargo build --release -p writan-linux
   tags, manual): builds the static SPA (`app/`) and deploys it to GitHub
   Pages — https://protegee1505.github.io/writan/; PRs build without
   deploying.
-- Cloud dev environment: `.devcontainer/` boots a Codespaces image with the
-  full toolchain, installs OpenCode + OpenChamber, and auto-starts the agent
-  UI on port 3000; `docs/CLOUD.md` is the workflow guide (daily flow, quota
-  discipline, platform builds, rollback). Brought up 2026-10-17
-  (`writan-cloud-7q7p996gwr53rg5w`): toolchain, agent UI on the private
-  forwarded URL, and the Pages preview all verified. Known blocker: the free
-  `opencode/*` models rate-limit cloud IPs; cloud model access needs a fresh
-  sign-in or a free provider key (see CLOUD.md, "Model access from the
-  cloud").
+- Cloud dev environment: the agent host is **Google Cloud Shell**
+  (`scripts/cloudshell-setup.sh` — one line per session; `docs/CLOUD.md` is
+  the workflow guide). The free `opencode/*` models answer from Cloud Shell's
+  IP (verified 2026-10-17) but are rate-limited from Codespaces' IPs — even
+  signed in — so the codespace (`.devcontainer/`, brought up 2026-10-17) is
+  the optional full-toolchain env: its agent UI works, its free models do not.
+  CI/Pages verify every push; `web.yml` deploys
+  https://protegee1505.github.io/writan/.
 - Android is parked for M5 — exact init steps under Next actions.
 
 ## Environment notes (reference dev machine)
