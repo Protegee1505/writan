@@ -198,12 +198,37 @@ fn same_line_edits_keep_an_explicit_conflict_copy() {
     let copy = b.conflict_copy().expect("copy materialised on B");
     assert_eq!(copy.body, "alpha\nbeta-a\ngamma\n");
     assert!(copy.meta.title.contains("(conflict copy 2026-01-06)"));
+    eprintln!("B report: {report:?}");
+    eprintln!("B copy id: {:?}", copy.meta.id);
+    eprintln!("B target: {:?}", b.target.list().expect("list"));
 
     // A first takes the kept version, then adopts the copy on the next pass.
     let report = a.sync();
+    eprintln!("A pass1 report: {report:?}");
+    eprintln!(
+        "A pass1 notes: {:?}",
+        a.notes()
+            .iter()
+            .map(|note| (note.meta.title.clone(), note.meta.id))
+            .collect::<Vec<_>>()
+    );
+    eprintln!("A pass1 target: {:?}", a.target.list().expect("list"));
+    eprintln!(
+        "A pass1 state: {:?}",
+        SyncState::load(&a.state_path).expect("state")
+    );
     assert_eq!(report.adopted, 1);
     assert_eq!(a.body_of("Same").as_deref(), Some("alpha\nbeta-b\ngamma\n"));
     let report = a.sync();
+    eprintln!("A pass2 report: {report:?}");
+    eprintln!(
+        "A pass2 notes: {:?}",
+        a.notes()
+            .iter()
+            .map(|note| (note.meta.title.clone(), note.meta.id))
+            .collect::<Vec<_>>()
+    );
+    eprintln!("A pass2 target: {:?}", a.target.list().expect("list"));
     assert_eq!(report.adopted, 1);
     let copy = a.conflict_copy().expect("copy materialised on A");
     assert_eq!(copy.body, "alpha\nbeta-a\ngamma\n");
