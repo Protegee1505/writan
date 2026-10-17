@@ -65,7 +65,10 @@ Last updated: 2026-10-17 (M3 complete).
   because Tauri names it after the product, so the AppStream id must match.
   New `release` job in `artifacts.yml`: on a `v*` tag it attaches every
   artifact plus `SHA256SUMS.txt` to that tag's GitHub release; manual runs
-  skip it. Evidence: commit ``, run ``.
+  skip it. Evidence: commit `ddbb17a`, run `39028319039` (3/3 jobs green, release
+  job skipped as designed) — the `.deb` now declares `Section: utils`,
+  `Categories=Office;` and carries the metainfo, and `rpm -qpl` plus an
+  AppImage extraction show the same file in both.
 
 ## Current state
 
