@@ -176,6 +176,9 @@ fn disjoint_edits_merge_through_diff3() {
 
 #[test]
 fn same_line_edits_keep_an_explicit_conflict_copy() {
+    // Temporary diagnostics: `list` comes from the `SyncTarget` trait.
+    use writan_sync::SyncTarget;
+
     let root = tempfile::tempdir().expect("tempdir");
     let a = end(root.path(), "a", Uuid::from_u128(1));
     let b = end(root.path(), "b", Uuid::from_u128(2));
