@@ -1,4 +1,4 @@
-import { api, type CountEntry, type Hit, type Note, type Status, type Summary, type TrashEntry } from "./api";
+import { api, type CountEntry, type Hit, type Note, type Status, type Summary, type SyncReport, type SyncStatus, type TrashEntry } from "./api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { settings } from "./settings.svelte";
 
@@ -22,6 +22,7 @@ class AppStore {
   folders = $state<CountEntry[]>([]);
   tagFilter = $state<string | null>(null);
   folderFilter = $state<string | null>(null);
+  sync = $state<SyncStatus | null>(null);
 
   // Not reactive on purpose.
   saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -53,6 +54,7 @@ class AppStore {
       if (this.status.vaultPath) {
         await this.refresh();
         await this.loadFacets();
+        void this.refreshSync();
         await this.reopenOrSelectFirst();
       }
     } catch (e) {
@@ -89,6 +91,7 @@ class AppStore {
       this.folderFilter = null;
       await this.refresh();
       await this.loadFacets();
+      void this.refreshSync();
     } catch (e) {
       this.error = String(e);
     }
@@ -144,6 +147,39 @@ class AppStore {
       );
       await this.refresh();
       void this.loadFacets();
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
+  /** Refresh the sync status shown in settings and the command palette. */
+  async refreshSync() {
+    try {
+      this.sync = await api.syncStatus();
+    } catch {
+      this.sync = null;
+    }
+  }
+
+  private syncSummary(report: SyncReport): string {
+    const parts: string[] = [];
+    if (report.published) parts.push(`${report.published} published`);
+    if (report.merged) parts.push(`${report.merged} merged`);
+    if (report.adopted) parts.push(`${report.adopted} adopted`);
+    if (report.deleted) parts.push(`${report.deleted} deleted`);
+    if (report.conflictCopies) parts.push(`${report.conflictCopies} conflict copies`);
+    return parts.length
+      ? `Sync finished: ${parts.join(", ")}.`
+      : "Sync finished: everything is already up to date.";
+  }
+
+  async syncNow() {
+    try {
+      const report = await api.syncNow();
+      this.notify(this.syncSummary(report));
+      await this.refresh();
+      void this.loadFacets();
+      await this.refreshSync();
     } catch (e) {
       this.error = String(e);
     }

@@ -61,6 +61,33 @@ export interface SearchFilters {
   limit?: number;
 }
 
+/** Outcome of one sync pass (how many notes each action touched). */
+export interface SyncReport {
+  published: number;
+  merged: number;
+  adopted: number;
+  conflictCopies: number;
+  deleted: number;
+  unchanged: number;
+  unreadable: number;
+}
+
+export interface SyncStatus {
+  enabled: boolean;
+  unlocked: boolean;
+  target: string | null;
+  vaultId: string | null;
+  deviceId: string | null;
+  lastSync: string | null;
+  lastReport: SyncReport | null;
+}
+
+export interface SyncConnectResult {
+  /** Shown exactly once, when this device created the keyring. */
+  recoveryCode: string | null;
+  status: SyncStatus;
+}
+
 export const api = {
   status: () => invoke<Status>("get_status"),
   getSettings: () => invoke<Record<string, unknown>>("get_settings"),
@@ -92,4 +119,12 @@ export const api = {
   saveAttachment: (fileName: string, bytes: number[]) =>
     invoke<string>("save_attachment", { fileName, bytes }),
   importAttachment: (source: string) => invoke<string>("import_attachment", { source }),
+  syncStatus: () => invoke<SyncStatus>("sync_status"),
+  syncConnect: (target: string, password: string) =>
+    invoke<SyncConnectResult>("sync_connect", { target, password }),
+  syncUnlock: (password: string) => invoke<SyncStatus>("sync_unlock", { password }),
+  syncUnlockRecovery: (code: string) => invoke<SyncStatus>("sync_unlock_recovery", { code }),
+  syncNow: () => invoke<SyncReport>("sync_now"),
+  syncLock: () => invoke<SyncStatus>("sync_lock"),
+  syncDisable: () => invoke<SyncStatus>("sync_disable"),
 };

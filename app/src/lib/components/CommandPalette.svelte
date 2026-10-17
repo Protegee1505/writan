@@ -76,6 +76,28 @@
         hint: "Maintenance",
         run: () => store.rebuildIndex(),
       });
+      if (store.sync?.unlocked) {
+        all.push({
+          id: "sync-now",
+          label: "Sync now",
+          hint: keyHint("sync-now") || "Sync",
+          run: () => store.syncNow(),
+        });
+      } else if (store.sync?.enabled) {
+        all.push({
+          id: "sync-unlock",
+          label: "Unlock sync…",
+          hint: "Sync",
+          run: () => onsettings("sync"),
+        });
+      } else {
+        all.push({
+          id: "sync-setup",
+          label: "Set up folder sync…",
+          hint: "Sync",
+          run: () => onsettings("sync"),
+        });
+      }
       if (store.note) {
         all.push({
           id: "pin",

@@ -15,6 +15,7 @@ export type SectionId =
   | "shortcuts"
   | "search"
   | "general"
+  | "sync"
   | "advanced";
 
 export interface AccentPreset {
@@ -112,6 +113,7 @@ export const SECTIONS: { id: SectionId; label: string }[] = [
   { id: "shortcuts", label: "Shortcuts" },
   { id: "search", label: "Search" },
   { id: "general", label: "General" },
+  { id: "sync", label: "Sync" },
   { id: "advanced", label: "Advanced" },
 ];
 

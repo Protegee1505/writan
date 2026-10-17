@@ -16,7 +16,8 @@ export type ActionId =
   | "open-settings"
   | "toggle-theme"
   | "toggle-trash"
-  | "pin-note";
+  | "pin-note"
+  | "sync-now";
 
 export interface KeyAction {
   id: ActionId;
@@ -36,6 +37,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "toggle-theme", label: "Toggle theme", defaultBinding: null },
   { id: "toggle-trash", label: "Toggle trash panel", defaultBinding: null },
   { id: "pin-note", label: "Pin / unpin note", defaultBinding: null },
+  { id: "sync-now", label: "Sync now", defaultBinding: null },
 ];
 
 /** Text-editing keys we never hijack at the app level. */

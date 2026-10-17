@@ -21,6 +21,7 @@
     type ActionId,
   } from "$lib/keymap";
   import { store } from "$lib/store.svelte";
+  import SyncSection from "$lib/components/SyncSection.svelte";
 
   let { open = $bindable(false), focusPath = null }: {
     open: boolean;
@@ -248,6 +249,8 @@
                   </div>
                 {/each}
               </div>
+            {:else if section === "sync"}
+              <SyncSection />
             {:else if section === "advanced"}
               <div class="rows">
                 <div class="row column">
