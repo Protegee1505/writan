@@ -1,0 +1,121 @@
+# Screenshot the real app from CI, so an agent (or a human without the right
+# machine) can look at the UI instead of guessing: tools/visual/README.md.
+#
+# Manual trigger, not on every push — the Windows debug build takes a few
+# minutes. Both jobs upload PNGs (+ a DOM text dump on Windows):
+#   gh workflow run visual.yml -R Protegee1505/writan
+#   gh run download <run-id> -n writan-windows-shots
+name: visual
+
+on:
+  workflow_dispatch:
+    inputs:
+      actions:
+        description: Action script under tools/visual/actions/
+        default: tauri.actions
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-ui:
+    name: Linux GTK shell screenshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: visual-linux
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
+            xvfb xdotool imagemagick fonts-dejavu-core fonts-noto-cjk
+      - name: Build the GTK shell
+        run: cargo build --release -p writan-linux
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Driver dependencies
+        run: npm ci --prefix tools/visual
+      - name: Screenshot walkthrough (Xvfb)
+        run: scripts/gui-shot.sh --bin target/release/writan --out shots --strict
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: writan-linux-shots
+          path: shots
+          if-no-files-found: error
+
+  windows-ui:
+    name: Windows app screenshots (WebView2 over CDP)
+    runs-on: windows-latest
+    env:
+      # WebView2 hands these to its Chromium; the driver then connects over CDP
+      # and screenshots render inside the renderer, so no visible session is
+      # needed on the runner.
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: --remote-debugging-port=9222 --remote-allow-origins=*
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: visual-windows
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            tools/visual/package-lock.json
+      - name: Frontend dependencies
+        run: npm ci --prefix app
+      - name: Driver dependencies
+        run: npm ci --prefix tools/visual
+      - name: Build (debug, frontend embedded)
+        shell: pwsh
+        run: |
+          npm --prefix app run build
+          cargo build -p writan-app
+      - name: Seed the fixture vault into the app config
+        shell: pwsh
+        run: |
+          $vault = Join-Path $env:RUNNER_TEMP 'visual-vault'
+          Copy-Item -Recurse -Force tools\visual\fixtures\vault $vault
+          $appData = Join-Path $env:APPDATA 'com.writan.desktop'
+          New-Item -ItemType Directory -Force $appData | Out-Null
+          @{ vault_path = $vault } | ConvertTo-Json -Compress |
+            Set-Content -Encoding utf8 (Join-Path $appData 'config.json')
+          echo "vault: $vault"
+      - name: Launch the app
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'target/debug/writan-app.exe'
+          Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
+      - name: Wait for the WebView2 CDP endpoint
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(3)
+          $version = $null
+          while ((Get-Date) -lt $deadline) {
+            try { $version = Invoke-RestMethod 'http://127.0.0.1:9222/json/version' -TimeoutSec 5; break }
+            catch { Start-Sleep 3 }
+          }
+          if (-not $version) { throw 'WebView2 CDP endpoint never came up' }
+      - name: Drive the walkthrough
+        shell: pwsh
+        run: >
+          node tools/visual/drive.mjs --backend cdp --cdp http://127.0.0.1:9222
+          --out shots --actions "tools/visual/actions/${{ inputs.actions }}"
+          --ready-text Welcome --strict
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: writan-windows-shots
+          path: shots
+          if-no-files-found: error
