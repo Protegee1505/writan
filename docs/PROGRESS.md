@@ -80,7 +80,7 @@ Last updated: 2026-10-17 (M3 complete).
   external-edit reload without data loss, watcher indexing and list selection —
   5/5 green locally; `docs/PARITY.md` ticks both parity items.
 - **M3.5 slice 2 — sidebar filters + note actions in the GTK shell** (2026-10-17,
-  commit `pending`): the sidebar grew folder and tag chips with counts
+  commit `4d64dad`): the sidebar grew folder and tag chips with counts
   (`workspace.folder_counts()`/`tag_counts()`), an active-filter row with its ×
   and `Clear`, and `refresh()` now feeds tag/folder into `SearchQuery` — only
   startup and vault switches fall back to opening the first row, so filtering
