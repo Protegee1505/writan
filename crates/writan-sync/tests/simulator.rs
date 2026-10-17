@@ -183,11 +183,11 @@ fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
         // Every fifth round everybody syncs; otherwise one random device does.
         if round.is_multiple_of(5) {
             for dev in &devices {
-                dev.sync(vault_id, &target);
+                dev.sync(vault_id, target);
             }
         } else {
             let d = (next(&mut seed) % DEVICES as u64) as usize;
-            devices[d].sync(vault_id, &target);
+            devices[d].sync(vault_id, target);
         }
     }
 
@@ -196,7 +196,7 @@ fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
     for _ in 0..6 {
         let mut clean = true;
         for dev in &devices {
-            let report = dev.sync(vault_id, &target);
+            let report = dev.sync(vault_id, target);
             if report.published != 0
                 || report.merged != 0
                 || report.adopted != 0
@@ -225,7 +225,7 @@ fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
 
     // One more full pass must be a no-op beyond `unchanged`.
     for (i, dev) in devices.iter().enumerate() {
-        let report = dev.sync(vault_id, &target);
+        let report = dev.sync(vault_id, target);
         assert_eq!(
             report.published, 0,
             "device {i} published after convergence"
