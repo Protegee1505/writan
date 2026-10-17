@@ -267,13 +267,13 @@ pub fn unlock_keyring(
         if file.generation != *name_generation {
             continue;
         }
-        if let Some(want) = expected_vault_id {
-            if file.vault_id != want {
-                return Err(KeyringError::ForeignVault {
-                    found: file.vault_id,
-                    want,
-                });
-            }
+        if let Some(want) = expected_vault_id
+            && file.vault_id != want
+        {
+            return Err(KeyringError::ForeignVault {
+                found: file.vault_id,
+                want,
+            });
         }
         if let Ok(vault_key) = unwrap_vault_key(&file, purpose, credential) {
             return Ok(Unlocked {
