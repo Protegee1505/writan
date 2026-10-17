@@ -120,6 +120,11 @@ IP gates can decay — a blocked host is worth re-trying a day later.
   app; built on ubuntu-22.04 so they ask for glibc 2.35, not 2.39 — the GTK
   shell binary from the `linux` job needs 2.39/Fedora 40+). Unsigned: install a
   `.deb` with `apt install ./writan_*.deb`, run the AppImage with `chmod +x`.
+  All three carry AppStream metadata and a desktop category; the `.deb` needs
+  `libwebkit2gtk-4.1-0` + `libgtk-3-0`, the AppImage bundles its own.
+- **Publishing** — pushing a `v*` tag makes `artifacts.yml` attach every
+  artifact plus `SHA256SUMS.txt` to that tag's GitHub release; a manual
+  dispatch only produces artifacts and never publishes.
 - **Android (M5)** — run `tauri android init` inside a codespace (add JDK 17
   + SDK/NDK then), commit `app/src-tauri/gen/android`, add the `android` job
   (debug APK). Device install = sideload.
