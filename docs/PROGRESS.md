@@ -209,6 +209,25 @@ Last updated: 2026-10-17 — YAML frontmatter parser swapped to `serde-saphyr` (
 - Artifacts from the same run: `writan-windows-x64` (portable exe + MSI + NSIS
   setup) and `writan-linux-x64` (binary + `measure.txt`).
 
+### Pre-M3 — frontmatter parser swap (2026-10-17)
+- `serde_yaml_ng` 0.10 → `serde-saphyr` 2.0.0 (saphyr lineage, pure Rust,
+  `default-features = false`, `features = ["serialize", "deserialize"]`);
+  the archived `unsafe-libyaml` leaves the tree and `deny.toml`'s
+  RUSTSEC-2024-0449 ignore is removed; ADR-0002 amended.
+- Frontmatter now round-trips through a `serde_json` `Map`/`Value` with
+  `preserve_order` enabled, so unknown keys *and their order* survive
+  rewrites; empty `---\n---` frontmatter means "no metadata" (explicit guard
+  instead of relying on the parser's empty-input behavior).
+- Emitter quoting: strings a YAML 1.1 reader would take for timestamps or
+  numbers are quoted on write, so `created`/`updated` and titles like `123`
+  stay strings; UUID note ids stay unquoted.
+- 4 new tests lock the contract (workspace count 69 → 73): empty frontmatter
+  block, key-order preservation, block-scalar round-trip, numeric-looking
+  string round-trip.
+- Evidence: commit `749ab2d`, CI run 39002472683 — `deny` green (1m2s), tests
+  green on ubuntu-latest (2m35s) and windows-latest (3m12s): 73 passed,
+  0 failed.
+
 ## Next actions
 
 Next (order is a suggestion, not a constraint):
