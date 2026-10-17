@@ -94,6 +94,24 @@ const actions = readFileSync(actionsPath, "utf8")
 
 function translateKeys(chord) {
   // "ctrl+shift+p" -> Playwright's "Control+Shift+p"
+  const named = {
+    enter: "Enter",
+    return: "Enter",
+    escape: "Escape",
+    esc: "Escape",
+    tab: "Tab",
+    space: "Space",
+    end: "End",
+    home: "Home",
+    pageup: "PageUp",
+    pagedown: "PageDown",
+    up: "ArrowUp",
+    down: "ArrowDown",
+    left: "ArrowLeft",
+    right: "ArrowRight",
+    delete: "Delete",
+    backspace: "Backspace",
+  };
   return chord
     .split("+")
     .map((part) => {
@@ -102,11 +120,7 @@ function translateKeys(chord) {
       if (p === "alt") return "Alt";
       if (p === "shift") return "Shift";
       if (p === "meta" || p === "super") return "Meta";
-      if (p === "enter" || p === "return") return "Enter";
-      if (p === "escape" || p === "esc") return "Escape";
-      if (p === "tab") return "Tab";
-      if (p === "space") return "Space";
-      return p;
+      return named[p] ?? p;
     })
     .join("+");
 }
