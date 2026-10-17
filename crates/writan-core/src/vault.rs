@@ -5,7 +5,7 @@ use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
-use serde_yaml_ng::{Mapping, Value};
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::{NoteId, NoteMeta, content_hash, now_rfc3339, split_frontmatter};
@@ -39,7 +39,7 @@ pub struct Note {
     /// Path relative to the vault root, always `/`-separated.
     pub rel_path: String,
     /// Unknown frontmatter keys, preserved verbatim across writes.
-    pub extra: Mapping,
+    pub extra: Map<String, Value>,
 }
 
 /// `stat` data used for change detection.
@@ -62,7 +62,7 @@ pub struct ParsedFile {
     pub title: Option<String>,
     pub tags: Vec<String>,
     pub pinned: bool,
-    pub extra: Mapping,
+    pub extra: Map<String, Value>,
     pub hash: String,
 }
 
@@ -169,18 +169,23 @@ impl Vault {
             title: None,
             tags: Vec::new(),
             pinned: false,
-            extra: Mapping::new(),
+            extra: Map::new(),
             hash,
         };
 
         let Some(yaml) = frontmatter else {
             return Ok(parsed);
         };
-        let value: Value = serde_yaml_ng::from_str(yaml).map_err(|e| VaultError::Frontmatter {
+        // An empty (or whitespace-only) frontmatter block means "no metadata",
+        // not a YAML syntax error.
+        if yaml.trim().is_empty() {
+            return Ok(parsed);
+        }
+        let value: Value = serde_saphyr::from_str(yaml).map_err(|e| VaultError::Frontmatter {
             path: path.clone(),
             message: e.to_string(),
         })?;
-        let Value::Mapping(mapping) = value else {
+        let Value::Object(mapping) = value else {
             if matches!(value, Value::Null) {
                 return Ok(parsed);
             }
@@ -190,10 +195,12 @@ impl Vault {
             });
         };
 
-        let lenient: LenientMeta = serde_yaml_ng::from_value(Value::Mapping(mapping.clone()))
-            .map_err(|e| VaultError::Frontmatter {
-                path: path.clone(),
-                message: e.to_string(),
+        let lenient: LenientMeta =
+            serde_json::from_value(Value::Object(mapping.clone())).map_err(|e| {
+                VaultError::Frontmatter {
+                    path: path.clone(),
+                    message: e.to_string(),
+                }
             })?;
 
         parsed.title = lenient.title.clone();
@@ -255,7 +262,7 @@ impl Vault {
             },
             body: String::new(),
             rel_path,
-            extra: Mapping::new(),
+            extra: Map::new(),
         };
         self.write(&note)?;
         Ok(note)
@@ -384,20 +391,19 @@ fn kind_of(value: &Value) -> &'static str {
         Value::Bool(_) => "a boolean",
         Value::Number(_) => "a number",
         Value::String(_) => "a string",
-        Value::Sequence(_) => "a sequence",
-        Value::Mapping(_) => "a mapping",
-        _ => "an unsupported value",
+        Value::Array(_) => "a sequence",
+        Value::Object(_) => "a mapping",
     }
 }
 
 /// Insert `key` into a frontmatter mapping.
-fn set(mapping: &mut Mapping, key: &str, value: Value) {
-    mapping.insert(Value::String(key.to_string()), value);
+fn set(mapping: &mut Map<String, Value>, key: &str, value: Value) {
+    mapping.insert(key.to_string(), value);
 }
 
 /// Remove `key` from a frontmatter mapping.
-fn unset(mapping: &mut Mapping, key: &str) {
-    mapping.remove(Value::String(key.to_string()));
+fn unset(mapping: &mut Map<String, Value>, key: &str) {
+    mapping.remove(key);
 }
 
 fn compose_document(note: &Note) -> Result<String, VaultError> {
@@ -414,7 +420,7 @@ fn compose_document(note: &Note) -> Result<String, VaultError> {
         set(
             &mut mapping,
             "tags",
-            Value::Sequence(
+            Value::Array(
                 note.meta
                     .tags
                     .iter()
@@ -437,7 +443,7 @@ fn compose_document(note: &Note) -> Result<String, VaultError> {
         None => unset(&mut mapping, "updated"),
     }
 
-    let mut yaml = serde_yaml_ng::to_string(&mapping).map_err(|e| VaultError::Frontmatter {
+    let mut yaml = serde_saphyr::to_string(&mapping).map_err(|e| VaultError::Frontmatter {
         path: PathBuf::from(&note.rel_path),
         message: e.to_string(),
     })?;
@@ -610,6 +616,60 @@ mod tests {
         let note = vault.read("crlf.md").expect("read");
         assert_eq!(note.meta.title, "CRLF");
         assert_eq!(note.body, "body\r\n");
+    }
+
+    #[test]
+    fn empty_frontmatter_block_has_no_metadata() {
+        let (_dir, vault) = vault();
+        std::fs::write(vault.abs_path("empty-fm.md"), "---\n---\nbody\n").expect("write");
+        let parsed = vault.parse_file("empty-fm.md").expect("parse");
+        assert!(parsed.meta.is_none());
+        assert!(parsed.extra.is_empty());
+        assert_eq!(parsed.body, "body\n");
+    }
+
+    #[test]
+    fn frontmatter_key_order_is_preserved_on_write() {
+        let (_dir, vault) = vault();
+        let raw = "---\ntitle: Order\naliases: [x, y]\ncssclass: fancy\nid: 33333333-3333-3333-3333-333333333333\n---\nbody\n";
+        std::fs::write(vault.abs_path("order.md"), raw).expect("write raw");
+
+        let mut note = vault.read("order.md").expect("read");
+        note.meta.pinned = true;
+        vault.write(&note).expect("write");
+
+        let text = std::fs::read_to_string(vault.abs_path("order.md")).expect("read raw");
+        let pos = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("missing {needle:?} in {text:?}"))
+        };
+        assert!(pos("title: Order") < pos("aliases:"));
+        assert!(pos("aliases:") < pos("cssclass:"));
+        assert!(pos("cssclass:") < pos("id: 33333333"));
+    }
+
+    #[test]
+    fn block_scalar_frontmatter_value_roundtrips() {
+        let (_dir, vault) = vault();
+        let raw = "---\nid: 44444444-4444-4444-4444-444444444444\ntitle: Block\ndesc: |\n  line one\n  line two\n---\nbody\n";
+        std::fs::write(vault.abs_path("block.md"), raw).expect("write raw");
+
+        let mut note = vault.read("block.md").expect("read");
+        let expected = Value::String("line one\nline two\n".to_string());
+        assert_eq!(note.extra.get("desc"), Some(&expected));
+
+        note.body.push_str("more\n");
+        vault.write(&note).expect("write");
+        let again = vault.read("block.md").expect("re-read");
+        assert_eq!(again.extra.get("desc"), Some(&expected));
+    }
+
+    #[test]
+    fn numeric_looking_strings_survive_as_strings() {
+        let (_dir, vault) = vault();
+        let note = vault.create("123", &[]).expect("create");
+        let reloaded = vault.read(&note.rel_path).expect("read");
+        assert_eq!(reloaded.meta.title, "123");
     }
 
     #[test]

@@ -13,10 +13,6 @@ ignore = [
     "RUSTSEC-2025-0081",
     "RUSTSEC-2025-0098",
     "RUSTSEC-2025-0100",
-    # unsafe-libyaml 0.2.11 <- serde_yaml_ng 0.10 (writan-core): archived
-    # upstream. Swap the YAML parser (saphyr / serde-saphyr) before M3 —
-    # see PROGRESS.md Next actions.
-    "RUSTSEC-2024-0449",
 ]
 
 [licenses]

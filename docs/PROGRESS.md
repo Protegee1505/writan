@@ -3,7 +3,7 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-16 — CI fully green (Windows + Ubuntu + deny at `c8dddbe`); the artifacts workflow ran green: Windows installers + the Linux GTK shell binary (3.09 MB) with spike numbers (cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
+Last updated: 2026-10-17 — YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
 
 ## Current state
 
@@ -25,15 +25,17 @@ Last updated: 2026-10-16 — CI fully green (Windows + Ubuntu + deny at `c8dddbe
   `C:\Users\Administrator\Downloads` as the vault, switched the theme to dark
   and reopened the last note after relaunch — settings/session round-trip
   through app-data `config.json` confirmed.
-- This dev box had been re-imaged without a Rust toolchain; on 2026-10-16 Rust
-  1.99.1 (rustup) and VS 2022 Build Tools (MSVC 14.44.35207, Windows SDK
-  10.0.26100) were installed here.
+- This dev box is re-imaged regularly. On 2026-10-17 it carries Rust 1.99.1
+  via rustup **minimal + rustfmt** only — deliberately *no* VS Build Tools, so
+  local compiles are off the table; CI (Windows + Ubuntu) compiles, clippy-checks
+  and tests everything, locally only `cargo fmt`, `cargo fetch` (lockfile),
+  `cargo metadata` and the npm frontend checks run.
 - Workspace MSRV is now Rust 1.90 (was 1.85) so `cargo update` can take patched
   dependencies: `time` 0.3.55 and (via `plist` 1.10.1) `quick-xml` 0.42.0 fixed
   the three RustSec DoS advisories. `cargo-deny` advisories is green with
   documented ignores in `deny.toml` for the unfixable unmaintained crates
-  (Tauri's `proc-macro-error` + the `unic-*` family, and `unsafe-libyaml`
-  behind `serde_yaml_ng` — parser swap planned, see Next actions).
+  (Tauri's `proc-macro-error` + the `unic-*` family). The `unsafe-libyaml`
+  ignore is gone: `serde_yaml_ng` was replaced by `serde-saphyr` (2026-10-17).
 - CI: `.github/workflows/ci.yml` (fmt/clippy/tests on Windows + Ubuntu, deny)
   doubles as the free Linux compiler for the GTK shell;
   `.github/workflows/artifacts.yml` builds downloadable Windows installers and
@@ -189,8 +191,8 @@ Last updated: 2026-10-16 — CI fully green (Windows + Ubuntu + deny at `c8dddbe
 - MSRV 1.90 + `cargo update -p time -p plist -p quick-xml`: three RustSec
   advisories resolved (time 0.3.55, plist 1.10.1, quick-xml 0.42.0);
   `deny.toml` carries documented ignores for the unfixable unmaintained
-  crates (`proc-macro-error`, `unic-*`, `unsafe-libyaml` — the last one via a
-  planned YAML-parser swap).
+  crates (`proc-macro-error`, `unic-*`; the `unsafe-libyaml` entry was removed
+  when the YAML parser swap landed on 2026-10-17).
 - Two `collapsible_if` clippy nits in `writan-core` (`index.rs`, `vault.rs`)
   collapsed into let-chains (edition 2024).
 - `.github/workflows/artifacts.yml`: `windows` job (portable exe + MSI + NSIS
@@ -223,11 +225,7 @@ Next (order is a suggestion, not a constraint):
 2. Perf budgets still open: cold start < 400 ms (≈396 ms measured), search
    < 30 ms at 10k notes (not measured yet), RAM < 150 MB idle (≈120 MB
    private measured; the working set is higher with WebView2).
-3. YAML parser swap: `serde_yaml_ng` pulls the archived `unsafe-libyaml`
-   (deny ignore RUSTSEC-2024-0449). Replace it with a maintained parser
-   (`serde-saphyr` on `saphyr`) and update ADR-0002 before M3; the frontmatter
-   round-trip tests in `writan-core` are the safety net.
-4. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
+3. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
    bounded diff3 with visible conflict copies, recovery-key export, keychain
    unlock, N-device sync simulator in nightly CI. The primitives already exist
    in `writan-sync` (version vectors) and `writan-crypto` (Argon2id +
@@ -265,15 +263,17 @@ cargo build --release -p writan-linux
   `gh run download -R Protegee1505/writan -n writan-windows-x64` (artifact
   names as above); artifacts are kept for 90 days.
 - Fresh machine (the cafe test box resets on reboot): the durable workspace is
-  the repo + CI. Push edits and let CI build/verify; install Rust + Node
-  locally only for interactive `tauri dev`.
+  the repo + CI. Push edits and let CI build/verify; this box (2026-10-17)
+  carries rustup minimal + rustfmt (for `cargo fmt` and lockfile updates via
+  `cargo fetch`) and Node — nothing else. Install MSVC Build Tools only if
+  interactive `tauri dev` is wanted locally.
 - Android is parked for M5 — exact init steps under Next actions.
 
 ## Environment notes (reference dev machine)
 
-- Windows 10 LTSC 10.0.19043, i3-9100F, 7.88 GB RAM; rustc 1.99.1;
-  Node 24.22 / npm 11.19; VS Build Tools (MSVC + Win11 SDK 22621); WebView2
-  runtime installed.
+- Windows 10 LTSC 10.0.19043, i3-9100F, 7.88 GB RAM; rustc 1.99.1 (rustup
+  minimal + rustfmt; no MSVC Build Tools as of 2026-10-17 — compiles happen in
+  CI); Node 24.22 / npm 11.19; WebView2 runtime installed.
 - In fresh PowerShell sessions `cargo` may not be on PATH: use
   `%USERPROFILE%\.cargo\bin\cargo.exe`.
 - PowerShell sometimes shows a cosmetic `Exited with code 1` /

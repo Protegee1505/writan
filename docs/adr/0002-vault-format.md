@@ -42,6 +42,13 @@ sync app state.
    (blake3 of the whole file) is recorded for future sync base comparisons.
 10. **All app state** (index, trash, sync state, keys) stays under the OS
     app-data directory — never inside the vault.
+11. **YAML parser (amended 2026-10-17):** frontmatter round-trips through a
+    `serde_json` value tree with `preserve_order` (so key order survives
+    rewrites), parsed and emitted by `serde-saphyr` (saphyr lineage, pure
+    Rust). Strings that YAML 1.1 would read as timestamps or numbers are
+    emitted quoted, so `created` / `updated` always re-parse as strings. This
+    replaces `serde_yaml_ng`, which pulled the archived `unsafe-libyaml`
+    (RUSTSEC-2024-0449).
 
 ## Consequences
 

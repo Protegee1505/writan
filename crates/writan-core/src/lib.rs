@@ -140,7 +140,7 @@ mod tests {
             created: None,
             updated: None,
         };
-        let yaml = serde_yaml_ng::to_string(&meta).expect("serialize");
+        let yaml = serde_saphyr::to_string(&meta).expect("serialize");
         assert_eq!(
             yaml,
             "id: 00000000-0000-0000-0000-000000000000\ntitle: Hi\n"
