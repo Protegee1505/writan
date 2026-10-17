@@ -8,12 +8,14 @@
 //!
 //! Blob layout, payloads and binding are fixed by [`blob`] and
 //! `docs/adr/0005-sync-blob-format.md`; reconciliation of concurrent versions
-//! is [`merge`]'s bounded diff3 with a last-writer-wins window (ADR-0001).
+//! is [`merge`]'s bounded diff3 with a last-writer-wins window (ADR-0001), and
+//! [`keys`] holds the keyring generations and recovery codes (ADR-0005 §7–10).
 
 #![forbid(unsafe_code)]
 
 pub mod blob;
 pub mod engine;
+pub mod keys;
 pub mod merge;
 pub mod target;
 
@@ -28,6 +30,12 @@ pub use blob::{
     seal_note, seal_tombstone,
 };
 pub use engine::{EngineError, FolderVault, NoteFile, SyncReport, SyncState, VaultIo, sync};
+pub use keys::{
+    FORMAT_KEYRING, KdfParams, KeyringError, KeyringFile, KeyringPurpose, KeyringWrap, Unlocked,
+    bootstrap_keyring, create_keyring, decode_recovery_code, encode_recovery_code,
+    generate_recovery_code, keyring_aad, keyring_generations, keyring_path, parse_keyring,
+    parse_keyring_path, unlock_keyring, unwrap_vault_key,
+};
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 pub use target::{FolderTarget, SyncTarget, TargetError};
 

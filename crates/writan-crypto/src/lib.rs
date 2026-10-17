@@ -53,6 +53,13 @@ pub fn random_salt() -> [u8; SALT_LEN] {
     salt
 }
 
+/// Generate a fresh 32-byte symmetric key (vault keys, recovery codes).
+pub fn random_key() -> [u8; KEY_LEN] {
+    let mut key = [0u8; KEY_LEN];
+    rand::rng().fill(&mut key);
+    key
+}
+
 /// Seal `plaintext` into `nonce ‖ ciphertext`, binding `aad` to the blob.
 pub fn seal(key: &[u8; KEY_LEN], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let key = Key::try_from(key.as_slice()).map_err(|_| CryptoError::Decrypt)?;
