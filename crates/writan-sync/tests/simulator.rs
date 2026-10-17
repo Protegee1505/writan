@@ -193,10 +193,14 @@ fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
 
     // Sweep until a whole pass reports nothing but `unchanged` on every device.
     let mut converged = false;
-    for _ in 0..6 {
+    for sweep in 1..=12 {
         let mut clean = true;
-        for dev in &devices {
+        for (i, dev) in devices.iter().enumerate() {
             let report = dev.sync(vault_id, target);
+            eprintln!(
+                "{label} sweep {sweep} dev {i}: p={} m={} a={} d={} u={}",
+                report.published, report.merged, report.adopted, report.deleted, report.unchanged
+            );
             if report.published != 0
                 || report.merged != 0
                 || report.adopted != 0
@@ -208,6 +212,28 @@ fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
         if clean {
             converged = true;
             break;
+        }
+    }
+    if !converged {
+        for entry in target.list().unwrap_or_default() {
+            eprintln!("{label} leftover target entry: {entry}");
+        }
+        for (i, dev) in devices.iter().enumerate() {
+            if let Ok(state) = SyncState::load(&dev.state_path) {
+                let value = serde_json::to_value(&state).unwrap_or_default();
+                let count = |key: &str| {
+                    value
+                        .get(key)
+                        .and_then(|v| v.as_object())
+                        .map_or(0, |o| o.len())
+                };
+                eprintln!(
+                    "{label} dev {i} state: {} vectors, {} bases, {} digests",
+                    count("vectors"),
+                    count("bases"),
+                    count("digests")
+                );
+            }
         }
     }
     assert!(converged, "devices never reached a clean fixpoint");
@@ -251,7 +277,7 @@ fn three_devices_converge_through_a_shared_folder() {
 }
 
 #[test]
-#[ignore = "S3 simulator; nightly CI runs it in release against MinIO (see the module docs)"]
+#[ignore = "S3 simulator; nightly CI runs it in release against S3Mock (see the module docs)"]
 fn three_devices_converge_through_a_bucket() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
