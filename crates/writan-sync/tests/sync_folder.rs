@@ -176,9 +176,6 @@ fn disjoint_edits_merge_through_diff3() {
 
 #[test]
 fn same_line_edits_keep_an_explicit_conflict_copy() {
-    // Temporary diagnostics: `list` comes from the `SyncTarget` trait.
-    use writan_sync::SyncTarget;
-
     let root = tempfile::tempdir().expect("tempdir");
     let a = end(root.path(), "a", Uuid::from_u128(1));
     let b = end(root.path(), "b", Uuid::from_u128(2));
@@ -202,37 +199,12 @@ fn same_line_edits_keep_an_explicit_conflict_copy() {
     let copy = b.conflict_copy().expect("copy materialised on B");
     assert_eq!(copy.body, "alpha\nbeta-a\ngamma\n");
     assert!(copy.meta.title.contains("(conflict copy 2026-01-06)"));
-    eprintln!("B report: {report:?}");
-    eprintln!("B copy id: {:?}", copy.meta.id);
-    eprintln!("B target: {:?}", b.target.list().expect("list"));
 
     // A takes the kept version and the explicit copy in one pass.
     let report = a.sync();
-    eprintln!("A pass1 report: {report:?}");
-    eprintln!(
-        "A pass1 notes: {:?}",
-        a.notes()
-            .iter()
-            .map(|note| (note.meta.title.clone(), note.meta.id))
-            .collect::<Vec<_>>()
-    );
-    eprintln!("A pass1 target: {:?}", a.target.list().expect("list"));
-    eprintln!(
-        "A pass1 state: {:?}",
-        SyncState::load(&a.state_path).expect("state")
-    );
     assert_eq!(report.adopted, 2);
     assert_eq!(a.body_of("Same").as_deref(), Some("alpha\nbeta-b\ngamma\n"));
     let report = a.sync();
-    eprintln!("A pass2 report: {report:?}");
-    eprintln!(
-        "A pass2 notes: {:?}",
-        a.notes()
-            .iter()
-            .map(|note| (note.meta.title.clone(), note.meta.id))
-            .collect::<Vec<_>>()
-    );
-    eprintln!("A pass2 target: {:?}", a.target.list().expect("list"));
     assert_eq!(report.unchanged, 2);
     let copy = a.conflict_copy().expect("copy materialised on A");
     assert_eq!(copy.body, "alpha\nbeta-a\ngamma\n");
