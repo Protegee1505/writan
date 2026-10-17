@@ -9,8 +9,9 @@
     // rustup; the repo's rust-toolchain.toml then pins stable and pulls
     // rustfmt + clippy on first cargo use.
     "ghcr.io/devcontainers/features/rust:1": {},
-    // Node for the Svelte side — keep in step with the workflows (node 22).
-    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+    // Node for the Svelte side; OpenChamber (the agent UI) needs >=24.14 at
+    // runtime, so 24 here. The CI workflows still build on node 22.
+    "ghcr.io/devcontainers/features/node:1": { "version": "24" },
     "ghcr.io/devcontainers/features/github-cli:1": {},
     // Codespaces needs an SSH server in the container (for `gh codespace ssh`,
     // VS Code desktop and forwarding); the base image does not ship one.

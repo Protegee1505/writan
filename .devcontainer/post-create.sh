@@ -5,6 +5,10 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# Keep a transcript of the first run; a failed step is otherwise invisible
+# in the Codespaces log once the container is up.
+exec > >(tee -a "$HOME/.devcontainer-post-create.log") 2>&1
+
 # Keep user-level installs on PATH for this script and future shells.
 export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
 if ! grep -qs "writan-cloud: user-level installs" "$HOME/.bashrc"; then
@@ -22,6 +26,9 @@ cargo fetch
 
 # The agent stack: OpenCode (agent) + OpenChamber (its web GUI).
 command -v opencode >/dev/null || curl -fsSL https://opencode.ai/v2/install | bash
+# OpenChamber's integrated terminal needs node-pty's native build; npm gates
+# install scripts by default, so allow just that package.
+npm config set allow-scripts=node-pty --location=user 2>/dev/null || true
 command -v openchamber >/dev/null || curl -fsSL https://raw.githubusercontent.com/openchamber/openchamber/main/scripts/install.sh | bash
 
 echo "post-create done: OpenChamber starts on port 3000 via post-start."
