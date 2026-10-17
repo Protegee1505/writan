@@ -27,8 +27,8 @@ pub use blob::{
     blob_aad, blob_path, open_blob, open_note, open_tombstone, parse_blob_path, seal_blob,
     seal_note, seal_tombstone,
 };
-pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 pub use engine::{EngineError, FolderVault, NoteFile, SyncReport, SyncState, VaultIo, sync};
+pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 pub use target::{FolderTarget, SyncTarget, TargetError};
 
 pub type DeviceId = Uuid;

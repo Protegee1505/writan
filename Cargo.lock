@@ -5888,12 +5888,15 @@ dependencies = [
 name = "writan-sync"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "diffy",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "time",
  "uuid",
+ "writan-core",
  "writan-crypto",
 ]
 

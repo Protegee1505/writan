@@ -129,13 +129,19 @@ fn deletion_propagates_and_an_edit_resurrects() {
     b.edit("Doomed", "edited after delete\n", "2026-02-01T10:00:00Z");
     let report = b.sync();
     assert_eq!(report.published, 1, "an edit after the delete resurrects");
-    assert_eq!(b.body_of("Doomed").as_deref(), Some("edited after delete\n"));
+    assert_eq!(
+        b.body_of("Doomed").as_deref(),
+        Some("edited after delete\n")
+    );
 
     // A adopts the resurrected note; nothing is deleted a second time.
     let report = a.sync();
     assert_eq!(report.adopted, 1);
     assert_eq!(report.deleted, 0);
-    assert_eq!(a.body_of("Doomed").as_deref(), Some("edited after delete\n"));
+    assert_eq!(
+        a.body_of("Doomed").as_deref(),
+        Some("edited after delete\n")
+    );
 
     assert_eq!(b.sync().unchanged, 1);
 }

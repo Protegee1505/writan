@@ -177,9 +177,8 @@ impl SyncState {
     /// Read state, or start fresh if the file does not exist.
     pub fn load(path: &Path) -> Result<Self, EngineError> {
         match fs::read(path) {
-            Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|error| EngineError::State(error.to_string()))
-            }
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| EngineError::State(error.to_string())),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error.into()),
         }
@@ -190,8 +189,8 @@ impl SyncState {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let bytes =
-            serde_json::to_vec_pretty(self).map_err(|error| EngineError::State(error.to_string()))?;
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|error| EngineError::State(error.to_string()))?;
         fs::write(path, bytes)?;
         Ok(())
     }
@@ -288,8 +287,13 @@ pub fn sync(
     // and every item version on the target.
     let mut deleted_ids = BTreeSet::new();
     for (id, tombstone) in &tombstones {
-        let covers_local = state.vectors.get(id).is_none_or(|v| tombstone.vv.contains(v));
-        let covers_items = items.get(id).is_none_or(|item| tombstone.vv.contains(&item.note.vv));
+        let covers_local = state
+            .vectors
+            .get(id)
+            .is_none_or(|v| tombstone.vv.contains(v));
+        let covers_items = items
+            .get(id)
+            .is_none_or(|item| tombstone.vv.contains(&item.note.vv));
         if covers_local && covers_items {
             deleted_ids.insert(*id);
         }
@@ -385,7 +389,15 @@ pub fn sync(
                 state.digests.insert(file.id, best_digest);
                 report.adopted += 1;
             } else {
-                merge_flow(&publisher, state, vault, file, best, &local_digests, &mut report)?;
+                merge_flow(
+                    &publisher,
+                    state,
+                    vault,
+                    file,
+                    best,
+                    &local_digests,
+                    &mut report,
+                )?;
             }
         } else if !local_vv.0.is_empty() && local_vv.contains(&best.vv) {
             if digest_of_blob(best) == digest_now {
@@ -396,7 +408,15 @@ pub fn sync(
                 report.published += 1;
             }
         } else {
-            merge_flow(&publisher, state, vault, file, best, &local_digests, &mut report)?;
+            merge_flow(
+                &publisher,
+                state,
+                vault,
+                file,
+                best,
+                &local_digests,
+                &mut report,
+            )?;
         }
     }
 
@@ -658,7 +678,11 @@ fn digest_of_blob(blob: &NoteBlob) -> String {
 fn vv_key(vv: &VersionVector) -> (u64, usize, DeviceId) {
     let total = vv.0.values().copied().sum::<u64>();
     let devices = vv.0.len();
-    let tail = vv.0.keys().next_back().copied().unwrap_or_else(DeviceId::nil);
+    let tail =
+        vv.0.keys()
+            .next_back()
+            .copied()
+            .unwrap_or_else(DeviceId::nil);
     (total, devices, tail)
 }
 
