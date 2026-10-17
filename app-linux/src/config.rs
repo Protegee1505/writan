@@ -50,6 +50,22 @@ pub fn load_vault_path(path: &Path) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Default autosave debounce, matching the Tauri settings registry's 700 ms.
+pub const DEFAULT_AUTOSAVE_MS: u64 = 700;
+
+/// The autosave delay from `settings.editor.autosaveMs`. Defensively clamped
+/// (100–5000 ms) so a hand-edited config cannot stall or spin saves; anything
+/// malformed falls back to the default.
+pub fn load_autosave_ms(path: &Path) -> u64 {
+    load_object(path)
+        .get("settings")
+        .and_then(|settings| settings.get("editor"))
+        .and_then(|editor| editor.get("autosaveMs"))
+        .and_then(Value::as_u64)
+        .map(|ms| ms.clamp(100, 5000))
+        .unwrap_or(DEFAULT_AUTOSAVE_MS)
+}
+
 /// Record the vault path with an atomic temp + rename write, preserving every
 /// other key in the file (`settings`, etc. — ADR-0003).
 pub fn save_vault_path(path: &Path, vault: &Path) -> std::io::Result<()> {
@@ -94,6 +110,19 @@ mod tests {
         assert_eq!(load_vault_path(&file), Some(PathBuf::from("/notes")));
         let raw = std::fs::read_to_string(&file).expect("read");
         assert!(raw.contains("\"theme\""), "settings must survive: {raw}");
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn autosave_defaults_and_clamps() {
+        let file = temp_file();
+        assert_eq!(load_autosave_ms(&file), DEFAULT_AUTOSAVE_MS);
+        std::fs::write(&file, r#"{"settings":{"editor":{"autosaveMs":1000}}}"#).expect("write");
+        assert_eq!(load_autosave_ms(&file), 1000);
+        std::fs::write(&file, r#"{"settings":{"editor":{"autosaveMs":50}}}"#).expect("write");
+        assert_eq!(load_autosave_ms(&file), 100);
+        std::fs::write(&file, r#"{"settings":{"editor":{"autosaveMs":"soon"}}}"#).expect("write");
+        assert_eq!(load_autosave_ms(&file), DEFAULT_AUTOSAVE_MS);
         std::fs::remove_file(&file).ok();
     }
 
