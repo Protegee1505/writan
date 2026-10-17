@@ -56,7 +56,7 @@ Plain-TUI alternative inside Cloud Shell: `cd ~/writan && opencode`.
 5. **Stop the codespace** when done (it also auto-stops after ~30 min idle).
    Stopping is the one quota habit that matters.
 
-CLI alternative: `gh codespace list|start|stop|ssh -c <name>` — needs the
+CLI alternative: `gh codespace list|stop|ssh -c <name>` — needs the
 `codespace` scope once: `gh auth refresh -s codespace`.
 
 ## Model access from the cloud
@@ -94,7 +94,7 @@ IP gates can decay — a blocked host is worth re-trying a day later.
 - Actions on this public repo uses unmetered standard runners: prefer CI for
   anything heavy (`gh workflow run artifacts.yml`).
 - Pairing/relay keeps devices *reachable*, not a codespace *awake*: wake it
-  first (`gh codespace start`, or github.com/codespaces).
+  first at github.com/codespaces.
 
 ## Cloud Shell notes
 
