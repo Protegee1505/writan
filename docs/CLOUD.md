@@ -116,8 +116,10 @@ IP gates can decay — a blocked host is worth re-trying a day later.
   NSIS). Unsigned, so SmartScreen warns on first run; a free OSS signing
   route (SignPath.io) exists if wanted later.
 - **Linux** — `artifacts.yml` → `writan-linux-x64` (GTK shell binary +
-  measurements). Tauri deb/rpm/AppImage builds ride the same ubuntu runner
-  when needed.
+  measurements) and `writan-linux-bundles` (.deb, .rpm, .AppImage of the Tauri
+  app; built on ubuntu-22.04 so they ask for glibc 2.35, not 2.39 — the GTK
+  shell binary from the `linux` job needs 2.39/Fedora 40+). Unsigned: install a
+  `.deb` with `apt install ./writan_*.deb`, run the AppImage with `chmod +x`.
 - **Android (M5)** — run `tauri android init` inside a codespace (add JDK 17
   + SDK/NDK then), commit `app/src-tauri/gen/android`, add the `android` job
   (debug APK). Device install = sideload.
