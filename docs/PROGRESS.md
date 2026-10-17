@@ -56,6 +56,16 @@ Last updated: 2026-10-17 (M3 complete).
   `libwebkit2gtk-4.1-0` and `libgtk-3-0`; the AppImage carries its own GTK +
   WebKit (241 MB unpacked) and only needs glibc. Evidence: commit `0adbc67`,
   run `39027221307` (3/3 jobs green).
+- **Package metadata** (2026-10-17): `bundle.category`/`shortDescription`/
+  `longDescription` set, so the desktop entry declares a category instead of
+  `Categories=`; all three Linux bundles now ship
+  `app/src-tauri/bundle/Writan.desktop.metainfo.xml` as
+  `/usr/share/metainfo/` (AppStream), validated with `appstreamcli`. Its one
+  warning is the non-RDNS component id — the desktop entry is `Writan.desktop`
+  because Tauri names it after the product, so the AppStream id must match.
+  New `release` job in `artifacts.yml`: on a `v*` tag it attaches every
+  artifact plus `SHA256SUMS.txt` to that tag's GitHub release; manual runs
+  skip it. Evidence: commit ``, run ``.
 
 ## Current state
 

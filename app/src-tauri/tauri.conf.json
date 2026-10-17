@@ -26,12 +26,33 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "Fast, offline-first Markdown notes",
+    "longDescription": "Writan is an offline-first notes app built around plain Markdown files. Notes are ordinary .md files in a folder you choose; the search index is only a cache and can be rebuilt from the files at any time.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "section": "utils",
+        "files": {
+          "/usr/share/metainfo/Writan.desktop.metainfo.xml": "bundle/Writan.desktop.metainfo.xml"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/metainfo/Writan.desktop.metainfo.xml": "bundle/Writan.desktop.metainfo.xml"
+        }
+      },
+      "appimage": {
+        "files": {
+          "usr/share/metainfo/Writan.desktop.metainfo.xml": "bundle/Writan.desktop.metainfo.xml"
+        }
+      }
+    }
   }
 }

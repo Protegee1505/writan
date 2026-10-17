@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata, shipped by the Linux bundles (bundle.linux.*.files in
+  tauri.conf.json points here). The component id and the file name must match
+  the generated desktop entry, which is Writan.desktop (Tauri names it after
+  the product name, not the bundle id).
+  Validate after editing: appstreamcli validate app/src-tauri/bundle/Writan.desktop.metainfo.xml
+  Keep <releases> in step with the version in tauri.conf.json when releasing.
+-->
+<component type="desktop-application">
+  <id>Writan.desktop</id>
+  <name>Writan</name>
+  <summary>Fast, offline-first Markdown notes</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <description>
+    <p>
+      Writan is an offline-first notes app built around plain Markdown files.
+      Notes are ordinary .md files in a folder you choose; the search index is
+      only a cache and can be rebuilt from the files at any time.
+    </p>
+    <ul>
+      <li>Markdown files on disk are the source of truth</li>
+      <li>Full-text search, tags, folders, trash, pinned notes and attachments</li>
+      <li>Optional end-to-end encrypted sync to a folder or an S3-compatible bucket</li>
+      <li>No telemetry</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">Writan.desktop</launchable>
+  <url type="homepage">https://github.com/Protegee1505/writan</url>
+  <url type="vcs-browser">https://github.com/Protegee1505/writan</url>
+  <categories>
+    <category>Office</category>
+    <category>TextTools</category>
+  </categories>
+  <developer id="com.writan.desktop">
+    <name>Writan</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-17"/>
+  </releases>
+</component>
