@@ -16,13 +16,14 @@ Notes are plain Markdown files on disk; everything else is built around that.
 
 ## Status
 
-Active development. **M0 (bootstrap), M1 (vault core) and the first pass of
-M2 (desktop MVP) are complete** — the app can already open a notes folder,
-create/edit/search/pin/trash notes with autosave and external-edit tracking.
+Active development. **M0–M3 are complete** — the app opens a notes folder and
+creates/edits/searches/pins/trashes notes with autosave and external-edit
+tracking, and syncs them end-to-end-encrypted to a plain folder or an
+S3-compatible bucket. Next: M3.5, the native Linux shell.
 
-- Milestones & exit criteria: [`docs/PLAN.md`](docs/PLAN.md)
-- Living progress log + next actions: [`docs/PROGRESS.md`](docs/PROGRESS.md)
-- Decisions: [`docs/adr/`](docs/adr/)
+- Milestones & upcoming tasks: [`docs/PLAN.md`](docs/PLAN.md)
+- Progress log: [`docs/PROGRESS.md`](docs/PROGRESS.md)
+- Decisions (ADRs): [`docs/adr/README.md`](docs/adr/README.md)
 - Working with AI agents in this repo: [`AGENTS.md`](AGENTS.md)
 
 ## Try it (development)

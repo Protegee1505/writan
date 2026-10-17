@@ -6,12 +6,29 @@ logic is Rust (`crates/`), UI is Tauri 2 + Svelte 5 + TypeScript (`app/`).
 
 Read before changing anything:
 
-1. `docs/PROGRESS.md` — current state, verification evidence, next actions.
-2. `docs/PLAN.md` — milestones, exit criteria, budgets, scope. Keep its status
-   line current when a milestone moves.
-3. `docs/adr/` — decisions already made (stack, vault format). Add a new ADR
-   before changing anything architectural (protocol, file format, storage,
-   crypto).
+1. `docs/PROGRESS.md` — milestone history, current state, active blockers.
+2. `docs/PLAN.md` — upcoming milestones, exit criteria, the next tasks,
+   budgets, scope. Keep its status line current when a milestone moves.
+3. `docs/adr/` — decisions already made (stack, vault format, sync). Add a new
+   ADR before changing anything architectural (protocol, file format, storage,
+   crypto); keep `docs/adr/README.md` (the index) current.
+
+## Documentation maintenance
+
+`PLAN.md`, `PROGRESS.md` and `adr/` are shared memory between agents: keep them
+lean enough to read in full.
+
+- `PLAN.md` = future: upcoming milestones + the next 3–5 tasks. Completed work
+  leaves PLAN immediately; one summary line goes to `PROGRESS.md`.
+- `PROGRESS.md` = past/present: milestone- and feature-level history with dates,
+  one evidence line per entry (commit / CI run), and a short blockers section.
+  No commit-by-commit logs, no daily journals, no code walkthroughs — point at
+  `path:line` instead.
+- ADRs = decisions: never rewrite or delete an accepted ADR; amend it with a
+  dated note or supersede it with a new ADR, and keep `adr/README.md` current.
+- Write for the next agent: if a line won't help someone continue the work,
+  don't write it. One fact per line. Every update should hold or shrink the
+  file — when you add, condense or delete something else.
 
 ## Definition of done (run before every commit)
 
