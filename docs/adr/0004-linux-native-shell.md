@@ -56,8 +56,9 @@ Status: accepted, spike-gated. Date: 2026-10-16.
 ## Consequences
 
 - Two frontends to maintain. Mitigations: UI-thin rule (all logic stays in
-  core), a parity checklist that lives in `docs/PROGRESS.md`, and shared
-  command/DTO semantics with the Tauri shell.
+  core), a parity checklist that lives in `docs/PARITY.md` (amended
+  2026-10-17: moved out of `PROGRESS.md`, which stays a lean history), and
+  shared command/DTO semantics with the Tauri shell.
 - Linux idle RAM expected well below the webview figure (≈50–70 MB estimate,
   to be measured in the spike). Budget: < 100 MB idle.
 - New system dependency on Linux: GTK4 / libadwaita / GtkSourceView 5

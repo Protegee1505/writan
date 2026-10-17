@@ -104,6 +104,14 @@ IP gates can decay — a blocked host is worth re-trying a day later.
 - Optional full toolchain in Cloud Shell: `sudo apt-get install` the Tauri
   deps (see `ci.yml`) plus `rustup` — enough for `cargo fmt`/`clippy` loops,
   but the 5 GB home is tight for a real `target/`; keep builds in CI.
+- Local GTK shell build/check (verified 2026-10-17): `sudo apt-get install -y
+  libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev fonts-noto-cjk xvfb
+  xdotool imagemagick sqlite3`, then put the target dir on the **root** disk
+  (≈30 GB free) instead of `$HOME`: `CARGO_TARGET_DIR=/tmp/writan-target cargo
+  build --release -p writan-linux`. A full release build filled the 5 GB home
+  partition (os error 28) before this. Then `scripts/gui-shot.sh --bin
+  /tmp/writan-target/release/writan` and `scripts/gtk-shell-test.sh --bin …`
+  give screenshots and the autosave/watcher smoke test headlessly.
 - The Web Preview URL is Google-account-gated, so the UI is private without a
   password; set `OPENCHAMBER_UI_PASSWORD` and pass `--ui-password` for one on
   top.

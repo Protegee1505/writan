@@ -16,7 +16,8 @@ Order is a suggestion, not a constraint.
 2. **M3.5 full native shell** (`app-linux/`, ADR-0004): three-pane UI, Markdown
    highlighting + rendered preview pane, command palette, settings (same
    app-data `config.json`), trash, attachments.
-3. **Parity checklist** vs the Tauri shell stays green as each M3.5 slice lands.
+3. **Parity checklist** (`docs/PARITY.md`) vs the Tauri shell stays green as
+   each M3.5 slice lands.
 4. **Android init** (M5 prep, when the toolchain is available):
    `npm --prefix app run tauri -- android init` with JDK 17 + Android SDK/NDK,
    commit `app/src-tauri/gen/android`, then add an `android` job to

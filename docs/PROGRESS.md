@@ -69,6 +69,16 @@ Last updated: 2026-10-17 (M3 complete).
   job skipped as designed) — the `.deb` now declares `Section: utils`,
   `Categories=Office;` and carries the metainfo, and `rpm -qpl` plus an
   AppImage extraction show the same file in both.
+- **M3.5 slice 1 — watcher + autosave in the GTK shell** (2026-10-17, commit
+  `74be408`): `app-linux` follows the vault like the Tauri shell —
+  `VaultWatcher` drained on a 200 ms main-loop poll, `reconcile_paths`, list
+  refresh, and an open-note reload only while the buffer is clean (never
+  mid-typing). Autosave reads `settings.editor.autosaveMs` (700 ms default,
+  clamped 100–5000) from the app-data `config.json`, plus save on note switch,
+  Ctrl+S and close; the header shows unsaved/saved state. New
+  `scripts/gtk-shell-test.sh` (Xvfb + xdotool + sqlite3) proves autosave,
+  external-edit reload without data loss, watcher indexing and list selection —
+  5/5 green locally; `docs/PARITY.md` ticks both parity items.
 
 ## Current state
 
@@ -131,6 +141,10 @@ npm --prefix app run tauri dev
 # release installers (Windows) / Linux GTK shell (Linux only)
 npm --prefix app run tauri build
 cargo build --release -p writan-linux
+
+# GTK shell headless checks (Xvfb; no real app data touched)
+scripts/gui-shot.sh --bin target/release/writan        # walkthrough screenshots
+scripts/gtk-shell-test.sh --bin target/release/writan  # autosave + watcher smoke test
 ```
 
 ## Environment & gotchas
