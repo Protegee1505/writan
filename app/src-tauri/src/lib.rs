@@ -1,5 +1,6 @@
 mod commands;
 mod state;
+mod sync;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -45,6 +46,13 @@ pub fn run() {
             commands::import_attachment,
             commands::get_settings,
             commands::save_settings,
+            commands::sync_status,
+            commands::sync_connect,
+            commands::sync_unlock,
+            commands::sync_unlock_recovery,
+            commands::sync_now,
+            commands::sync_lock,
+            commands::sync_disable,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

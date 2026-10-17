@@ -3,8 +3,13 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 use writan_core::{Note, SearchQuery, Workspace};
+use writan_sync::{
+    FolderTarget, FolderVault, KeyringPurpose, SyncReport, SyncState, bootstrap_keyring,
+    generate_recovery_code, keyring_generations, sync as run_engine, unlock_keyring,
+};
 
-use crate::state::AppState;
+use crate::state::{AppState, Inner, SyncConfig};
+use crate::sync::{SyncSession, forget_vault_key, remember_vault_key};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -464,6 +469,314 @@ pub fn get_settings(state: State<'_, AppState>) -> CmdResult<serde_json::Value> 
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: serde_json::Value) -> CmdResult<()> {
     state.save_settings(settings)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncReportDto {
+    pub published: usize,
+    pub merged: usize,
+    pub adopted: usize,
+    pub conflict_copies: usize,
+    pub deleted: usize,
+    pub unchanged: usize,
+    pub unreadable: usize,
+}
+
+impl SyncReportDto {
+    fn from_report(report: &SyncReport) -> Self {
+        Self {
+            published: report.published,
+            merged: report.merged,
+            adopted: report.adopted,
+            conflict_copies: report.conflict_copies,
+            deleted: report.deleted,
+            unchanged: report.unchanged,
+            unreadable: report.unreadable,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusDto {
+    pub enabled: bool,
+    pub unlocked: bool,
+    pub target: Option<String>,
+    pub vault_id: Option<String>,
+    pub device_id: Option<String>,
+    pub last_sync: Option<String>,
+    pub last_report: Option<SyncReportDto>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConnectDto {
+    /// Shown exactly once when a new keyring is created; `None` when joining
+    /// an existing one.
+    pub recovery_code: Option<String>,
+    pub status: SyncStatusDto,
+}
+
+fn sync_status_from(state: &AppState, inner: &Inner) -> SyncStatusDto {
+    let mut dto = SyncStatusDto {
+        enabled: inner.config.sync.enabled,
+        unlocked: inner.sync.is_some(),
+        target: inner
+            .config
+            .sync
+            .target
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        vault_id: None,
+        device_id: None,
+        last_sync: None,
+        last_report: None,
+    };
+    if let Some(session) = &inner.sync {
+        dto.vault_id = Some(session.vault_id.to_string());
+        dto.device_id = Some(session.device.to_string());
+        dto.last_sync = session.last_sync.clone();
+        dto.last_report = session.last_report.as_ref().map(SyncReportDto::from_report);
+    } else if let Ok(stored) = SyncState::load(&state.sync_state_path) {
+        dto.vault_id = stored.vault_id.map(|id| id.to_string());
+        dto.device_id = stored.device.map(|id| id.to_string());
+    }
+    dto
+}
+
+#[tauri::command]
+pub fn sync_status(state: State<'_, AppState>) -> CmdResult<SyncStatusDto> {
+    let inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    Ok(sync_status_from(&state, &inner))
+}
+
+/// One engine pass while `inner` is already locked; reconciles the index so
+/// notes merged in from other devices show up in the UI.
+fn run_sync_locked(state: &AppState, inner: &mut Inner) -> CmdResult<SyncReportDto> {
+    if !inner.config.sync.enabled {
+        return Err("sync is disabled".to_string());
+    }
+    let Some(target_path) = inner.config.sync.target.clone() else {
+        return Err("sync is not configured yet".to_string());
+    };
+    let bound_vault = inner.config.sync.vault_path.clone();
+    let current_vault = inner
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.vault().root().to_path_buf());
+    if let Some(bound) = bound_vault
+        && current_vault.as_deref() != Some(bound.as_path())
+    {
+        return Err("this sync belongs to a different vault folder".to_string());
+    }
+    let Some(workspace) = inner.workspace.as_mut() else {
+        return Err("no vault is open".to_string());
+    };
+    let Some(session) = inner.sync.as_mut() else {
+        return Err("sync is locked; unlock it first".to_string());
+    };
+    let target = FolderTarget::open(&target_path).map_err(|e| e.to_string())?;
+    let vault = FolderVault::new(workspace.vault());
+    let report = run_engine(
+        &session.vault_key,
+        session.device,
+        session.vault_id,
+        &mut session.state,
+        &vault,
+        &target,
+    )
+    .map_err(|e| e.to_string())?;
+    let dto = SyncReportDto::from_report(&report);
+    session
+        .state
+        .save(&state.sync_state_path)
+        .map_err(|e| e.to_string())?;
+    session.last_sync = Some(writan_core::now_rfc3339());
+    session.last_report = Some(report);
+    let _ = workspace.reconcile();
+    Ok(dto)
+}
+
+/// Connect this vault to a shared folder: create a fresh keyring there (the
+/// recovery code is returned exactly once) or unlock an existing one with the
+/// password. Runs a first sync immediately.
+#[tauri::command]
+pub fn sync_connect(
+    state: State<'_, AppState>,
+    target: String,
+    password: String,
+) -> CmdResult<SyncConnectDto> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("choose a sync folder first".to_string());
+    }
+    if password.is_empty() {
+        return Err("set a sync password first".to_string());
+    }
+    let target_path = PathBuf::from(trimmed);
+    let folder = FolderTarget::open(&target_path).map_err(|e| e.to_string())?;
+    let generations = keyring_generations(&folder).map_err(|e| e.to_string())?;
+    let (vault_id, vault_key, recovery_code) = if generations.is_empty() {
+        let vault_id = Uuid::new_v4();
+        let code = generate_recovery_code();
+        let (_file, key) = bootstrap_keyring(&folder, vault_id, &password, &code)
+            .map_err(|e| format!("failed to create the keyring: {e}"))?;
+        (vault_id, key, Some(code))
+    } else {
+        let unlocked = unlock_keyring(&generations, KeyringPurpose::Password, &password, None)
+            .map_err(|e| format!("could not unlock the existing keyring: {e}"))?;
+        (unlocked.vault_id, unlocked.vault_key, None)
+    };
+    remember_vault_key(vault_id, &vault_key);
+
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let Some(vault_path) = inner
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.vault().root().to_path_buf())
+    else {
+        return Err("open a vault before setting up sync".to_string());
+    };
+    let mut sync_state = SyncState::load(&state.sync_state_path).unwrap_or_default();
+    if let Some(existing) = sync_state.vault_id
+        && existing != vault_id
+    {
+        return Err("this device already syncs a different vault".to_string());
+    }
+    sync_state.vault_id = Some(vault_id);
+    let device = sync_state.device.unwrap_or_else(Uuid::new_v4);
+    sync_state.device = Some(device);
+    inner.config.sync = SyncConfig {
+        target: Some(target_path),
+        vault_path: Some(vault_path),
+        enabled: true,
+    };
+    inner.sync = Some(SyncSession {
+        vault_id,
+        device,
+        vault_key: zeroize::Zeroizing::new(vault_key),
+        state: sync_state,
+        last_sync: None,
+        last_report: None,
+    });
+    state.save_config(&inner);
+    run_sync_locked(&state, &mut inner)?;
+    Ok(SyncConnectDto {
+        recovery_code,
+        status: sync_status_from(&state, &inner),
+    })
+}
+
+/// Unlock sync after a restart with the password.
+#[tauri::command]
+pub fn sync_unlock(state: State<'_, AppState>, password: String) -> CmdResult<SyncStatusDto> {
+    unlock_sync(&state, KeyringPurpose::Password, password.trim())
+}
+
+/// Unlock sync with the recovery code (forgotten password).
+#[tauri::command]
+pub fn sync_unlock_recovery(state: State<'_, AppState>, code: String) -> CmdResult<SyncStatusDto> {
+    unlock_sync(&state, KeyringPurpose::Recovery, code.trim())
+}
+
+fn unlock_sync(
+    state: &AppState,
+    purpose: KeyringPurpose,
+    credential: &str,
+) -> CmdResult<SyncStatusDto> {
+    if credential.is_empty() {
+        return Err("enter the password or recovery code".to_string());
+    }
+    let target_path = {
+        let inner = state
+            .inner
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        inner
+            .config
+            .sync
+            .target
+            .clone()
+            .ok_or_else(|| "sync is not configured yet".to_string())?
+    };
+    let folder = FolderTarget::open(&target_path).map_err(|e| e.to_string())?;
+    let generations = keyring_generations(&folder).map_err(|e| e.to_string())?;
+    if generations.is_empty() {
+        return Err("the sync folder has no keyring yet".to_string());
+    }
+    let expected = SyncState::load(&state.sync_state_path)
+        .ok()
+        .and_then(|stored| stored.vault_id);
+    let unlocked = unlock_keyring(&generations, purpose, credential, expected)
+        .map_err(|e| format!("could not unlock: {e}"))?;
+    remember_vault_key(unlocked.vault_id, &unlocked.vault_key);
+
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let mut sync_state = SyncState::load(&state.sync_state_path).unwrap_or_default();
+    sync_state.vault_id = Some(unlocked.vault_id);
+    let device = sync_state.device.unwrap_or_else(Uuid::new_v4);
+    sync_state.device = Some(device);
+    inner.sync = Some(SyncSession {
+        vault_id: unlocked.vault_id,
+        device,
+        vault_key: zeroize::Zeroizing::new(unlocked.vault_key),
+        state: sync_state,
+        last_sync: None,
+        last_report: None,
+    });
+    inner.config.sync.enabled = true;
+    state.save_config(&inner);
+    Ok(sync_status_from(state, &inner))
+}
+
+/// Run one sync pass now.
+#[tauri::command]
+pub fn sync_now(state: State<'_, AppState>) -> CmdResult<SyncReportDto> {
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    run_sync_locked(&state, &mut inner)
+}
+
+/// Lock sync: drop the in-memory key and forget the keychain entry.
+#[tauri::command]
+pub fn sync_lock(state: State<'_, AppState>) -> CmdResult<SyncStatusDto> {
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    if let Some(session) = &inner.sync {
+        forget_vault_key(session.vault_id);
+    }
+    inner.sync = None;
+    Ok(sync_status_from(&state, &inner))
+}
+
+/// Turn sync off for this vault (the target keeps its blobs and keyring).
+#[tauri::command]
+pub fn sync_disable(state: State<'_, AppState>) -> CmdResult<SyncStatusDto> {
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    if let Some(session) = &inner.sync {
+        forget_vault_key(session.vault_id);
+    }
+    inner.sync = None;
+    inner.config.sync.enabled = false;
+    state.save_config(&inner);
+    Ok(sync_status_from(&state, &inner))
 }
 
 #[cfg(test)]
