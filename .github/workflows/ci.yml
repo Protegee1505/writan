@@ -32,6 +32,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Search perf budget (release)
+        run: cargo test -p writan-core --release --test search_perf -- --ignored --nocapture
 
   deny:
     runs-on: ubuntu-latest
