@@ -167,8 +167,9 @@ Last updated: 2026-10-17 (M3.5 slice 5).
 - Nightly bucket target uses `adobe/s3mock` with initial buckets: MinIO
   withdrew its public images and binaries (checked 2026-10-17).
 - `deny.toml` carries documented ignores for unfixable unmaintained crates
-  (Tauri's `proc-macro-error`, the `unic-*` family); RustSec advisories are
-  resolved (time 0.3.55, plist 1.10.1, quick-xml 0.42.0).
+  (Tauri's `proc-macro-error`, the `unic-*` family, the deprecated zbus 5.x
+  family merged into zbus 6); RustSec advisories are resolved (time 0.3.55,
+  plist 1.10.1, quick-xml 0.42.0) and the yanked `inout` was bumped to 0.2.4.
 
 ## Active blockers
 
