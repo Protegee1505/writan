@@ -48,6 +48,14 @@ Last updated: 2026-10-17 (M3 complete).
   `additionalBrowserArgs` into `tauri.conf.json` for that build only (wry sets
   the WebView2 property, which makes the env var variant a no-op). Evidence:
   commit `6237d86`, run `39026501469` (both jobs green).
+- **Linux bundles in CI** (2026-10-17): new `linux-bundles` job in
+  `artifacts.yml` (ubuntu-22.04, so the binaries ask for glibc ≤2.34 rather
+  than an ubuntu-latest build's 2.39). Artifact `writan-linux-bundles` holds
+  `.deb` 5.3 MB, `.rpm` 5.3 MB and `.AppImage` 83.6 MB (unsigned); all three
+  ship `usr/bin/writan-app` + desktop entry + icons. deb/rpm depend on
+  `libwebkit2gtk-4.1-0` and `libgtk-3-0`; the AppImage carries its own GTK +
+  WebKit (241 MB unpacked) and only needs glibc. Evidence: commit `0adbc67`,
+  run `39027221307` (3/3 jobs green).
 
 ## Current state
 
