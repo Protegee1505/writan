@@ -197,6 +197,7 @@ fn same_line_edits_keep_an_explicit_conflict_copy() {
     let report = b.sync();
     assert_eq!(report.merged, 1);
     assert_eq!(report.conflict_copies, 1);
+    assert_eq!(report.deleted, 0, "the fresh copy is not a local deletion");
     assert_eq!(b.body_of("Same").as_deref(), Some("alpha\nbeta-b\ngamma\n"));
     let copy = b.conflict_copy().expect("copy materialised on B");
     assert_eq!(copy.body, "alpha\nbeta-a\ngamma\n");
@@ -205,7 +206,7 @@ fn same_line_edits_keep_an_explicit_conflict_copy() {
     eprintln!("B copy id: {:?}", copy.meta.id);
     eprintln!("B target: {:?}", b.target.list().expect("list"));
 
-    // A first takes the kept version, then adopts the copy on the next pass.
+    // A takes the kept version and the explicit copy in one pass.
     let report = a.sync();
     eprintln!("A pass1 report: {report:?}");
     eprintln!(
@@ -220,7 +221,7 @@ fn same_line_edits_keep_an_explicit_conflict_copy() {
         "A pass1 state: {:?}",
         SyncState::load(&a.state_path).expect("state")
     );
-    assert_eq!(report.adopted, 1);
+    assert_eq!(report.adopted, 2);
     assert_eq!(a.body_of("Same").as_deref(), Some("alpha\nbeta-b\ngamma\n"));
     let report = a.sync();
     eprintln!("A pass2 report: {report:?}");
@@ -232,7 +233,7 @@ fn same_line_edits_keep_an_explicit_conflict_copy() {
             .collect::<Vec<_>>()
     );
     eprintln!("A pass2 target: {:?}", a.target.list().expect("list"));
-    assert_eq!(report.adopted, 1);
+    assert_eq!(report.unchanged, 2);
     let copy = a.conflict_copy().expect("copy materialised on A");
     assert_eq!(copy.body, "alpha\nbeta-a\ngamma\n");
 

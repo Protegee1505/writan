@@ -396,6 +396,7 @@ pub fn sync(
                     file,
                     best,
                     &local_digests,
+                    &mut local_ids,
                     &mut report,
                 )?;
             }
@@ -415,6 +416,7 @@ pub fn sync(
                 file,
                 best,
                 &local_digests,
+                &mut local_ids,
                 &mut report,
             )?;
         }
@@ -485,6 +487,7 @@ fn merge_flow<T: SyncTarget, V: VaultIo>(
     file: &NoteFile,
     remote: &NoteBlob,
     local_digests: &BTreeMap<String, NoteId>,
+    local_ids: &mut BTreeSet<NoteId>,
     report: &mut SyncReport,
 ) -> Result<(), EngineError> {
     let base = state
@@ -516,6 +519,9 @@ fn merge_flow<T: SyncTarget, V: VaultIo>(
             state.vectors.insert(copy_id, published.vv);
             state.bases.insert(copy_id, reference);
             state.digests.insert(copy_id, copy_digest);
+            // The copy is a real local note now; keep it out of the deletion
+            // pass, which tombstones state ids whose file disappeared.
+            local_ids.insert(copy_id);
             report.conflict_copies += 1;
         }
     }
