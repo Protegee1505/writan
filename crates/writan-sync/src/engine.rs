@@ -522,9 +522,9 @@ fn merge_flow<T: SyncTarget, V: VaultIo>(
 
     let kept_id = kept.id;
     let (reference, published) = publisher.publish_note(kept)?;
-    state.vectors.insert(kept_id, published.vv);
-    state.bases.insert(kept_id, reference);
     state.digests.insert(kept_id, digest_of_blob(&published));
+    state.bases.insert(kept_id, reference);
+    state.vectors.insert(kept_id, published.vv);
     report.merged += 1;
     Ok(())
 }
