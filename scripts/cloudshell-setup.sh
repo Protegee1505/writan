@@ -22,7 +22,7 @@ else
 fi
 
 # User-level installs (opencode, openchamber) live on $HOME, which persists.
-export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+export PATH="$HOME/.yarn/bin:$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
 
 # ---------------------------------------------------------------------- node
 # OpenChamber needs Node >= 24.14; nvm keeps it on $HOME across sessions.
@@ -62,10 +62,18 @@ info "openchamber"
 if ! command -v openchamber >/dev/null 2>&1; then
   npm config set allow-scripts=node-pty --location=user
   curl -fsSL https://raw.githubusercontent.com/openchamber/openchamber/main/scripts/install.sh | bash
-  export PATH="$HOME/.local/bin:$PATH"
+  # npm installs to ~/.local/bin; Cloud Shell's yarn installs to ~/.yarn/bin.
+  export PATH="$HOME/.local/bin:$(yarn global bin 2>/dev/null || echo "$HOME/.yarn/bin"):$PATH"
+fi
+# Keep the resolved bins visible in future interactive shells too.
+if ! grep -q 'cloudshell-writan' "$HOME/.bashrc" 2>/dev/null; then
+  {
+    printf '\n# cloudshell-writan: user-level installs\n'
+    printf '%s\n' 'export PATH="$HOME/.yarn/bin:$HOME/.opencode/bin:$HOME/.local/bin:$PATH"'
+  } >> "$HOME/.bashrc"
 fi
 if ! command -v openchamber >/dev/null 2>&1; then
-  echo "openchamber is not on PATH after install" >&2
+  echo "openchamber is not on PATH after install (checked ~/.local/bin and ~/.yarn/bin)" >&2
   exit 1
 fi
 
