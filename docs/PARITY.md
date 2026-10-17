@@ -19,8 +19,8 @@ says why).
 | Pinned notes first + pin/unpin | [x] | [x] | Linux: `●` marker in the list, pin button in the editor header |
 | New note (Ctrl+N) | [x] | [x] | |
 | Rename note | [x] | [x] | title entry commits on Enter or focus leaving |
-| Delete note → trash + toast | [x] | [x] | Linux: two-step (arm, then delete) + toast; no trash panel yet (slice 3) |
-| Trash panel: list/restore/purge/empty | [x] | [ ] | |
+| Delete note → trash + toast | [x] | [x] | Linux: two-step (arm, then delete) + toast |
+| Trash panel: list/restore/purge/empty | [x] | [x] | Linux: modal window, `Empty Trash` is a Linux extra (the Tauri panel has no such action) |
 | Editor: Markdown editing | [x] | [x] | |
 | Editor header: title entry, word count, pin, delete | [x] | [x] | same `settings.view.showWordCount` default (Linux reads it in `config.rs`) |
 | Edit note tags (add/remove) | [x] | [ ] | planned as slice 2b (chips + add-tag input in the editor header) |
@@ -42,7 +42,7 @@ says why).
 
 1. Watcher + autosave — done (2026-10-17).
 2. Sidebar filters, pinned first, pin/unpin, rename, delete — done (2026-10-17).
-3. Trash panel: list/restore/purge/empty.
+3. Trash panel: list/restore/purge/empty — done (2026-10-17); Linux also has `Empty Trash` (Tauri extra to add in the sweep).
 4. Command palette + shortcut service.
 5. Settings panel.
 6. Attachments.

@@ -9,6 +9,8 @@
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod config;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod dates;
 #[cfg(any(target_os = "linux", test))]
 mod spans;
 

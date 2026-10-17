@@ -14,6 +14,10 @@
 #   7. a tag chip filters the list (and clearing it restores the rows)
 #   8. renaming in the title entry renames the file on disk
 #   9. the trash button arms once, then moves the note to the app-data trash
+#  10. the header trash button opens the trash panel with the deleted note
+#  11. Restore in the panel brings the file back into the vault
+#  12. Delete forever purges the trashed copy for good
+#  13. Empty Trash clears the remaining entries
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
@@ -135,6 +139,8 @@ xdotool windowfocus --sync "$window"
 xdotool windowraise "$window"
 
 shot() { import -window "$window" "$out/$1.png" 2>/dev/null || true; }
+shot_of() { import -window "$2" "$out/$1.png" 2>/dev/null || true; }
+trash_window() { xdotool search --onlyvisible --name '^Trash$' 2>/dev/null | head -1; }
 
 wait_title() { # substring, seconds
   local want="$1" deadline=$(( $(date +%s) + $2 ))
@@ -341,6 +347,98 @@ case "$(xdotool getwindowname "$window")" in
   *) bad "window title after delete: '$(xdotool getwindowname "$window")'" ;;
 esac
 shot 60-after-delete
+
+# 10. The header trash button opens the trash panel on the deleted note.
+# Coordinates are calibrated for the 1000x700 test window (see the shots).
+xdotool mousemove --sync 804 27
+xdotool click 1
+sleep 1.5
+tw="$(trash_window || true)"
+if [ -n "$tw" ]; then
+  note "trash panel: $(xdotool getwindowgeometry --shell "$tw" | tr '\n' ' ')"
+  ok "the header trash button opened the trash panel"
+else
+  bad "no window titled Trash appeared"
+fi
+shot 70-trash-panel
+[ -n "$tw" ] && shot_of 71-trash-panel-window "$tw"
+
+# 11. Restore brings the file back into the vault (and off the panel).
+if [ -n "$tw" ]; then
+  # The panel's first row (1000-wide screen: panel at 0,0): Restore at x=449.
+  xdotool mousemove --sync 449 80
+  xdotool click 1
+  sleep 1.5
+  restored="$(find "$vault" -maxdepth 1 -name 'gamma-*.md' | head -1)"
+  if [ -n "$restored" ]; then
+    ok "Restore brought the file back into the vault ($(basename "$restored"))"
+  else
+    bad "Restore did not bring the file back into the vault"
+  fi
+  shot_of 75-restored "$tw"
+  xdotool mousemove --sync 613 26
+  xdotool click 1
+  sleep 1.0
+fi
+
+# 12. Trash it again, then Delete forever drops the copy from the trash.
+if [ -n "$restored" ]; then
+  open_note Gamma 170 190 210 230 250 270 290 >/dev/null || true
+  xdotool mousemove --sync 768 77
+  xdotool click 1
+  sleep 0.6
+  xdotool click 1
+  sleep 1.5
+  xdotool mousemove --sync 804 27
+  xdotool click 1
+  sleep 1.5
+  tw="$(trash_window || true)"
+  if [ -n "$tw" ]; then
+    xdotool mousemove --sync 559 80
+    xdotool click 1
+    sleep 1.5
+    shot_of 80-purged "$tw"
+    purged="$(find "$data_home/com.writan.desktop/trash" -name '*.md' 2>/dev/null | wc -l)"
+    if [ "${purged:-1}" = "0" ]; then
+      ok "Delete forever dropped the trashed copy"
+    else
+      bad "trash still holds $purged note(s) after Delete forever"
+    fi
+    xdotool mousemove --sync 613 26
+    xdotool click 1
+    sleep 1.0
+  else
+    bad "the trash panel did not reopen for the purge check"
+  fi
+fi
+
+# 13. Empty Trash: one more entry, then the header button clears it.
+open_note Alpha 170 190 210 230 250 270 290 >/dev/null || true
+xdotool mousemove --sync 768 77
+xdotool click 1
+sleep 0.6
+xdotool click 1
+sleep 1.5
+xdotool mousemove --sync 804 27
+xdotool click 1
+sleep 1.5
+tw="$(trash_window || true)"
+if [ -n "$tw" ]; then
+  xdotool mousemove --sync 533 27
+  xdotool click 1
+  sleep 1.5
+  shot_of 85-emptied "$tw"
+  left="$(find "$data_home/com.writan.desktop/trash" -name '*.md' 2>/dev/null | wc -l)"
+  if [ "${left:-1}" = "0" ]; then
+    ok "Empty Trash cleared the remaining entry"
+  else
+    bad "trash still holds $left note(s) after Empty Trash"
+  fi
+  xdotool mousemove --sync 613 26
+  xdotool click 1
+else
+  bad "the trash panel did not reopen for the empty check"
+fi
 
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

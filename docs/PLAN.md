@@ -1,7 +1,7 @@
 # Writan — implementation plan
 
-Status: M0–M3 complete (2026-10-17) · M3.5 in progress — slices 1–2 done,
-slice 3 (trash panel) next.
+Status: M0–M3 complete (2026-10-17) · M3.5 in progress — slices 1–3 done,
+slice 4 (command palette + shortcut service) next.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -14,8 +14,8 @@ Order is a suggestion, not a constraint.
    against the < 100 MB budget — then append the outcome to ADR-0004. This also
    closes M2's deferred IME item. Start from the fixture vault and screenshot
    loop in `tools/visual/README.md`.
-2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–2 done
-   (watcher + autosave, sidebar filters + note actions). Left: trash panel,
+2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–3 done
+   (watcher + autosave, sidebar filters + note actions, trash panel). Left:
    command palette + shortcut service, settings panel, attachments, then the
    parity sweep.
 3. **Parity checklist** (`docs/PARITY.md`) vs the Tauri shell stays green as

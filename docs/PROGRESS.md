@@ -92,11 +92,20 @@ Last updated: 2026-10-17 (M3 complete).
   `scripts/gtk-shell-test.sh` grew from 5 to 13 checks (filter hides/restores a
   note, pin row order, rename on disk, armed delete, editor cleared) — 13/13
   green locally; `docs/PARITY.md` ticks six more rows.
+- **M3.5 slice 3 — trash panel in the GTK shell** (2026-10-17): the header
+  trash button opens a modal `adw::Window` listing what `Trash::list()` holds,
+  each row showing title, deletion time (`settings.view.dateFormat`, relative
+  by default, via new `app-linux/src/dates.rs`) and original path, with
+  `Restore` (reindex + list refresh) and `Delete forever`; `Empty Trash` sits
+  in the panel header and Escape or the close button dismisses it. The time
+  crate gained its `parsing` feature; `scripts/gtk-shell-test.sh` grew from 13
+  to 17 checks (panel opens on the deleted note, Restore returns the file,
+  purge and empty clear the trash) — 17/17 green locally.
 
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) in progress — slices
-  1–2 done, next slice 3 (trash panel).
+  1–3 done, next slice 4 (command palette + shortcut service).
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

@@ -6036,6 +6036,7 @@ dependencies = [
  "pulldown-cmark",
  "serde_json",
  "sourceview5",
+ "time",
  "writan-core",
 ]
 

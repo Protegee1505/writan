@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use sourceview5::prelude::*;
 
-use writan_core::{Note, NoteId, SearchQuery, VaultEvent, VaultWatcher, Workspace};
+use writan_core::{Note, NoteId, SearchQuery, TrashEntry, VaultEvent, VaultWatcher, Workspace};
 
 use crate::config;
 use crate::preview::Preview;
@@ -49,6 +49,8 @@ struct State {
     delete_timer: Option<gtk::glib::SourceId>,
     /// `settings.view.showWordCount`.
     show_word_count: bool,
+    /// `settings.view.dateFormat` for trash timestamps.
+    date_format: crate::dates::DateFormat,
     /// True while widgets are updated from code, so their signals do not
     /// re-enter the actions that set them.
     programmatic: bool,
@@ -107,6 +109,7 @@ fn build(application: &adw::Application) {
         delete_armed: false,
         delete_timer: None,
         show_word_count: config::load_show_word_count(&config_path),
+        date_format: config::load_date_format(&config_path),
         programmatic: false,
         config_path,
         data_dir: config::state_dir(),
@@ -138,9 +141,14 @@ fn build(application: &adw::Application) {
         .tooltip_text("Toggle preview")
         .active(true)
         .build();
+    let trash_button = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Trash")
+        .build();
     header.pack_start(&open_button);
     header.pack_start(&status);
     header.pack_end(&preview_toggle);
+    header.pack_end(&trash_button);
     header.pack_end(&new_button);
 
     let toolbar = adw::ToolbarView::new();
@@ -376,6 +384,13 @@ fn build(application: &adw::Application) {
         let state = state.clone();
         let ui = ui.clone();
         delete_button.connect_clicked(move |_| delete_clicked(&state, &ui));
+    }
+
+    // Open the trash browser.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        trash_button.connect_clicked(move |_| open_trash(&state, &ui));
     }
 
     // Editor → preview, dirty state, debounced autosave.
@@ -1013,6 +1028,249 @@ fn move_to_trash(state: &Rc<RefCell<State>>, ui: &Ui) {
             set_status(state, ui, "");
             refresh(state, ui, false);
         }
+        Err(error) => {
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Delete failed: {error}")));
+        }
+    }
+}
+
+/// The trash browser: notes `move_to_trash` moved out of the vault, each
+/// restorable or purgeable. A fresh modal `adw::Window` per open, like the
+/// Tauri shell's modal panel; while it is up the editor cannot change.
+fn open_trash(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    rows.set_margin_top(6);
+    rows.set_margin_bottom(6);
+    rows.set_margin_start(6);
+    rows.set_margin_end(6);
+
+    let empty = gtk::Label::builder()
+        .label("Trash is empty.")
+        .css_classes(["dim-label"])
+        .margin_top(48)
+        .margin_bottom(48)
+        .build();
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.append(&rows);
+    body.append(&empty);
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&body)
+        .vexpand(true)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .build();
+
+    let header = adw::HeaderBar::new();
+    let empty_button = gtk::Button::builder()
+        .label("Empty Trash")
+        .tooltip_text("Delete every trashed note forever")
+        .build();
+    header.pack_end(&empty_button);
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&scroll));
+
+    let window = adw::Window::builder()
+        .title("Trash")
+        .transient_for(&ui.window)
+        .modal(true)
+        .default_width(640)
+        .default_height(520)
+        .content(&toolbar)
+        .build();
+
+    let panel = TrashPanel {
+        rows: rows.clone(),
+        empty: empty.clone(),
+        empty_button: empty_button.clone(),
+    };
+    fill_trash(state, ui, &panel);
+
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let panel = panel.clone();
+        empty_button.connect_clicked(move |_| {
+            let outcome = {
+                let st = state.borrow();
+                let Some(workspace) = st.workspace.as_ref() else {
+                    return;
+                };
+                workspace.trash().empty().map_err(|error| error.to_string())
+            };
+            match outcome {
+                Ok(count) => {
+                    if count > 0 {
+                        ui.toast.add_toast(adw::Toast::new(&format!(
+                            "Removed {count} note{}",
+                            if count == 1 { "" } else { "s" }
+                        )));
+                    }
+                    fill_trash(&state, &ui, &panel);
+                }
+                Err(error) => {
+                    ui.toast
+                        .add_toast(adw::Toast::new(&format!("Empty trash failed: {error}")));
+                }
+            }
+        });
+    }
+
+    // Escape closes the panel, like every GNOME dialog.
+    {
+        let window_for_escape = window.clone();
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                window_for_escape.close();
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        window.add_controller(keys);
+    }
+
+    window.present();
+}
+
+/// Widgets of the open trash window; rows are rebuilt in place after every
+/// restore, purge or empty.
+#[derive(Clone)]
+struct TrashPanel {
+    rows: gtk::Box,
+    empty: gtk::Label,
+    empty_button: gtk::Button,
+}
+
+/// Rebuild the trash list from `Trash::list`.
+fn fill_trash(state: &Rc<RefCell<State>>, ui: &Ui, panel: &TrashPanel) {
+    while let Some(child) = panel.rows.first_child() {
+        panel.rows.remove(&child);
+    }
+    let entries = {
+        let st = state.borrow();
+        let Some(workspace) = st.workspace.as_ref() else {
+            return;
+        };
+        workspace.trash().list().unwrap_or_default()
+    };
+    panel.empty.set_visible(entries.is_empty());
+    panel.empty_button.set_sensitive(!entries.is_empty());
+    for entry in &entries {
+        panel.rows.append(&trash_row(state, ui, panel, entry));
+    }
+}
+
+/// One trashed note: title and deletion time, with Restore and Delete forever.
+fn trash_row(
+    state: &Rc<RefCell<State>>,
+    ui: &Ui,
+    panel: &TrashPanel,
+    entry: &TrashEntry,
+) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.set_margin_top(6);
+    row.set_margin_bottom(6);
+    row.set_margin_start(12);
+    row.set_margin_end(12);
+
+    let info = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    info.set_hexpand(true);
+    let title = gtk::Label::builder()
+        .label(if entry.title.is_empty() {
+            "Untitled"
+        } else {
+            &entry.title
+        })
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    let deleted = {
+        let st = state.borrow();
+        crate::dates::fmt_date(&entry.deleted_at, st.date_format)
+    };
+    let meta = gtk::Label::builder()
+        .label(format!("{deleted} · {}", entry.original_path))
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["dim-label", "caption"])
+        .build();
+    info.append(&title);
+    info.append(&meta);
+    row.append(&info);
+
+    let restore = gtk::Button::builder()
+        .label("Restore")
+        .tooltip_text("Move the note back into the vault")
+        .valign(gtk::Align::Center)
+        .build();
+    let purge = gtk::Button::builder()
+        .label("Delete forever")
+        .tooltip_text("Remove the note from the trash for good")
+        .css_classes(["destructive-action"])
+        .valign(gtk::Align::Center)
+        .build();
+    row.append(&restore);
+    row.append(&purge);
+
+    let id = entry.id;
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let panel = panel.clone();
+        restore.connect_clicked(move |_| restore_trash_entry(&state, &ui, &panel, &id));
+    }
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let panel = panel.clone();
+        purge.connect_clicked(move |_| purge_trash_entry(&state, &ui, &panel, &id));
+    }
+    row
+}
+
+/// Put a trashed note back into the vault (Tauri: `restore_note`).
+fn restore_trash_entry(state: &Rc<RefCell<State>>, ui: &Ui, panel: &TrashPanel, id: &NoteId) {
+    let outcome = {
+        let mut st = state.borrow_mut();
+        let Some(workspace) = st.workspace.as_mut() else {
+            return;
+        };
+        workspace
+            .restore_note(id)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    };
+    match outcome {
+        Ok(()) => {
+            refresh(state, ui, false);
+            fill_trash(state, ui, panel);
+        }
+        Err(error) => {
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Restore failed: {error}")));
+        }
+    }
+}
+
+/// Delete a trashed note for good (Tauri: `purge_note`).
+fn purge_trash_entry(state: &Rc<RefCell<State>>, ui: &Ui, panel: &TrashPanel, id: &NoteId) {
+    let outcome = {
+        let st = state.borrow();
+        let Some(workspace) = st.workspace.as_ref() else {
+            return;
+        };
+        workspace
+            .trash()
+            .purge(id)
+            .map_err(|error| error.to_string())
+    };
+    match outcome {
+        Ok(()) => fill_trash(state, ui, panel),
         Err(error) => {
             ui.toast
                 .add_toast(adw::Toast::new(&format!("Delete failed: {error}")));

@@ -83,6 +83,20 @@ pub fn load_show_word_count(path: &Path) -> bool {
     setting_bool(&load_object(path), "view", "showWordCount").unwrap_or(true)
 }
 
+/// `settings.view.dateFormat` — the Tauri registry defaults it to `relative`.
+pub fn load_date_format(path: &Path) -> crate::dates::DateFormat {
+    let object = load_object(path);
+    let raw = object
+        .get("settings")
+        .and_then(|settings| settings.get("view"))
+        .and_then(|view| view.get("dateFormat"))
+        .and_then(Value::as_str);
+    match raw {
+        Some("absolute") => crate::dates::DateFormat::Absolute,
+        _ => crate::dates::DateFormat::Relative,
+    }
+}
+
 /// Record the vault path with an atomic temp + rename write, preserving every
 /// other key in the file (`settings`, etc. — ADR-0003).
 pub fn save_vault_path(path: &Path, vault: &Path) -> std::io::Result<()> {
@@ -165,6 +179,18 @@ mod tests {
             "missing key falls back to default"
         );
         assert!(load_show_word_count(&file), "malformed value falls back");
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn date_format_defaults_to_relative_and_reads_absolute() {
+        use crate::dates::DateFormat;
+        let file = temp_file();
+        assert_eq!(load_date_format(&file), DateFormat::Relative);
+        std::fs::write(&file, r#"{"settings":{"view":{"dateFormat":"absolute"}}}"#).expect("write");
+        assert_eq!(load_date_format(&file), DateFormat::Absolute);
+        std::fs::write(&file, r#"{"settings":{"view":{"dateFormat":"fancy"}}}"#).expect("write");
+        assert_eq!(load_date_format(&file), DateFormat::Relative);
         std::fs::remove_file(&file).ok();
     }
 

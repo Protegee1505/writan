@@ -16,6 +16,7 @@ path = "src/main.rs"
 writan-core.workspace = true
 serde_json.workspace = true
 pulldown-cmark.workspace = true
+time.workspace = true
 
 # The GTK stack only exists below; on other targets this crate compiles as a
 # stub so `cargo clippy/test --workspace` stays green on Windows (ADR-0004).
