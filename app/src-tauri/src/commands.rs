@@ -392,49 +392,12 @@ pub fn list_folders(state: State<'_, AppState>) -> CmdResult<Vec<CountDto>> {
     })
 }
 
-const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
-
-/// Deterministic attachment file name: `<slug>-<hash8>.<ext>`.
-fn attachment_name(file_name: &str, bytes: &[u8]) -> String {
-    let path = Path::new(file_name);
-    let mut stem =
-        writan_core::vault::slugify(path.file_stem().and_then(|s| s.to_str()).unwrap_or("file"));
-    if stem.is_empty() {
-        stem = "file".to_string();
-    }
-    let ext: String = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .take(8)
-        .collect();
-    let hash = blake3::hash(bytes);
-    let short = &hash.to_hex()[..8];
-    if ext.is_empty() {
-        format!("{stem}-{short}")
-    } else {
-        format!("{stem}-{short}.{ext}")
-    }
-}
-
+/// Store pasted/dropped bytes under the vault's `attachments/` folder; the
+/// naming and size rules live in `writan_core::attachments` (shared with the
+/// GTK shell).
 fn write_attachment(workspace: &Workspace, file_name: &str, bytes: &[u8]) -> CmdResult<String> {
-    if bytes.is_empty() {
-        return Err("attachment is empty".to_string());
-    }
-    if bytes.len() > MAX_ATTACHMENT_BYTES {
-        return Err("attachment is larger than 25 MB".to_string());
-    }
-    let name = attachment_name(file_name, bytes);
-    let dir = workspace.vault().root().join("attachments");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create attachments dir: {e}"))?;
-    let path = dir.join(&name);
-    if !path.exists() {
-        std::fs::write(&path, bytes).map_err(|e| format!("write attachment: {e}"))?;
-    }
-    Ok(format!("attachments/{name}"))
+    writan_core::attachments::write_attachment(workspace.vault().root(), file_name, bytes)
+        .map_err(|error| error.to_string())
 }
 
 /// Store pasted/dropped bytes as a vault attachment; returns its vault-relative path.
@@ -968,19 +931,17 @@ pub fn sync_disable(state: State<'_, AppState>) -> CmdResult<SyncStatusDto> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn attachment_names_are_slugged_and_hashed() {
-        let name = attachment_name("My Photo (1).PNG", b"hello");
+    fn attachment_names_use_the_core_rules() {
+        let name = writan_core::attachments::attachment_name("My Photo (1).PNG", b"hello");
         assert!(name.starts_with("my-photo"), "{name}");
         assert!(name.ends_with(".png"), "{name}");
-        let other = attachment_name("renamed.image.png", b"hello");
+        let other = writan_core::attachments::attachment_name("renamed.image.png", b"hello");
         assert_eq!(
             name.rsplit_once('-').map(|(_, r)| r.to_string()),
             other.rsplit_once('-').map(|(_, r)| r.to_string()),
         );
-        let no_ext = attachment_name("notes", b"x");
+        let no_ext = writan_core::attachments::attachment_name("notes", b"x");
         assert!(!no_ext.contains('.'), "{no_ext}");
     }
 }

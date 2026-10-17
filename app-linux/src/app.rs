@@ -425,6 +425,53 @@ fn build(application: &adw::Application) {
         });
     }
 
+    // Pasted or dropped images and files become vault attachments, like the
+    // Tauri editor's paste handler: `attachments/<slug>-<hash8>.<ext>` plus a
+    // Markdown snippet at the cursor.
+    {
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let key_state = state.clone();
+        let key_ui = ui.clone();
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            paste_attachment(&key_state, &key_ui, key, modifiers)
+        });
+        editor.add_controller(keys);
+
+        let files = gtk::DropTarget::new(
+            gtk::gdk::FileList::static_type(),
+            gtk::gdk::DragAction::COPY,
+        );
+        let files_state = state.clone();
+        let files_ui = ui.clone();
+        files.connect_drop(move |_, value, _, _| {
+            let Some(list) = value.get::<gtk::gdk::FileList>().ok() else {
+                return false;
+            };
+            for file in list.files() {
+                if let Some(path) = file.path() {
+                    import_attachment(&files_state, &files_ui, &path);
+                }
+            }
+            true
+        });
+        editor.add_controller(files);
+
+        let image =
+            gtk::DropTarget::new(gtk::gdk::Texture::static_type(), gtk::gdk::DragAction::COPY);
+        let image_state = state.clone();
+        let image_ui = ui.clone();
+        image.connect_drop(move |_, value, _, _| {
+            let Some(texture) = value.get::<gtk::gdk::Texture>().ok() else {
+                return false;
+            };
+            let bytes = texture.save_to_png_bytes();
+            store_attachment(&image_state, &image_ui, "pasted.png", bytes.as_ref());
+            true
+        });
+        editor.add_controller(image);
+    }
+
     // Preview visibility.
     {
         let preview_scroll = preview_scroll.clone();
@@ -744,6 +791,156 @@ fn open_vault(state: &Rc<RefCell<State>>, path: &Path) -> Result<(), String> {
         eprintln!("writan: could not save config: {error}");
     }
     Ok(())
+}
+
+/// Ctrl+V with an image or files on the clipboard attaches them; copied text
+/// falls through to the editor's own paste.
+fn paste_attachment(
+    state: &Rc<RefCell<State>>,
+    ui: &Ui,
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+) -> gtk::glib::Propagation {
+    let is_paste = matches!(key, gtk::gdk::Key::v | gtk::gdk::Key::V);
+    if !is_paste || !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+        return gtk::glib::Propagation::Proceed;
+    }
+    let clipboard = ui.editor.clipboard();
+    let formats = clipboard.formats();
+    let has_texture = formats.contains_type(gtk::gdk::Texture::static_type())
+        || formats.contain_mime_type("image/png");
+    let has_files = formats.contains_type(gtk::gdk::FileList::static_type())
+        || formats.contain_mime_type("text/uri-list");
+    if !has_texture && !has_files {
+        return gtk::glib::Propagation::Proceed;
+    }
+    let state = state.clone();
+    let ui = ui.clone();
+    if has_texture {
+        clipboard.read_texture_async(gtk::gio::Cancellable::NONE, move |result| match result {
+            Ok(Some(texture)) => {
+                let bytes = texture.save_to_png_bytes();
+                store_attachment(&state, &ui, "pasted.png", bytes.as_ref());
+            }
+            Ok(None) => {
+                ui.toast
+                    .add_toast(adw::Toast::new("The clipboard has no readable image."));
+            }
+            Err(error) => {
+                ui.toast
+                    .add_toast(adw::Toast::new(&format!("Paste failed: {error}")));
+            }
+        });
+    } else {
+        clipboard.read_value_async(
+            gtk::gdk::FileList::static_type(),
+            gtk::glib::Priority::DEFAULT,
+            gtk::gio::Cancellable::NONE,
+            move |result| match result {
+                Ok(value) => {
+                    if let Ok(files) = value.get::<gtk::gdk::FileList>() {
+                        for file in files.files() {
+                            if let Some(path) = file.path() {
+                                import_attachment(&state, &ui, &path);
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    ui.toast
+                        .add_toast(adw::Toast::new(&format!("Paste failed: {error}")));
+                }
+            },
+        );
+    }
+    gtk::glib::Propagation::Stop
+}
+
+/// Pick a file and copy it into the vault, then link it at the cursor (the
+/// palette's "Attach file…", Tauri's `import_attachment`).
+fn attach_file(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if state.borrow().current.is_none() {
+        return;
+    }
+    let dialog = gtk::FileDialog::builder().title("Attach file").build();
+    let state = state.clone();
+    let ui = ui.clone();
+    let parent = ui.window.clone();
+    dialog.open(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
+        let Ok(file) = result else {
+            return;
+        };
+        let Some(path) = file.path() else {
+            return;
+        };
+        import_attachment(&state, &ui, &path);
+    });
+}
+
+/// Read a file from disk and store it as an attachment.
+fn import_attachment(state: &Rc<RefCell<State>>, ui: &Ui, source: &Path) {
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file")
+        .to_string();
+    match std::fs::read(source) {
+        Ok(bytes) => store_attachment(state, ui, &name, &bytes),
+        Err(error) => {
+            ui.toast.add_toast(adw::Toast::new(&format!(
+                "Could not attach {name}: {error}"
+            )));
+        }
+    }
+}
+
+/// Store bytes under `attachments/` and insert the Markdown snippet for them.
+fn store_attachment(state: &Rc<RefCell<State>>, ui: &Ui, file_name: &str, bytes: &[u8]) {
+    let root = {
+        let st = state.borrow();
+        st.workspace
+            .as_ref()
+            .map(|workspace| workspace.vault().root().to_path_buf())
+    };
+    let Some(root) = root else {
+        ui.toast
+            .add_toast(adw::Toast::new("Open a notes folder first"));
+        return;
+    };
+    match writan_core::attachments::write_attachment(&root, file_name, bytes) {
+        Ok(rel) => {
+            insert_snippet(ui, file_name, &rel);
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Attached {file_name}")));
+        }
+        Err(error) => {
+            ui.toast.add_toast(adw::Toast::new(&format!(
+                "Could not attach {file_name}: {error}"
+            )));
+        }
+    }
+}
+
+/// `![alt](rel)` for images, `[name](rel)` otherwise, at the cursor — the
+/// Tauri editor's `insertSnippet`.
+fn insert_snippet(ui: &Ui, name: &str, rel: &str) {
+    let lowercase = name.to_ascii_lowercase();
+    let is_image = [
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp",
+    ]
+    .iter()
+    .any(|extension| lowercase.ends_with(extension));
+    let alt = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    let snippet = if is_image {
+        format!("![{alt}]({rel})\n")
+    } else {
+        format!("[{name}]({rel})\n")
+    };
+    let buffer = ui.editor.buffer();
+    buffer.insert_at_cursor(&snippet);
+    ui.editor
+        .scroll_to_mark(&buffer.get_insert(), 0.2, false, 0.0, 0.0);
+    ui.editor.grab_focus();
 }
 
 /// The notes the sidebar shows for the current search and filters, in list
@@ -1588,6 +1785,15 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
             hint: keymap::hint("save-note", overrides),
             command: PaletteCommand::SaveNow,
         });
+        if st.current.is_some() {
+            // The Tauri item waits on a vault; inserting needs the open editor
+            // here, so it waits for a note. Images become `![](…)`.
+            items.push(PaletteItem {
+                label: "Attach file…".to_string(),
+                hint: "Attachment".to_string(),
+                command: PaletteCommand::AttachFile,
+            });
+        }
         items.push(settings_item());
         items.push(PaletteItem {
             label: "Open trash".to_string(),
@@ -1719,6 +1925,7 @@ fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteComm
         PaletteCommand::SaveNow => {
             save_now(state, ui, true);
         }
+        PaletteCommand::AttachFile => attach_file(state, ui),
         PaletteCommand::OpenSettings => open_settings_or_focus(state, ui),
         PaletteCommand::OpenTrash => open_trash_or_focus(state, ui),
         PaletteCommand::RebuildIndex => rebuild_index(state, ui),
@@ -2387,6 +2594,7 @@ struct PaletteItem {
 enum PaletteCommand {
     NewNote,
     SaveNow,
+    AttachFile,
     OpenSettings,
     OpenTrash,
     RebuildIndex,

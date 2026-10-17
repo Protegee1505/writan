@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-17 (M3.5 slice 5).
+Last updated: 2026-10-17 (M3.5 slice 6).
 
 ## Milestone history
 
@@ -140,11 +140,26 @@ Last updated: 2026-10-17 (M3.5 slice 5).
   the panel reaches `config.json` and takes effect while the old chord dies,
   Reset brings the default Ctrl+P back, Show word count off reaches
   `config.json`) — 31/31 green locally against the release binary.
+- **M3.5 slice 6 — attachments in the GTK shell** (2026-10-17): the naming,
+  25 MB cap and write rules moved out of the Tauri command into
+  `crates/writan-core/src/attachments.rs` (`attachment_name`,
+  `write_attachment`; `attachments/<slug>-<hash8>.<ext>`, identical bytes
+  reuse the file), and `app/src-tauri/src/commands.rs` now delegates to it. The
+  GTK editor takes attachments three ways: Ctrl+V with a clipboard image
+  (`pasted-<hash>.png` via `GdkTexture::save_to_png_bytes`) or with copied
+  files, drag-drop onto the editor (a Linux extra — the Tauri shell has none),
+  and the palette's `Attach file…` through the GTK file dialog. Inserted links
+  match the note's cursor: `![name](attachments/…)` for images (the shell reuses
+  one insert path for paste and attach — Tauri's palette item always inserts a
+  plain link, even for images), `[name](attachments/…)` otherwise.
+  `scripts/gtk-shell-test.sh` grew from 31 to 36 checks (clipboard image paste
+  stores + links, a second paste reuses the file, palette attach imports, text
+  paste still falls through) — 36/36 green locally against the release binary.
 
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) in progress — slices
-  1–5 done, next slice 6 (attachments).
+  1–6 done, next slice 7 (parity sweep + GTK polish).
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

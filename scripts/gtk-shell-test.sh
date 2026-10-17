@@ -32,11 +32,15 @@
 #  25. Reset in the panel drops the override
 #  26. the default Ctrl+P opens the palette again
 #  27. Show word count off reaches config.json
+#  28. Ctrl+V with an image on the clipboard stores it under attachments/
+#  29. pasting the same image again reuses the file
+#  30. the palette's 'Attach file…' imports a picked file
+#  31. pasted text still lands in the editor
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
 # Deps (one line on Ubuntu/Debian):
-#   sudo apt-get install -y xvfb xdotool imagemagick sqlite3 \
+#   sudo apt-get install -y xvfb xdotool imagemagick sqlite3 xclip \
 #     libgtk-4-1 libadwaita-1-0 libgtksourceview-5-0
 set -euo pipefail
 
@@ -51,12 +55,12 @@ while [ $# -gt 0 ]; do
     --bin) bin="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --keep) keep=1; shift ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
     *) echo "gtk-shell-test: unknown option $1" >&2; exit 2 ;;
   esac
 done
 
-for tool in Xvfb xdotool import sqlite3; do
+for tool in Xvfb xdotool import sqlite3 xclip; do
   command -v "$tool" >/dev/null || {
     echo "gtk-shell-test: $tool is missing; see the dep line in this script's header" >&2
     exit 1
@@ -745,6 +749,116 @@ if open_settings; then
   xdotool key --clearmodifiers Escape
   sleep 0.5
 fi
+
+# 28-29. Ctrl+V with an image on the clipboard stores it as an attachment,
+# and pasting it again reuses the same file.
+convert -size 120x60 xc:tomato "$out/red.png"
+xclip -selection clipboard -t image/png -i "$out/red.png"
+xdotool windowfocus --sync "$window"
+xdotool mousemove --sync 650 300
+xdotool click 1
+sleep 0.3
+xdotool key --clearmodifiers ctrl+v
+pasted=""
+for _ in $(seq 1 30); do
+  pasted="$(ls "$vault/attachments" 2>/dev/null | grep '^pasted-' | head -1 || true)"
+  [ -n "$pasted" ] && break
+  sleep 0.2
+done
+if [ -n "$pasted" ]; then
+  ok "Ctrl+V stored the clipboard image as attachments/$pasted"
+  linked=""
+  for _ in $(seq 1 25); do
+    if grep -rq "attachments/$pasted" "$vault" 2>/dev/null; then linked=1; break; fi
+    sleep 0.2
+  done
+  if [ -n "$linked" ]; then
+    ok "the open note links the pasted image"
+  else
+    bad "the open note has no link to attachments/$pasted"
+  fi
+else
+  bad "Ctrl+V with an image on the clipboard stored no attachment"
+fi
+shot_of 101-image-paste "$window"
+
+count_before="$(ls "$vault/attachments" 2>/dev/null | wc -l)"
+xdotool key --clearmodifiers ctrl+v
+sleep 1.2
+count_after="$(ls "$vault/attachments" 2>/dev/null | wc -l)"
+if [ -n "$pasted" ] && [ "$count_after" = "$count_before" ]; then
+  ok "pasting the same image again reused the file"
+else
+  bad "a second paste of the same image created another file"
+fi
+
+# 30. The palette's "Attach file…" imports a picked file through the dialog.
+convert -size 120x60 xc:seagreen "$out/green.png"
+xdotool key --clearmodifiers ctrl+p
+palette=""
+for _ in $(seq 1 25); do
+  palette="$(palette_window || true)"
+  [ -n "$palette" ] && break
+  sleep 0.2
+done
+if [ -n "$palette" ]; then
+  xdotool type --delay 30 -- "attach"
+  sleep 0.5
+  xdotool key --clearmodifiers Return
+  dialog=""
+  for _ in $(seq 1 25); do
+    dialog="$(xdotool search --onlyvisible --name '^Attach file$' 2>/dev/null | head -1 || true)"
+    [ -n "$dialog" ] && break
+    sleep 0.2
+  done
+  if [ -n "$dialog" ]; then
+    xdotool windowfocus --sync "$dialog"
+    xdotool key --clearmodifiers ctrl+l
+    sleep 0.4
+    # Paste the path: typing it trips the location entry's completion.
+    printf '%s' "$out/green.png" | xclip -selection clipboard
+    xdotool key --clearmodifiers ctrl+v
+    sleep 0.8
+    xdotool key --clearmodifiers Delete
+    sleep 0.2
+    xdotool key --clearmodifiers Return
+    attached=""
+    for _ in $(seq 1 30); do
+      attached="$(ls "$vault/attachments" 2>/dev/null | grep '^green-' | head -1 || true)"
+      [ -n "$attached" ] && break
+      sleep 0.2
+    done
+    if [ -n "$attached" ]; then
+      ok "the palette's 'Attach file…' imported the picked file as attachments/$attached"
+    else
+      bad "the palette's 'Attach file…' imported nothing"
+    fi
+    shot_of 102-attach-window "$window"
+  else
+    bad "the palette's 'Attach file…' did not open a dialog"
+  fi
+else
+  bad "Ctrl+P did not open the palette for Attach file…"
+fi
+
+# 31. Pasting text still reaches the editor (the handler must fall through).
+printf 'text paste still works' | xclip -selection clipboard
+xdotool windowfocus --sync "$window"
+xdotool mousemove --sync 650 300
+xdotool click 1
+sleep 0.3
+xdotool key --clearmodifiers ctrl+v
+text_pasted=""
+for _ in $(seq 1 30); do
+  if grep -rq "text paste still works" "$vault" 2>/dev/null; then text_pasted=1; break; fi
+  sleep 0.2
+done
+if [ -n "$text_pasted" ]; then
+  ok "pasted text still reaches the editor"
+else
+  bad "pasted text did not reach the open note"
+fi
+shot_of 103-text-paste "$window"
 
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

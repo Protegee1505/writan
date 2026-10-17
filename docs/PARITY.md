@@ -29,7 +29,7 @@ says why).
 | Autosave + dirty state | [x] | [x] | Linux reads `settings.editor.autosaveMs` (700 ms default) |
 | Ctrl+S explicit save | [x] | [x] | |
 | File watcher: external changes | [x] | [x] | Linux reloads the open note only while clean |
-| Attachments: paste / drag-drop / import | [x] | [ ] | |
+| Attachments: paste / drag-drop / import | [x] | [x] | rules shared via `writan-core::attachments` (25 MB cap, `attachments/<slug>-<hash8>.<ext>`); Linux: Ctrl+V (image or copied files), drop onto the editor (Tauri has no drag-drop), palette `Attach file…`; Linux images insert `![name](rel)` for paste and palette alike (Tauri's palette item always inserts a link) |
 | Command palette | [x] | [x] | Linux: modal window; extra `Choose notes folder…` when no vault is open; key hints show the live bindings |
 | Settings panel | [x] | [x] | same app-data `config.json` (ADR-0003); Linux live-applies each change (autosave delay, word count, date format, confirm delete) and persists it immediately |
 | Rebindable shortcuts | [x] | [x] | defaults from `app/src/lib/keymap.ts` (a unit test keeps the GTK table in step); Linux reads `settings.shortcuts` from `config.json` at startup and rebinds in the settings panel (Change, then press the keys; Backspace unbinds, Esc cancels; reserved and clashing combos are refused) |
@@ -45,5 +45,5 @@ says why).
 3. Trash panel: list/restore/purge/empty — done (2026-10-17); Linux also has `Empty Trash` (Tauri extra to add in the sweep).
 4. Command palette + shortcut service — done (2026-10-17).
 5. Settings panel — done (2026-10-17).
-6. Attachments.
+6. Attachments — done (2026-10-17).
 7. Parity sweep + docs + measurement prep.

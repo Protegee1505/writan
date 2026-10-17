@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod attachments;
 pub mod index;
 pub mod trash;
 pub mod vault;
