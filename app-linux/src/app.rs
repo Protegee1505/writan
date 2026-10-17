@@ -113,6 +113,13 @@ fn build(application: &adw::Application) {
     if let Some(language) = sourceview5::LanguageManager::new().language("markdown") {
         buffer.set_language(Some(&language));
     }
+
+    // Editor theme follows the system light/dark preference.
+    {
+        apply_style_scheme(&buffer);
+        let buffer = buffer.clone();
+        adw::StyleManager::default().connect_dark_notify(move |_| apply_style_scheme(&buffer));
+    }
     let editor = sourceview5::View::with_buffer(&buffer);
     editor.set_monospace(true);
     editor.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -532,4 +539,20 @@ fn load_css() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Keep the editor's syntax scheme in step with the system preference.
+///
+/// GtkSourceView only picks its dark scheme when the GTK theme is literally
+/// named `Adwaita-dark`; under GNOME's dark mode the name stays `Adwaita` and
+/// the editor would render light inside a dark window.
+fn apply_style_scheme(buffer: &sourceview5::Buffer) {
+    let id = if adw::StyleManager::default().is_dark() {
+        "Adwaita-dark"
+    } else {
+        "Adwaita"
+    };
+    if let Some(scheme) = sourceview5::StyleSchemeManager::new().scheme(id) {
+        buffer.set_style_scheme(Some(&scheme));
+    }
 }
