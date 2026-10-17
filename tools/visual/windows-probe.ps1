@@ -92,7 +92,7 @@ function Watch([string]$Label, [int]$Duration) {
         if ($result.Cdp -and $earlyShot) { Log "[$Label] window shot taken and CDP reachable; watching stops here so the driver can take over"; break }
         Start-Sleep 2
     }
-    if ($result.Alive) { Log "[$Label] still alive after $Duration s; cdp=$($result.Cdp)" }
+    if ($result.Alive) { Log "[$Label] still alive when watching stopped at t+$($result.Seconds) s; cdp=$($result.Cdp)" }
     foreach ($file in @($stdout, $stderr)) {
         Log "[$Label] --- $file"
         $tail = (Get-Content $file -Tail 60 -ErrorAction SilentlyContinue | Out-String).Trim()

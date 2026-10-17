@@ -41,8 +41,13 @@ Last updated: 2026-10-17 (M3 complete).
   driver (`drive.mjs`, x11 + CDP backends), mock IPC backend for the frontend
   (`?mock=1`, `app/src/lib/mock.ts`), Xvfb screenshot script for the GTK shell
   and one for the browser mock, fixture vault (pinned/tags/CJK/folders), and
-  `visual.yml` CI jobs: Linux GTK shell + Windows app (WebView2 over CDP) with
-  screenshot artifacts. Evidence: commit `,` run `,`.
+  `visual.yml` CI jobs: Linux GTK shell + Windows app (WebView2 over CDP, with
+  `windows-probe.ps1` for launch diagnosis) with screenshot artifacts. The
+  Windows job builds with `--features tauri/custom-protocol` (without it
+  `tauri/build.rs` points the webview at `devUrl`) and injects
+  `additionalBrowserArgs` into `tauri.conf.json` for that build only (wry sets
+  the WebView2 property, which makes the env var variant a no-op). Evidence:
+  commit `6237d86`, run `39026501469` (both jobs green).
 
 ## Current state
 
