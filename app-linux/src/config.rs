@@ -66,6 +66,23 @@ pub fn load_autosave_ms(path: &Path) -> u64 {
         .unwrap_or(DEFAULT_AUTOSAVE_MS)
 }
 
+/// Read a boolean from `settings.<section>.<key>`; anything missing or malformed
+/// falls back to the settings registry's default (ADR-0003).
+fn setting_bool(object: &serde_json::Map<String, Value>, section: &str, key: &str) -> Option<bool> {
+    object.get("settings")?.get(section)?.get(key)?.as_bool()
+}
+
+/// `settings.general.confirmDelete` — the Tauri registry defaults it to true,
+/// so the trash button arms before deleting.
+pub fn load_confirm_delete(path: &Path) -> bool {
+    setting_bool(&load_object(path), "general", "confirmDelete").unwrap_or(true)
+}
+
+/// `settings.view.showWordCount` — default true in the Tauri registry.
+pub fn load_show_word_count(path: &Path) -> bool {
+    setting_bool(&load_object(path), "view", "showWordCount").unwrap_or(true)
+}
+
 /// Record the vault path with an atomic temp + rename write, preserving every
 /// other key in the file (`settings`, etc. — ADR-0003).
 pub fn save_vault_path(path: &Path, vault: &Path) -> std::io::Result<()> {
@@ -123,6 +140,31 @@ mod tests {
         assert_eq!(load_autosave_ms(&file), 100);
         std::fs::write(&file, r#"{"settings":{"editor":{"autosaveMs":"soon"}}}"#).expect("write");
         assert_eq!(load_autosave_ms(&file), DEFAULT_AUTOSAVE_MS);
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn display_settings_default_true_and_read_config() {
+        let file = temp_file();
+        assert!(load_confirm_delete(&file));
+        assert!(load_show_word_count(&file));
+        std::fs::write(
+            &file,
+            r#"{"settings":{"general":{"confirmDelete":false},"view":{"showWordCount":false}}}"#,
+        )
+        .expect("write");
+        assert!(!load_confirm_delete(&file));
+        assert!(!load_show_word_count(&file));
+        std::fs::write(
+            &file,
+            r#"{"settings":{"general":{},"view":{"showWordCount":"yes"}}}"#,
+        )
+        .expect("write");
+        assert!(
+            load_confirm_delete(&file),
+            "missing key falls back to default"
+        );
+        assert!(load_show_word_count(&file), "malformed value falls back");
         std::fs::remove_file(&file).ok();
     }
 

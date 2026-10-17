@@ -79,10 +79,24 @@ Last updated: 2026-10-17 (M3 complete).
   `scripts/gtk-shell-test.sh` (Xvfb + xdotool + sqlite3) proves autosave,
   external-edit reload without data loss, watcher indexing and list selection —
   5/5 green locally; `docs/PARITY.md` ticks both parity items.
+- **M3.5 slice 2 — sidebar filters + note actions in the GTK shell** (2026-10-17,
+  commit `pending`): the sidebar grew folder and tag chips with counts
+  (`workspace.folder_counts()`/`tag_counts()`), an active-filter row with its ×
+  and `Clear`, and `refresh()` now feeds tag/folder into `SearchQuery` — only
+  startup and vault switches fall back to opening the first row, so filtering
+  never changes the open note. The editor header gained the title entry (Enter
+  or focus leaving renames the note and its file on disk), word count
+  (`settings.view.showWordCount`), a pin toggle (pinned notes sort first, `●`
+  in the list) and a two-step delete (`settings.general.confirmDelete`) that
+  moves the note to the app-data trash and clears the editor.
+  `scripts/gtk-shell-test.sh` grew from 5 to 13 checks (filter hides/restores a
+  note, pin row order, rename on disk, armed delete, editor cleared) — 13/13
+  green locally; `docs/PARITY.md` ticks six more rows.
 
 ## Current state
 
-- Branch `main`; M0–M3 complete, next milestone M3.5 (native Linux shell).
+- Branch `main`; M0–M3 complete, M3.5 (native Linux shell) in progress — slices
+  1–2 done, next slice 3 (trash panel).
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

@@ -13,15 +13,17 @@ says why).
 | Welcome / choose notes folder | [x] | [x] | |
 | Three-pane layout | [x] | [x] | |
 | Note list with live search (FTS, CJK) | [x] | [x] | |
-| Folder filter | [x] | [ ] | |
-| Tag filter | [x] | [ ] | |
-| Clear filters | [x] | [ ] | |
-| Pinned notes first + pin/unpin | [x] | [ ] | |
+| Folder filter | [x] | [x] | sidebar chips with counts; single active filter |
+| Tag filter | [x] | [x] | sidebar chips with counts; single active filter |
+| Clear filters | [x] | [x] | active filter chips + `Clear` |
+| Pinned notes first + pin/unpin | [x] | [x] | Linux: `●` marker in the list, pin button in the editor header |
 | New note (Ctrl+N) | [x] | [x] | |
-| Rename note | [x] | [ ] | |
-| Delete note → trash + toast | [x] | [ ] | |
+| Rename note | [x] | [x] | title entry commits on Enter or focus leaving |
+| Delete note → trash + toast | [x] | [x] | Linux: two-step (arm, then delete) + toast; no trash panel yet (slice 3) |
 | Trash panel: list/restore/purge/empty | [x] | [ ] | |
 | Editor: Markdown editing | [x] | [x] | |
+| Editor header: title entry, word count, pin, delete | [x] | [x] | same `settings.view.showWordCount` default (Linux reads it in `config.rs`) |
+| Edit note tags (add/remove) | [x] | [ ] | planned as slice 2b (chips + add-tag input in the editor header) |
 | Editor: inline live preview | [x] | ~ | Linux: highlight + preview pane (ADR-0004 §3) |
 | Preview pane | ~ | [x] | Windows/Android: inline live preview instead |
 | Autosave + dirty state | [x] | [x] | Linux reads `settings.editor.autosaveMs` (700 ms default) |
@@ -39,8 +41,8 @@ says why).
 ## M3.5 slices
 
 1. Watcher + autosave — done (2026-10-17).
-2. Sidebar: folder/tag filters, pinned first, pin/unpin, rename.
-3. Trash UI.
+2. Sidebar filters, pinned first, pin/unpin, rename, delete — done (2026-10-17).
+3. Trash panel: list/restore/purge/empty.
 4. Command palette + shortcut service.
 5. Settings panel.
 6. Attachments.

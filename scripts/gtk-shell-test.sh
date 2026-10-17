@@ -4,11 +4,16 @@
 #   scripts/gtk-shell-test.sh --bin /tmp/opencode/target/release/writan
 #
 # Runs the real app on an Xvfb display against a throwaway vault and checks
-# the autosave/watcher behaviors end to end:
+# the M3.5 behaviors end to end:
 #   1. startup opens the remembered vault and shows its first note
 #   2. typing lands in the Markdown file on disk (debounced autosave)
 #   3. an external edit while the buffer is clean reloads the editor
 #   4. a new file in the vault reaches the index and the list
+#   5. the list opens the new note
+#   6. the pin button pins the note and pinned notes sort first
+#   7. a tag chip filters the list (and clearing it restores the rows)
+#   8. renaming in the title entry renames the file on disk
+#   9. the trash button arms once, then moves the note to the app-data trash
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
@@ -122,6 +127,10 @@ for _ in $(seq 1 100); do
   sleep 0.2
 done
 [ -n "$window" ] || { bad "app window never appeared (see $work/app.log)"; exit 1; }
+# Park the window at a known size and place so clicks use stable coordinates.
+xdotool windowmove "$window" 0 0
+xdotool windowsize "$window" 1000 700
+sleep 0.6
 xdotool windowfocus --sync "$window"
 xdotool windowraise "$window"
 
@@ -177,11 +186,11 @@ cat >"$vault/beta.md" <<'EOF'
 ---
 id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
 title: Beta
-tags: [smoke]
+tags: [smoke, other]
 created: 2026-10-02T09:00:00Z
 updated: 2026-10-02T09:00:00Z
 ---
-
+ 
 beta body line.
 EOF
 sleep 2.5
@@ -193,23 +202,145 @@ else
   bad "index has $count notes titled Beta"
 fi
 
-# The list places Beta second (Alpha is pinned); click a few candidate rows
-# until the editor opens it.
-opened=""
-for y in 175 223 127; do
-  xdotool mousemove --sync 150 "$y"
-  xdotool click 1
-  sleep 0.6
-  case "$(xdotool getwindowname "$window")" in
-    *"Beta — Writan"*) opened="$y"; break ;;
-  esac
-done
-if [ -n "$opened" ]; then
-  ok "the refreshed list shows and opens the new note (row y=$opened)"
+# Click list rows until a row click *changes* the open note to the wanted one;
+# the working y is printed. Comparing before/after titles keeps a no-op click
+# on empty list space from looking like a hit when the note is already open.
+open_note() { # title, y...
+  local title="$1"
+  shift
+  local y before after
+  for y in "$@"; do
+    before="$(xdotool getwindowname "$window")"
+    xdotool mousemove --sync 250 "$y"
+    xdotool click 1
+    sleep 0.6
+    after="$(xdotool getwindowname "$window")"
+    if [ "$after" != "$before" ]; then
+      case "$after" in
+        *"$title — Writan"*) printf '%s' "$y"; return 0 ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+# The first list row that opens the note, scanning down from the list top.
+first_row_for() { # title
+  local title="$1" y before after
+  for y in 170 190 210 230 250 270 290 310 330 350 370; do
+    before="$(xdotool getwindowname "$window")"
+    xdotool mousemove --sync 250 "$y"
+    xdotool click 1
+    sleep 0.4
+    after="$(xdotool getwindowname "$window")"
+    if [ "$after" != "$before" ]; then
+      case "$after" in
+        *"$title — Writan"*) printf '%s' "$y"; return 0 ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+# 5. The list opens the new note (Beta is second: Alpha is pinned).
+if beta_y="$(open_note Beta 233 185 281 329)"; then
+  ok "the refreshed list opens the new note (Beta at y=$beta_y)"
 else
   bad "clicking the list did not open Beta"
 fi
 shot 20-beta-selected
+
+# 6. Pin: the editor toolbar pin writes through to the index, and pinned
+# notes sort first.
+xdotool mousemove --sync 723 77
+xdotool click 1
+sleep 1.2
+pinned="$(sqlite3 "$data_home/com.writan.desktop/index.sqlite" \
+  "select pinned from notes where title='Beta'" 2>/dev/null || echo "")"
+if [ "$pinned" = "1" ]; then
+  ok "the pin button pinned the note (index pinned=1)"
+else
+  bad "index pinned='$pinned' for Beta after clicking pin"
+fi
+# Scan order matters: a row click only shows up as a title change when that
+# note is not the open one, so open Alpha first, then look for Beta.
+alpha_first="$(first_row_for Alpha || true)"
+beta_first="$(first_row_for Beta || true)"
+if [ -n "$beta_first" ] && [ -n "$alpha_first" ] && [ "$beta_first" -lt "$alpha_first" ]; then
+  ok "the pinned note sorts above the others (Beta at y=$beta_first, Alpha at y=$alpha_first)"
+else
+  bad "pinned sorting wrong (Beta at '${beta_first:-none}', Alpha at '${alpha_first:-none}')"
+fi
+shot 30-pinned
+
+# 7. A tag chip filters the list: #other is Beta's alone, so Alpha must
+# disappear; the active filter's × brings it back.
+xdotool mousemove --sync 160 173
+xdotool click 1
+sleep 1.2
+shot 40-tag-filter
+alpha_filtered="$(first_row_for Alpha)" || alpha_filtered=""
+if [ -n "$alpha_filtered" ]; then
+  bad "the #other chip did not hide the other note (Alpha still clickable at y=$alpha_filtered)"
+else
+  ok "the #other chip filtered the list (Alpha is not in it)"
+fi
+xdotool mousemove --sync 52 116
+xdotool click 1
+sleep 1.2
+shot 45-filter-cleared
+alpha_y="$(first_row_for Alpha)" || alpha_y=""
+if [ -n "$alpha_y" ]; then
+  ok "clearing the filter brought the note back (Alpha at y=$alpha_y)"
+else
+  bad "clearing the tag filter did not restore the list"
+fi
+
+# 8. Rename from the title entry: Enter renames the note and its file.
+open_note Beta 170 190 210 230 250 270 290 >/dev/null || true
+xdotool mousemove --sync 420 77
+xdotool click 1
+sleep 0.3
+xdotool key --clearmodifiers ctrl+a
+xdotool type --delay 25 -- "Gamma"
+xdotool key --clearmodifiers Return
+sleep 1.5
+renamed="$(find "$vault" -maxdepth 1 -name 'gamma-*.md' | head -1)"
+if [ -n "$renamed" ] && [ ! -f "$vault/beta.md" ]; then
+  ok "renaming in the title entry renamed the file on disk ($(basename "$renamed"))"
+else
+  bad "rename did not produce a gamma file (beta.md gone: "$([ -f "$vault/beta.md" ] && echo no || echo yes)")"
+fi
+shot 50-renamed
+
+# 9. Delete: the trash button arms first (settings.general.confirmDelete
+# defaults to true), the second click moves the note to the app-data trash.
+file_before="$(find "$vault" -maxdepth 1 -name 'gamma-*.md' | head -1)"
+xdotool mousemove --sync 768 77
+xdotool click 1
+sleep 0.6
+if [ -n "$file_before" ] && [ -e "$file_before" ]; then
+  xdotool click 1
+  sleep 1.5
+  if [ ! -e "$file_before" ]; then
+    ok "the armed trash click moved the note out of the vault"
+  else
+    bad "the second trash click did not delete the note"
+  fi
+else
+  bad "the first trash click deleted without the confirm step"
+fi
+trashed="$(find "$data_home/com.writan.desktop/trash" -name '*.md' 2>/dev/null | wc -l)"
+if [ "${trashed:-0}" -ge 1 ]; then
+  ok "the note landed in the app-data trash"
+else
+  bad "nothing landed in the app-data trash"
+fi
+case "$(xdotool getwindowname "$window")" in
+  "Writan") ok "the editor cleared after the delete" ;;
+  *) bad "window title after delete: '$(xdotool getwindowname "$window")'" ;;
+esac
+shot 60-after-delete
 
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -39,6 +39,19 @@ struct State {
     status_timer: Option<gtk::glib::SourceId>,
     watcher: Option<VaultWatcher>,
     autosave_ms: u64,
+    /// Active single-tag filter (`None` = every note).
+    tag_filter: Option<String>,
+    /// Active top-level folder filter.
+    folder_filter: Option<String>,
+    /// Two-step delete (`settings.general.confirmDelete`).
+    confirm_delete: bool,
+    delete_armed: bool,
+    delete_timer: Option<gtk::glib::SourceId>,
+    /// `settings.view.showWordCount`.
+    show_word_count: bool,
+    /// True while widgets are updated from code, so their signals do not
+    /// re-enter the actions that set them.
+    programmatic: bool,
     config_path: PathBuf,
     data_dir: PathBuf,
 }
@@ -52,6 +65,14 @@ struct Ui {
     list: gtk::ListBox,
     search: gtk::SearchEntry,
     status: gtk::Label,
+    title_entry: gtk::Entry,
+    words: gtk::Label,
+    pin_button: gtk::ToggleButton,
+    delete_button: gtk::Button,
+    facets: gtk::Box,
+    active_filters: gtk::Box,
+    folders_flow: gtk::FlowBox,
+    tags_flow: gtk::FlowBox,
     editor: sourceview5::View,
     preview: Preview,
 }
@@ -80,6 +101,13 @@ fn build(application: &adw::Application) {
         status_timer: None,
         watcher: None,
         autosave_ms: config::load_autosave_ms(&config_path),
+        tag_filter: None,
+        folder_filter: None,
+        confirm_delete: config::load_confirm_delete(&config_path),
+        delete_armed: false,
+        delete_timer: None,
+        show_word_count: config::load_show_word_count(&config_path),
+        programmatic: false,
         config_path,
         data_dir: config::state_dir(),
     }));
@@ -135,9 +163,25 @@ fn build(application: &adw::Application) {
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
+
+    // Facets, like the Tauri sidebar: active filters first, then folders and
+    // the most used tags, all click-to-toggle.
+    let active_filters = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    active_filters.set_halign(gtk::Align::Start);
+    let folders_flow = facet_flow_box();
+    let tags_flow = facet_flow_box();
+    let facets = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    facets.set_margin_start(10);
+    facets.set_margin_end(10);
+    facets.set_margin_bottom(6);
+    facets.append(&active_filters);
+    facets.append(&facet_scroll(&folders_flow));
+    facets.append(&facet_scroll(&tags_flow));
+
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar.set_width_request(280);
     sidebar.append(&search);
+    sidebar.append(&facets);
     sidebar.append(&sidebar_scroll);
 
     // Editor: GtkSourceView with Markdown highlighting.
@@ -166,6 +210,39 @@ fn build(application: &adw::Application) {
         .vexpand(true)
         .build();
 
+    // Note header above the editor, like the Tauri editor pane: title entry,
+    // word count, pin and delete.
+    let title_entry = gtk::Entry::builder()
+        .placeholder_text("Untitled")
+        .hexpand(true)
+        .build();
+    let words = gtk::Label::builder()
+        .css_classes(["dim-label", "caption"])
+        .build();
+    let pin_button = gtk::ToggleButton::builder()
+        .icon_name("view-pin-symbolic")
+        .tooltip_text("Pin / unpin note")
+        .css_classes(["flat"])
+        .build();
+    let delete_button = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Move to trash")
+        .css_classes(["flat"])
+        .build();
+    let editor_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    editor_header.set_margin_start(18);
+    editor_header.set_margin_end(18);
+    editor_header.set_margin_top(10);
+    editor_header.set_margin_bottom(4);
+    editor_header.append(&title_entry);
+    editor_header.append(&words);
+    editor_header.append(&pin_button);
+    editor_header.append(&delete_button);
+
+    let editor_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    editor_pane.append(&editor_header);
+    editor_pane.append(&editor_scroll);
+
     // Preview pane.
     let preview = Preview::new();
     let preview_scroll = gtk::ScrolledWindow::builder()
@@ -176,7 +253,7 @@ fn build(application: &adw::Application) {
     preview_scroll.add_css_class("preview-pane");
 
     let inner = gtk::Paned::new(gtk::Orientation::Horizontal);
-    inner.set_start_child(Some(&editor_scroll));
+    inner.set_start_child(Some(&editor_pane));
     inner.set_end_child(Some(&preview_scroll));
     inner.set_resize_start_child(true);
     inner.set_resize_end_child(false);
@@ -231,6 +308,14 @@ fn build(application: &adw::Application) {
         list: list.clone(),
         search: search.clone(),
         status: status.clone(),
+        title_entry: title_entry.clone(),
+        words: words.clone(),
+        pin_button: pin_button.clone(),
+        delete_button: delete_button.clone(),
+        facets: facets.clone(),
+        active_filters: active_filters.clone(),
+        folders_flow: folders_flow.clone(),
+        tags_flow: tags_flow.clone(),
         editor: editor.clone(),
         preview: preview.clone(),
     };
@@ -264,7 +349,33 @@ fn build(application: &adw::Application) {
     {
         let state = state.clone();
         let ui = ui.clone();
-        search.connect_search_changed(move |_| refresh(&state, &ui));
+        search.connect_search_changed(move |_| refresh(&state, &ui, false));
+    }
+
+    // Rename: commit the title entry on Enter or when focus leaves it.
+    {
+        let state_for_enter = state.clone();
+        let ui_for_enter = ui.clone();
+        title_entry.connect_activate(move |_| commit_title(&state_for_enter, &ui_for_enter));
+        let state_for_focus = state.clone();
+        let ui_for_focus = ui.clone();
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_leave(move |_| commit_title(&state_for_focus, &ui_for_focus));
+        title_entry.add_controller(focus);
+    }
+
+    // Pin / unpin.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        pin_button.connect_toggled(move |_| pin_toggled(&state, &ui));
+    }
+
+    // Move to trash, with the Tauri shell's two-step confirm.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        delete_button.connect_clicked(move |_| delete_clicked(&state, &ui));
     }
 
     // Editor → preview, dirty state, debounced autosave.
@@ -274,6 +385,7 @@ fn build(application: &adw::Application) {
         buffer.connect_changed(move |buffer| {
             let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
             preview.render(&text);
+            update_words(&state, &ui, &text);
             if !state.borrow().loading {
                 schedule_autosave(&state, &ui);
             }
@@ -304,7 +416,7 @@ fn build(application: &adw::Application) {
                 return;
             };
             ui.search.set_text("");
-            refresh(&state, &ui);
+            refresh(&state, &ui, false);
             let position = state
                 .borrow()
                 .rows
@@ -399,7 +511,7 @@ fn build(application: &adw::Application) {
         && open_vault(&state, &path).is_ok()
     {
         stack.set_visible_child_name("content");
-        refresh(&state, &ui);
+        refresh(&state, &ui, true);
     }
 
     // Spike measurement hooks: WRITAN_MEASURE=1 prints timings and exits.
@@ -446,7 +558,7 @@ fn choose_folder(state: &Rc<RefCell<State>>, ui: &Ui) {
         match open_vault(&state, &path) {
             Ok(()) => {
                 ui.stack.set_visible_child_name("content");
-                refresh(&state, &ui);
+                refresh(&state, &ui, true);
             }
             Err(error) => {
                 ui.toast
@@ -479,32 +591,32 @@ fn open_vault(state: &Rc<RefCell<State>>, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Rebuild the note list for the current search; keep the open note selected
-/// when it is still listed, otherwise leave the list unselected (the editor
-/// keeps showing it, exactly like the Tauri shell).
-fn refresh(state: &Rc<RefCell<State>>, ui: &Ui) {
+/// Rebuild the note list for the current search and filters. `fallback` opens
+/// the first row when nothing is open — only for user-driven entry points
+/// (startup, vault switch), so deletes and external changes never yank the
+/// editor to another note.
+fn refresh(state: &Rc<RefCell<State>>, ui: &Ui, fallback: bool) {
     while let Some(child) = ui.list.first_child() {
         ui.list.remove(&child);
     }
-    let query = ui.search.text();
-    let entries: Vec<(NoteId, String, String)> = {
+    let text = ui.search.text().trim().to_string();
+    let (tag, folder) = {
+        let st = state.borrow();
+        (st.tag_filter.clone(), st.folder_filter.clone())
+    };
+    let filtering = !text.is_empty() || tag.is_some() || folder.is_some();
+    let entries: Vec<(NoteId, String, String, bool)> = {
         let st = state.borrow();
         let Some(workspace) = st.workspace.as_ref() else {
             return;
         };
-        let query = query.trim();
-        if query.is_empty() {
-            workspace
-                .list(500)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|note| (note.id, note.title, note.rel_path))
-                .collect()
-        } else {
+        if filtering {
             workspace
                 .search(&SearchQuery {
-                    text: query.to_string(),
-                    limit: Some(200),
+                    text,
+                    tags: tag.into_iter().collect(),
+                    folder,
+                    limit: Some(500),
                     ..SearchQuery::default()
                 })
                 .unwrap_or_default()
@@ -515,19 +627,28 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui) {
                     } else {
                         hit.snippet
                     };
-                    (hit.id, hit.title, subtitle)
+                    (hit.id, hit.title, subtitle, hit.pinned)
                 })
+                .collect()
+        } else {
+            workspace
+                .list(500)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|note| (note.id, note.title, note.rel_path, note.pinned))
                 .collect()
         }
     };
     let mut rows = Vec::with_capacity(entries.len());
-    for (id, title, subtitle) in &entries {
+    for (id, title, subtitle, pinned) in &entries {
         let row = gtk::ListBoxRow::new();
-        let cell = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let cell = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         cell.set_margin_start(10);
         cell.set_margin_end(10);
         cell.set_margin_top(6);
         cell.set_margin_bottom(6);
+        let lines = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        lines.set_hexpand(true);
         let title_label = gtk::Label::new(Some(title));
         title_label.set_xalign(0.0);
         title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -536,8 +657,17 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui) {
         subtitle_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         subtitle_label.add_css_class("dim-label");
         subtitle_label.add_css_class("caption");
-        cell.append(&title_label);
-        cell.append(&subtitle_label);
+        lines.append(&title_label);
+        lines.append(&subtitle_label);
+        cell.append(&lines);
+        if *pinned {
+            let pin = gtk::Label::builder()
+                .label("●")
+                .css_classes(["dim-label", "caption"])
+                .tooltip_text("Pinned")
+                .build();
+            cell.append(&pin);
+        }
         row.set_child(Some(&cell));
         ui.list.append(&row);
         rows.push(*id);
@@ -549,7 +679,7 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui) {
                 .position(|row| *row == id)
                 .map(|position| (position, true))
         })
-        .or_else(|| (current.is_none() && !rows.is_empty()).then_some((0, false)));
+        .or_else(|| (fallback && current.is_none() && !rows.is_empty()).then_some((0, false)));
     state.borrow_mut().rows = rows;
     if let Some((position, suppress)) = target
         && let Some(row) = ui.list.row_at_index(position as i32)
@@ -558,6 +688,346 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui) {
         ui.list.select_row(Some(&row));
         state.borrow_mut().suppress_select = false;
     }
+    refresh_facets(state, ui);
+}
+
+/// Rebuild the sidebar facets from the index, mirroring the Tauri sidebar's
+/// chips: active filters with their × and a Clear, then folders and the most
+/// used tags, all click-to-toggle.
+fn refresh_facets(state: &Rc<RefCell<State>>, ui: &Ui) {
+    while let Some(child) = ui.folders_flow.first_child() {
+        ui.folders_flow.remove(&child);
+    }
+    while let Some(child) = ui.tags_flow.first_child() {
+        ui.tags_flow.remove(&child);
+    }
+    while let Some(child) = ui.active_filters.first_child() {
+        ui.active_filters.remove(&child);
+    }
+    let (folders, tags, tag_filter, folder_filter) = {
+        let st = state.borrow();
+        let Some(workspace) = st.workspace.as_ref() else {
+            ui.facets.set_visible(false);
+            return;
+        };
+        (
+            workspace.folder_counts().unwrap_or_default(),
+            workspace.tag_counts().unwrap_or_default(),
+            st.tag_filter.clone(),
+            st.folder_filter.clone(),
+        )
+    };
+
+    {
+        let mut st = state.borrow_mut();
+        st.programmatic = true;
+    }
+    if let Some(folder) = &folder_filter {
+        let chip = facet_clear_chip(&format!("{folder} ×"), "Clear folder filter");
+        let state_for_chip = state.clone();
+        let ui_for_chip = ui.clone();
+        chip.connect_clicked(move |_| {
+            state_for_chip.borrow_mut().folder_filter = None;
+            refresh(&state_for_chip, &ui_for_chip, false);
+        });
+        ui.active_filters.append(&chip);
+    }
+    if let Some(tag) = &tag_filter {
+        let chip = facet_clear_chip(&format!("#{tag} ×"), "Clear tag filter");
+        let state_for_chip = state.clone();
+        let ui_for_chip = ui.clone();
+        chip.connect_clicked(move |_| {
+            state_for_chip.borrow_mut().tag_filter = None;
+            refresh(&state_for_chip, &ui_for_chip, false);
+        });
+        ui.active_filters.append(&chip);
+    }
+    if tag_filter.is_some() || folder_filter.is_some() {
+        let clear = gtk::Button::builder()
+            .label("Clear")
+            .tooltip_text("Clear filters")
+            .css_classes(["flat", "caption"])
+            .build();
+        let state_for_chip = state.clone();
+        let ui_for_chip = ui.clone();
+        clear.connect_clicked(move |_| {
+            {
+                let mut st = state_for_chip.borrow_mut();
+                st.tag_filter = None;
+                st.folder_filter = None;
+            }
+            refresh(&state_for_chip, &ui_for_chip, false);
+        });
+        ui.active_filters.append(&clear);
+    }
+
+    for (name, count) in &folders {
+        let chip = gtk::ToggleButton::builder()
+            .label(format!("{name} {count}"))
+            .tooltip_text(name)
+            .css_classes(["pill", "caption"])
+            .active(folder_filter.as_deref() == Some(name.as_str()))
+            .build();
+        let state_for_chip = state.clone();
+        let ui_for_chip = ui.clone();
+        let name = name.clone();
+        chip.connect_toggled(move |button| {
+            if state_for_chip.borrow().programmatic {
+                return;
+            }
+            state_for_chip.borrow_mut().folder_filter = button.is_active().then(|| name.clone());
+            refresh(&state_for_chip, &ui_for_chip, false);
+        });
+        ui.folders_flow.append(&chip);
+    }
+    for (name, count) in tags.iter().take(18) {
+        let chip = gtk::ToggleButton::builder()
+            .label(format!("#{name} {count}"))
+            .tooltip_text(format!("#{name}"))
+            .css_classes(["pill", "caption"])
+            .active(tag_filter.as_deref() == Some(name.as_str()))
+            .build();
+        let state_for_chip = state.clone();
+        let ui_for_chip = ui.clone();
+        let name = name.clone();
+        chip.connect_toggled(move |button| {
+            if state_for_chip.borrow().programmatic {
+                return;
+            }
+            state_for_chip.borrow_mut().tag_filter = button.is_active().then(|| name.clone());
+            refresh(&state_for_chip, &ui_for_chip, false);
+        });
+        ui.tags_flow.append(&chip);
+    }
+    state.borrow_mut().programmatic = false;
+
+    ui.active_filters
+        .set_visible(tag_filter.is_some() || folder_filter.is_some());
+    ui.facets.set_visible(
+        !folders.is_empty() || !tags.is_empty() || tag_filter.is_some() || folder_filter.is_some(),
+    );
+}
+
+/// A small chip that clears the filter it names.
+fn facet_clear_chip(label: &str, tooltip: &str) -> gtk::Button {
+    gtk::Button::builder()
+        .label(label)
+        .tooltip_text(tooltip)
+        .css_classes(["pill", "caption"])
+        .build()
+}
+
+/// The wrapping container for one facet section.
+fn facet_flow_box() -> gtk::FlowBox {
+    gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .column_spacing(6)
+        .row_spacing(6)
+        .build()
+}
+
+/// A FlowBox is only measured with height-for-width when a ScrolledWindow
+/// drives it; inside a plain box it gets a single row and its other rows draw
+/// over the widgets below. `propagate_natural_height` keeps it as tall as its
+/// content (up to the cap), the scrollbar appears beyond that.
+fn facet_scroll(flow: &gtk::FlowBox) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .child(flow)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(190)
+        .build()
+}
+
+/// Rename the open note from the title entry, like the Tauri shell's title
+/// input: trimmed, empty titles are refused, focus leaving commits.
+fn commit_title(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let text = ui.title_entry.text().trim().to_string();
+    let open = state
+        .borrow()
+        .current
+        .as_ref()
+        .map(|note| (note.meta.id, note.meta.title.clone()));
+    let Some((id, title)) = open else {
+        return;
+    };
+    if text.is_empty() {
+        ui.title_entry.set_text(&title);
+        return;
+    }
+    if text == title {
+        return;
+    }
+    save_now(state, ui, false);
+    let outcome = {
+        let mut st = state.borrow_mut();
+        let State {
+            workspace, current, ..
+        } = &mut *st;
+        match (workspace.as_mut(), current.as_mut()) {
+            (Some(workspace), Some(note)) if note.meta.id == id => workspace
+                .rename_note(note, &text)
+                .map_err(|e| e.to_string()),
+            _ => Ok(()),
+        }
+    };
+    match outcome {
+        Ok(()) => {
+            let renamed = state
+                .borrow()
+                .current
+                .as_ref()
+                .map(|note| note.meta.title.clone());
+            let title = renamed.unwrap_or(text);
+            ui.window.set_title(Some(&format!("{title} — Writan")));
+            refresh(state, ui, false);
+        }
+        Err(error) => {
+            ui.title_entry.set_text(&title);
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Rename failed: {error}")));
+        }
+    }
+}
+
+/// Pin / unpin the open note; pinned notes sort first, like the Tauri shell.
+fn pin_toggled(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if state.borrow().programmatic {
+        return;
+    }
+    let pinned = ui.pin_button.is_active();
+    let id = state.borrow().current.as_ref().map(|note| note.meta.id);
+    let Some(id) = id else {
+        ui.pin_button.set_active(false);
+        return;
+    };
+    save_now(state, ui, false);
+    let outcome = {
+        let mut st = state.borrow_mut();
+        match st.workspace.as_mut() {
+            Some(workspace) => workspace
+                .set_pinned(&id, pinned)
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    };
+    match outcome {
+        Ok(Some(note)) => {
+            if let Some(current) = state.borrow_mut().current.as_mut() {
+                current.meta.pinned = note.meta.pinned;
+            }
+            refresh(state, ui, false);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            {
+                let mut st = state.borrow_mut();
+                st.programmatic = true;
+                ui.pin_button.set_active(!pinned);
+                st.programmatic = false;
+            }
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Pin failed: {error}")));
+        }
+    }
+}
+
+/// First click arms the delete button, a second click within three seconds
+/// moves the note to the trash (`settings.general.confirmDelete`).
+fn delete_clicked(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if state.borrow().current.is_none() {
+        return;
+    }
+    let (confirm, armed) = {
+        let st = state.borrow();
+        (st.confirm_delete, st.delete_armed)
+    };
+    if !confirm || armed {
+        move_to_trash(state, ui);
+        return;
+    }
+    state.borrow_mut().delete_armed = true;
+    ui.delete_button.set_icon_name("user-trash-full-symbolic");
+    ui.delete_button
+        .set_tooltip_text(Some("Click again to move to trash"));
+    ui.toast
+        .add_toast(adw::Toast::new("Click the trash button again to delete"));
+    let state_for_timer = state.clone();
+    let ui_for_timer = ui.clone();
+    let id = gtk::glib::timeout_add_seconds_local(3, move || {
+        disarm_delete(&state_for_timer, &ui_for_timer);
+        gtk::glib::ControlFlow::Break
+    });
+    state.borrow_mut().delete_timer = Some(id);
+}
+
+fn disarm_delete(state: &Rc<RefCell<State>>, ui: &Ui) {
+    {
+        let mut st = state.borrow_mut();
+        if let Some(timer) = st.delete_timer.take() {
+            timer.remove();
+        }
+        st.delete_armed = false;
+    }
+    ui.delete_button.set_icon_name("user-trash-symbolic");
+    ui.delete_button.set_tooltip_text(Some("Move to trash"));
+}
+
+/// Move the open note to the trash and clear the editor (the Tauri shell
+/// leaves nothing selected).
+fn move_to_trash(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let id = state.borrow().current.as_ref().map(|note| note.meta.id);
+    let Some(id) = id else {
+        return;
+    };
+    let outcome = {
+        let mut st = state.borrow_mut();
+        match st.workspace.as_mut() {
+            Some(workspace) => workspace
+                .delete_note(&id)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            None => return,
+        }
+    };
+    match outcome {
+        Ok(()) => {
+            {
+                let mut st = state.borrow_mut();
+                if let Some(save) = st.autosave.take() {
+                    save.remove();
+                }
+                st.current = None;
+                st.dirty = false;
+                st.loading = true;
+            }
+            ui.editor.buffer().set_text("");
+            state.borrow_mut().loading = false;
+            ui.preview.render("");
+            ui.title_entry.set_text("");
+            ui.words.set_text("");
+            disarm_delete(state, ui);
+            ui.window.set_title(Some("Writan"));
+            set_status(state, ui, "");
+            refresh(state, ui, false);
+        }
+        Err(error) => {
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Delete failed: {error}")));
+        }
+    }
+}
+
+/// `settings.view.showWordCount` — the Tauri editor header shows this.
+fn update_words(state: &Rc<RefCell<State>>, ui: &Ui, body: &str) {
+    if !state.borrow().show_word_count {
+        ui.words.set_text("");
+        return;
+    }
+    ui.words
+        .set_text(&format!("{} words", body.split_whitespace().count()));
 }
 
 /// The editor's text.
@@ -658,12 +1128,22 @@ fn load_note(state: &Rc<RefCell<State>>, ui: &Ui, id: NoteId) {
 fn fill_editor(state: &Rc<RefCell<State>>, ui: &Ui, note: Note) {
     let title = note.meta.title.clone();
     let body = note.body.clone();
-    state.borrow_mut().loading = true;
+    let pinned = note.meta.pinned;
+    {
+        let mut st = state.borrow_mut();
+        st.loading = true;
+        st.programmatic = true;
+    }
     ui.editor.buffer().set_text(&body);
     ui.preview.render(&body);
+    ui.title_entry.set_text(&title);
+    ui.pin_button.set_active(pinned);
+    update_words(state, ui, &body);
+    disarm_delete(state, ui);
     {
         let mut st = state.borrow_mut();
         st.loading = false;
+        st.programmatic = false;
         st.dirty = false;
         st.current = Some(note);
     }
@@ -699,7 +1179,7 @@ fn handle_external(state: &Rc<RefCell<State>>, ui: &Ui, events: Vec<VaultEvent>)
             let _ = workspace.reconcile_paths(&rels);
         }
     }
-    refresh(state, ui);
+    refresh(state, ui, false);
 
     let changed_open_note = {
         let st = state.borrow();
