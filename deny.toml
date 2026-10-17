@@ -13,6 +13,12 @@ ignore = [
     "RUSTSEC-2025-0081",
     "RUSTSEC-2025-0098",
     "RUSTSEC-2025-0100",
+    # zbus 5.x family (zvariant, zvariant_derive, zbus_names) <-
+    # tauri-plugin-opener's D-Bus chain: deprecated crates merged into zbus 6,
+    # no fixed 5.x release (flagged 2026-10-17).
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 [licenses]
