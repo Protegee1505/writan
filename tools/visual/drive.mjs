@@ -21,10 +21,12 @@
  *
  *   wait 800            pause, milliseconds
  *   key ctrl+f          send a chord (ctrl/alt/shift/meta + key)
- *   type hello          type literal text
+ *   type hello          type literal text; waits until an editable element has
+ *                       focus and fails if the text does not land there
  *   shot 10-search      screenshot -> <out>/10-search.png
  *   click Notes         click an element by role/text        (cdp only)
  *   dump 30-dom         write visible text -> <out>/30-dom.txt (cdp only)
+ *   assert-contains ok  fail unless the page shows that text  (cdp only)
  *   goto <url>          navigate                             (cdp only)
  *
  * Steps that the backend does not support are reported and skipped. By
@@ -220,6 +222,7 @@ async function x11Setup() {
         }
         case "click":
         case "dump":
+        case "assert-contains":
         case "goto":
           notes.push(`line ${action.n}: "${action.verb}" is cdp-only, skipped in x11 mode`);
           return;
@@ -231,6 +234,36 @@ async function x11Setup() {
 }
 
 // --------------------------------------------------------- cdp backend ----
+
+/**
+ * True while the focused element can receive text — CodeMirror's
+ * `.cm-content` is a contenteditable, the search field is an <input>.
+ * Every `type` waits for this: right after Ctrl+N the editor mounts a new
+ * note and calls focus() from an effect, so early keystrokes are dropped.
+ */
+const FOCUSED_EDITABLE = () => {
+  const a = document.activeElement;
+  return !!a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable);
+};
+
+async function waitForEditable(page, timeout = 4000) {
+  try {
+    await page.waitForFunction(FOCUSED_EDITABLE, undefined, { timeout });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The text the focused editor currently holds (value for inputs, text for the editor). */
+async function focusedText(page) {
+  return page.evaluate(() => {
+    const a = document.activeElement;
+    if (!a) return "";
+    if (a.tagName === "INPUT" || a.tagName === "TEXTAREA") return a.value ?? "";
+    return a.innerText ?? a.textContent ?? "";
+  });
+}
 
 async function cdpSetup() {
   let chromium;
@@ -293,8 +326,24 @@ async function cdpSetup() {
           await page.keyboard.press(translateKeys(action.rest));
           return;
         case "type":
+          if (!(await waitForEditable(page))) {
+            fail(`line ${action.n} type`, "no editable element has focus");
+            return;
+          }
           await page.keyboard.type(action.rest, { delay: 20 });
+          if (!(await focusedText(page)).includes(action.rest)) {
+            const held = JSON.stringify((await focusedText(page)).slice(-60));
+            fail(`line ${action.n} type`, `typed text did not land in the editor (editor holds ${held})`);
+          }
           return;
+        case "assert-contains": {
+          const shown = await page.evaluate(
+            (text) => document.body.innerText.includes(text),
+            action.rest,
+          );
+          if (!shown) fail(`line ${action.n} assert-contains`, `page does not show "${action.rest}"`);
+          return;
+        }
         case "shot": {
           const path = join(outDir, `${action.rest || "shot"}.png`);
           await page.screenshot({ path });

@@ -59,10 +59,12 @@ the workflow launches the app). One command per line, `#` comments:
 ```
 wait 800          # milliseconds
 key ctrl+f        # ctrl/alt/shift/meta chords
-type hello        # literal text
+type hello        # literal text; waits for a focused editor and fails if it
+                  # does not land there (silent dropped keystrokes were a bug)
 shot 10-search    # -> <out>/10-search.png
 click Notes       # click by role/text            (cdp backend only)
 dump 30-dom       # visible text -> <out>/30-dom.txt (cdp backend only)
+assert-contains ok # fail unless the page shows it  (cdp backend only)
 goto <url>        # navigate                      (cdp backend only)
 ```
 

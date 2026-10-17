@@ -11,10 +11,15 @@ key ctrl+n
 wait 900
 key End
 key Enter
+# `type` waits for the editor to hold focus and verifies what landed; the
+# assertion then fails the walkthrough if the text is not on screen, so a lost
+# prefix can no longer slip into a screenshot unnoticed.
 type Visual harness smoke test
 wait 300
+assert-contains Visual harness smoke test
 shot 20-new-note
 key ctrl+s
 wait 800
+assert-contains Visual harness smoke test
 shot 30-saved
 dump 40-dom
