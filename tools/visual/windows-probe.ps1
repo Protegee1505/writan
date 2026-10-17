@@ -66,12 +66,15 @@ function Watch([string]$Label, [int]$Duration) {
     Log "[$Label] launched pid=$($process.Id)"
     $t0 = Get-Date
     $result = [pscustomobject]@{ Label = $Label; Alive = $true; ExitCode = $null; Cdp = $false; Seconds = 0 }
+    $marks = [System.Collections.Generic.Queue[int]]::new()
+    foreach ($mark in 3, 10, 20, 40, 70) { $marks.Enqueue($mark) }
     $earlyShot = $false
     while (((Get-Date) - $t0).TotalSeconds -lt $Duration) {
         $t = [int]((Get-Date) - $t0).TotalSeconds
         $result.Seconds = $t
         $alive = -not $process.HasExited
-        if ($t -in 3, 10, 20, 40, 70) {
+        if ($marks.Count -and $t -ge $marks.Peek()) {
+            $marks.Dequeue() | Out-Null
             $exit = if ($alive) { '-' } else { $process.ExitCode }
             Log "[$Label] t+$t s alive=$alive exit=$exit cdp=$(CdpUp) :: $(ProcessSummary)"
         }
@@ -86,6 +89,7 @@ function Watch([string]$Label, [int]$Duration) {
             Log "[$Label] CDP endpoint is up at t+$t s"
         }
         if (-not $earlyShot -and $t -ge 15) { Shot "$Label-desktop-early.png"; $earlyShot = $true }
+        if ($result.Cdp -and $earlyShot) { Log "[$Label] window shot taken and CDP reachable; watching stops here so the driver can take over"; break }
         Start-Sleep 2
     }
     if ($result.Alive) { Log "[$Label] still alive after $Duration s; cdp=$($result.Cdp)" }

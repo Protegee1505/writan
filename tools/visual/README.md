@@ -40,11 +40,15 @@ gh run watch
 gh run download <id> -n writan-windows-shots
 ```
 
-- `windows-ui` builds the Tauri app (debug), seeds
+- `windows-ui` builds the Tauri app debug binary **with the frontend embedded**
+  and **with a debugging port in the window config** (injected into
+  `tauri.conf.json` for that build only): WebView2 ignores
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` once wry sets the property through
+  the API, and `tauri/build.rs` sends a `cargo build` without the
+  `custom-protocol` feature at `devUrl` instead of the built frontend. It seeds
   `%APPDATA%\com.writan.desktop\config.json` with the fixture vault, launches
-  it with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`
-  and drives it over CDP — screenshots and a DOM text dump, no interactive
-  session required.
+  the app, waits for `http://127.0.0.1:9222/json/version`, then drives it over
+  CDP — screenshots and a DOM text dump, no interactive session required.
 - `linux-ui` runs loop 2 on a runner that has the fonts (incl. CJK installed).
 
 ## Action scripts
