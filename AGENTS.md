@@ -26,6 +26,18 @@ npm --prefix app run build
 All green. Add tests for new core behavior: unit tests live next to modules in
 `crates/writan-core/src/*.rs`, integration tests in `crates/writan-core/tests/`.
 
+## Cloud-first workflow (dev machines are disposable)
+
+- The cafe box resets on reboot and the Fedora laptop is tiny: GitHub is the
+  source of truth. Push before you stop working, every session.
+- Run agents in the Codespaces dev environment (`.devcontainer/`), not on a
+  local machine — browser → codespace → OpenChamber on port 3000. Daily flow,
+  quotas and platform builds: `docs/CLOUD.md`.
+- Keep heavy work in CI: `ci.yml` verifies every push, `artifacts.yml` builds
+  installers, `web.yml` builds and deploys the Pages preview.
+- Local machines are for light checks (`cargo fmt`, `npm --prefix app run
+  check`) and for running downloaded artifacts to eyeball the real app.
+
 ## Layout
 
 - `crates/writan-core` — vault (Markdown + frontmatter), index (SQLite + FTS5

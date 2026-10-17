@@ -3,7 +3,7 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepted as M3 starts, and the sealed blob codec, bounded-diff3 merge engine, folder sync engine and keyring/recovery-code layer have landed green in CI, the desktop app wires folder sync (settings, palette commands, keychain unlock), the S3-compatible bucket target (ADR-0006) landed with the app's bucket connect, and the N-device simulator soaks the folder and bucket targets green in nightly CI; search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
+Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepted as M3 starts, and the sealed blob codec, bounded-diff3 merge engine, folder sync engine and keyring/recovery-code layer have landed green in CI, the desktop app wires folder sync (settings, palette commands, keychain unlock), the S3-compatible bucket target (ADR-0006) landed with the app's bucket connect, and the N-device simulator soaks the folder and bucket targets green in nightly CI; search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only); the cloud-first dev environment landed (`.devcontainer/` Codespaces image with the OpenCode/OpenChamber agent UI, `.github/workflows/web.yml` Pages preview — see `docs/CLOUD.md`). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
 
 ## Current state
 
@@ -58,6 +58,12 @@ Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepte
 - The app has not been tested on Linux or Android interactively yet — the GTK4
   spike compiles and runs headless in CI; interactive feel + ibus/fcitx5 IME
   acceptance happen on the user's laptop.
+- Cloud-first dev environment (2026-10-17): `.devcontainer/` for GitHub
+  Codespaces (Rust + Node 22 + the Tauri/GTK apt deps, OpenCode + OpenChamber
+  agent UI auto-started on port 3000), repo-level `opencode.json` for agent
+  permissions, and `.github/workflows/web.yml` (static SPA → GitHub Pages
+  preview at https://protegee1505.github.io/writan/). Local machines become
+  thin browser clients; see `docs/CLOUD.md`.
 
 ## Milestone log
 
@@ -418,6 +424,14 @@ cargo build --release -p writan-linux
   carries rustup minimal + rustfmt (for `cargo fmt` and lockfile updates via
   `cargo fetch`) and Node — nothing else. Install MSVC Build Tools only if
   interactive `tauri dev` is wanted locally.
+- `.github/workflows/web.yml` (main pushes touching `app/`, pull requests,
+  tags, manual): builds the static SPA (`app/`) and deploys it to GitHub
+  Pages — https://protegee1505.github.io/writan/; PRs build without
+  deploying.
+- Cloud dev environment: `.devcontainer/` boots a Codespaces image with the
+  full toolchain, installs OpenCode + OpenChamber, and auto-starts the agent
+  UI on port 3000; `docs/CLOUD.md` is the workflow guide (daily flow, quota
+  discipline, platform builds, rollback).
 - Android is parked for M5 — exact init steps under Next actions.
 
 ## Environment notes (reference dev machine)
