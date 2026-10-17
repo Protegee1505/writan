@@ -1,0 +1,81 @@
+name: web
+
+# Static SPA build of app/ for the browser — the GitHub Pages preview.
+# - main pushes touching app/ redeploy the preview
+# - tags and manual runs also deploy
+# - pull requests build without deploying, so frontend regressions show here
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", ".github/workflows/web.yml"]
+  pull_request:
+    paths: ["app/**", ".github/workflows/web.yml"]
+  tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      # Project site: https://protegee1505.github.io/writan/ — SvelteKit
+      # prefixes every asset URL with this base path.
+      BASE_PATH: /writan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install frontend
+        run: npm ci --prefix app
+      - name: Build static SPA
+        run: npm --prefix app run build
+      - name: Prepare Pages files
+        run: |
+          # SPA deep links fall back to index.html; .nojekyll keeps _app/.
+          cp app/build/index.html app/build/404.html
+          touch app/build/.nojekyll
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/build
+
+  # PR builds: frontend check only, no deploy.
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install frontend
+        run: npm ci --prefix app
+      - name: Build static SPA
+        run: npm --prefix app run build
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
