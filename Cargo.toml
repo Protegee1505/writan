@@ -30,6 +30,7 @@ base64 = "0.22"
 blake3 = "1.8"
 chacha20poly1305 = "0.11"
 diffy = "0.5"
+hmac = "0.12"
 # The gtk-rs crates are renamed to their in-code names here (the crates'
 # library names are `gtk4` / `libadwaita`; ecosystem code says `gtk::`/`adw::`).
 gtk = { package = "gtk4", version = "0.9" }
@@ -37,6 +38,7 @@ adw = { package = "libadwaita", version = "0.7" }
 sourceview5 = "0.9"
 pulldown-cmark = "0.13"
 notify = "8.2"
+quick-xml = "0.42"
 rand = "0.9"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -44,9 +46,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Maintained YAML (de)serializer (saphyr lineage) — replaces serde_yaml_ng,
 # which pulls the archived unsafe-libyaml.
 serde-saphyr = { version = "2.0.0", default-features = false, features = ["serialize", "deserialize"] }
+sha2 = "0.10"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1.53", features = ["macros", "net", "rt-multi-thread"] }
+ureq = "3"
 uuid = { version = "1.28", features = ["serde", "v4"] }
 zeroize = "1.9"
 

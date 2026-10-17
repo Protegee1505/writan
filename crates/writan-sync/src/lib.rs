@@ -10,6 +10,8 @@
 //! `docs/adr/0005-sync-blob-format.md`; reconciliation of concurrent versions
 //! is [`merge`]'s bounded diff3 with a last-writer-wins window (ADR-0001), and
 //! [`keys`] holds the keyring generations and recovery codes (ADR-0005 §7–10).
+//! [`s3`] is the bucket target speaking the same create-only protocol
+//! (ADR-0006).
 
 #![forbid(unsafe_code)]
 
@@ -17,6 +19,7 @@ pub mod blob;
 pub mod engine;
 pub mod keys;
 pub mod merge;
+pub mod s3;
 pub mod target;
 
 use std::collections::BTreeMap;
@@ -37,6 +40,7 @@ pub use keys::{
     parse_keyring_path, unlock_keyring, unwrap_vault_key,
 };
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
+pub use s3::{ListPage, S3Config, S3HttpTransport, S3Target, S3Transport};
 pub use target::{FolderTarget, SyncTarget, TargetError};
 
 pub type DeviceId = Uuid;

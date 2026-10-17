@@ -10,10 +10,14 @@ rust-version.workspace = true
 base64 = { workspace = true }
 blake3 = { workspace = true }
 diffy = { workspace = true }
+hmac = { workspace = true }
+quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["parsing"] }
+ureq = { workspace = true }
 uuid = { workspace = true }
 writan-core = { workspace = true }
 writan-crypto = { workspace = true }
