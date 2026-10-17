@@ -7,10 +7,10 @@ name: web
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths: ["app/**", ".github/workflows/web.yml"]
   pull_request:
     paths: ["app/**", ".github/workflows/web.yml"]
-  tags: ["v*"]
   workflow_dispatch:
 
 permissions:
