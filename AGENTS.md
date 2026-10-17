@@ -54,6 +54,9 @@ All green. Add tests for new core behavior: unit tests live next to modules in
   Daily flow, quotas and platform builds: `docs/CLOUD.md`.
 - Keep heavy work in CI: `ci.yml` verifies every push, `artifacts.yml` builds
   installers, `web.yml` builds and deploys the Pages preview.
+- Look at the UI without a machine: `tools/visual/README.md` — mock loop in a
+  browser (`?mock=1`), Xvfb screenshots of the GTK shell, and `visual.yml` for
+  Windows screenshots via WebView2/CDP.
 - Local machines are for light checks (`cargo fmt`, `npm --prefix app run
   check`) and for running downloaded artifacts to eyeball the real app.
 

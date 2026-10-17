@@ -37,6 +37,12 @@ Last updated: 2026-10-17 (M3 complete).
 - **Search latency budget verified** (2026-10-17): release-only `search_perf`
   test at 10 000 notes — ≈5.6 ms avg / 6.2 ms max vs the 30 ms budget (≈5×
   headroom); runs as a step in `ci.yml`.
+- **Visual debugging harness** (2026-10-17): `tools/visual/` — action-script
+  driver (`drive.mjs`, x11 + CDP backends), mock IPC backend for the frontend
+  (`?mock=1`, `app/src/lib/mock.ts`), Xvfb screenshot script for the GTK shell
+  and one for the browser mock, fixture vault (pinned/tags/CJK/folders), and
+  `visual.yml` CI jobs: Linux GTK shell + Windows app (WebView2 over CDP) with
+  screenshot artifacts. Evidence: commit `,` run `,`.
 
 ## Current state
 

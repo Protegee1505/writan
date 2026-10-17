@@ -1,0 +1,20 @@
+# Walkthrough for the Tauri app (Windows WebView2 in CI, or the mock-mode
+# dev server in a browser). Works through the CDP backend.
+wait 1500
+shot 00-startup
+key ctrl+p
+wait 600
+shot 10-command-palette
+key Escape
+wait 400
+key ctrl+n
+wait 900
+key End
+key Enter
+type Visual harness smoke test
+wait 300
+shot 20-new-note
+key ctrl+s
+wait 800
+shot 30-saved
+dump 40-dom

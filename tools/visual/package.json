@@ -1,0 +1,9 @@
+{
+  "name": "writan-visual",
+  "private": true,
+  "type": "module",
+  "description": "Visual harness for Writan: drives a running window and captures screenshots (tools/visual/README.md)",
+  "dependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}

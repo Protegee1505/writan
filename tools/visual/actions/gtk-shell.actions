@@ -1,0 +1,12 @@
+# Walkthrough for the GTK shell (app-linux) under Xvfb.
+# Keys only: the x11 backend cannot click by text.
+wait 2500
+shot 00-startup
+key ctrl+f
+wait 500
+type design
+wait 1200
+shot 10-search
+key Escape
+wait 400
+shot 20-after-escape

@@ -11,7 +11,8 @@ Order is a suggestion, not a constraint.
 1. **GTK4 acceptance on real Linux hardware** (the user's laptop): interactive
    smoke, IME (ibus + fcitx5, CJK composition), and the idle-RAM re-measure
    against the < 100 MB budget — then append the outcome to ADR-0004. This also
-   closes M2's deferred IME item.
+   closes M2's deferred IME item. Start from the fixture vault and screenshot
+   loop in `tools/visual/README.md`.
 2. **M3.5 full native shell** (`app-linux/`, ADR-0004): three-pane UI, Markdown
    highlighting + rendered preview pane, command palette, settings (same
    app-data `config.json`), trash, attachments.
