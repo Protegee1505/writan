@@ -18,6 +18,13 @@
 #  11. Restore in the panel brings the file back into the vault
 #  12. Delete forever purges the trashed copy for good
 #  13. Empty Trash clears the remaining entries
+#  14. Ctrl+P opens the command palette
+#  15. typing 'delta' and Enter in it opens the note
+#  16. Escape closes it
+#  17. a settings.shortcuts override leaves Ctrl+P dead
+#  18. the rebound Ctrl+Shift+P opens the palette
+#  19. the Ctrl+K alias still opens it
+#  20. Ctrl+N (an untouched default) still creates a note
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
@@ -37,7 +44,7 @@ while [ $# -gt 0 ]; do
     --bin) bin="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --keep) keep=1; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "gtk-shell-test: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -141,6 +148,7 @@ xdotool windowraise "$window"
 shot() { import -window "$window" "$out/$1.png" 2>/dev/null || true; }
 shot_of() { import -window "$2" "$out/$1.png" 2>/dev/null || true; }
 trash_window() { xdotool search --onlyvisible --name '^Trash$' 2>/dev/null | head -1; }
+palette_window() { xdotool search --onlyvisible --name '^Command palette$' 2>/dev/null | head -1; }
 
 wait_title() { # substring, seconds
   local want="$1" deadline=$(( $(date +%s) + $2 ))
@@ -439,6 +447,144 @@ if [ -n "$tw" ]; then
 else
   bad "the trash panel did not reopen for the empty check"
 fi
+
+# 14-16. Command palette: Ctrl+P opens it, typing filters, Enter opens the
+# note, Escape closes the panel.
+cat >"$vault/delta.md" <<'EOF'
+---
+id: dddddddd-dddd-4ddd-8ddd-dddddddddddd
+title: Delta
+tags: [smoke]
+created: 2026-10-03T09:00:00Z
+updated: 2026-10-03T09:00:00Z
+---
+
+delta body line.
+EOF
+sleep 2.5
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+p
+palette=""
+for _ in $(seq 1 25); do
+  palette="$(palette_window || true)"
+  [ -n "$palette" ] && break
+  sleep 0.2
+done
+if [ -n "$palette" ]; then
+  ok "Ctrl+P opened the command palette"
+else
+  bad "Ctrl+P did not open a window titled 'Command palette'"
+fi
+shot 90-palette
+[ -n "$palette" ] && shot_of 91-palette-window "$palette"
+
+if [ -n "$palette" ]; then
+  xdotool windowfocus --sync "$palette"
+  xdotool type --delay 25 -- "delta"
+  sleep 1.0
+  shot_of 92-palette-filtered "$palette"
+  xdotool key --clearmodifiers Return
+  sleep 1.0
+  if [ -z "$(palette_window || true)" ] && wait_title "Delta — Writan" 5; then
+    ok "typing 'delta' and Enter opened the note from the palette"
+  else
+    bad "the palette did not open Delta (title: '$(xdotool getwindowname "$window")')"
+  fi
+else
+  bad "skipping the palette filter check: no palette window"
+fi
+shot 93-delta-open
+
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+p
+sleep 1.0
+if [ -n "$(palette_window || true)" ]; then
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+  if [ -z "$(palette_window || true)" ]; then
+    ok "Escape closed the command palette"
+  else
+    bad "Escape did not close the palette"
+  fi
+else
+  bad "the palette did not reopen for the Escape check"
+fi
+
+# 17-20. settings.shortcuts: restart with command-palette rebound to
+# Ctrl+Shift+P. Ctrl+P must be dead, the new binding and the Ctrl+K alias
+# must open the palette, and untouched defaults (Ctrl+N) must survive.
+kill "$app_pid" 2>/dev/null || true
+wait "$app_pid" 2>/dev/null || true
+app_pid=""
+printf '{"vault_path": "%s", "settings": {"shortcuts": {"command-palette": "Ctrl+Shift+P"}}}' "$vault" \
+  >"$config_home/com.writan.desktop/config.json"
+env \
+  WRITAN_VAULT="$vault" \
+  XDG_CONFIG_HOME="$config_home" \
+  XDG_DATA_HOME="$data_home" \
+  GTK_THEME="Adwaita:dark" \
+  GSK_RENDERER=cairo \
+  "$bin" >>"$work/app.log" 2>&1 &
+app_pid=$!
+window=""
+for _ in $(seq 1 100); do
+  window="$(find_window)"
+  [ -n "$window" ] && break
+  sleep 0.2
+done
+if [ -n "$window" ]; then
+  xdotool windowmove "$window" 0 0
+  xdotool windowsize "$window" 1000 700
+  sleep 0.6
+  xdotool windowfocus --sync "$window"
+  xdotool windowraise "$window"
+else
+  bad "the app window never reappeared after the restart"
+fi
+
+xdotool key --clearmodifiers ctrl+p
+sleep 1.0
+if [ -z "$(palette_window || true)" ]; then
+  ok "the override left Ctrl+P dead"
+else
+  bad "Ctrl+P still opened the palette after the rebind"
+fi
+shot 94-rebound
+
+xdotool key --clearmodifiers ctrl+shift+p
+palette=""
+for _ in $(seq 1 25); do
+  palette="$(palette_window || true)"
+  [ -n "$palette" ] && break
+  sleep 0.2
+done
+if [ -n "$palette" ]; then
+  ok "Ctrl+Shift+P opened the palette (the rebind is live)"
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+else
+  bad "the rebound Ctrl+Shift+P did not open the palette"
+fi
+
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+k
+sleep 1.0
+if [ -n "$(palette_window || true)" ]; then
+  ok "the Ctrl+K alias still opens the palette"
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+else
+  bad "the Ctrl+K alias did not open the palette after the rebind"
+fi
+
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+n
+sleep 1.2
+case "$(xdotool getwindowname "$window")" in
+  *"Untitled — Writan"*) ok "Ctrl+N still creates a note after the override load" ;;
+  *) bad "Ctrl+N did not create a note (title: '$(xdotool getwindowname "$window")')" ;;
+esac
+shot 95-new-note
 
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

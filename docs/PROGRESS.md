@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-17 (M3 complete).
+Last updated: 2026-10-17 (M3.5 slice 4).
 
 ## Milestone history
 
@@ -101,11 +101,28 @@ Last updated: 2026-10-17 (M3 complete).
   crate gained its `parsing` feature; `scripts/gtk-shell-test.sh` grew from 13
   to 17 checks (panel opens on the deleted note, Restore returns the file,
   purge and empty clear the trash) — 17/17 green locally.
+- **M3.5 slice 4 — command palette + rebindable shortcuts in the GTK shell**
+  (2026-10-17): new `app-linux/src/keymap.rs` holds the same nine actions as
+  the Tauri keymap (`app/src/lib/keymap.ts`) — Ctrl+P (alias Ctrl+K), Ctrl+N,
+  Ctrl+F, Ctrl+S, Ctrl+,; trash/pin/theme/sync start unbound — and a
+  drift-guard unit test parses the TypeScript file so the two tables cannot
+  drift silently. The shell installs its GTK accelerators from that table (the
+  three hardcoded ones are gone), reads `settings.shortcuts` overrides from
+  app-data `config.json` at startup, and refuses overrides that collide with
+  reserved text-editing keys (Ctrl+C and friends) with a stderr warning.
+  Ctrl+P opens a modal palette listing New note, Save now, Open trash, Rebuild
+  search index, Pin/Unpin, the visible notes and — without a vault — the
+  folder picker: filtered as you type, Up/Down/Enter/Escape, every row's hint
+  showing its current binding. `scripts/gtk-shell-test.sh` grew from 17 to 24
+  checks (palette opens, filters and opens a note, closes on Escape; a
+  `settings.shortcuts` rebind takes effect on restart while Ctrl+P goes dead
+  and the Ctrl+K alias survives; untouched defaults stay intact) — 24/24 green
+  locally against the release binary.
 
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) in progress — slices
-  1–3 done, next slice 4 (command palette + shortcut service).
+  1–4 done, next slice 5 (settings panel).
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

@@ -15,6 +15,7 @@ use sourceview5::prelude::*;
 use writan_core::{Note, NoteId, SearchQuery, TrashEntry, VaultEvent, VaultWatcher, Workspace};
 
 use crate::config;
+use crate::keymap;
 use crate::preview::Preview;
 
 /// How often the main loop drains the watcher's event channel.
@@ -54,6 +55,8 @@ struct State {
     /// True while widgets are updated from code, so their signals do not
     /// re-enter the actions that set them.
     programmatic: bool,
+    /// Shortcut overrides from `settings.shortcuts` (keymap.rs).
+    overrides: keymap::ShortcutOverrides,
     config_path: PathBuf,
     data_dir: PathBuf,
 }
@@ -92,6 +95,8 @@ fn build(application: &adw::Application) {
     load_css();
 
     let config_path = config::default_config_path();
+    let overrides = keymap::load_overrides(&config_path);
+    warn_reserved_overrides(&overrides);
     let state = Rc::new(RefCell::new(State {
         workspace: None,
         rows: Vec::new(),
@@ -111,6 +116,7 @@ fn build(application: &adw::Application) {
         show_word_count: config::load_show_word_count(&config_path),
         date_format: config::load_date_format(&config_path),
         programmatic: false,
+        overrides: overrides.clone(),
         config_path,
         data_dir: config::state_dir(),
     }));
@@ -132,9 +138,14 @@ fn build(application: &adw::Application) {
     let status = gtk::Label::builder()
         .css_classes(["dim-label", "caption"])
         .build();
+    let new_hint = keymap::hint("new-note", &overrides);
     let new_button = gtk::Button::builder()
         .icon_name("document-new-symbolic")
-        .tooltip_text("New note (Ctrl+N)")
+        .tooltip_text(if new_hint.is_empty() {
+            keymap::label("new-note").to_string()
+        } else {
+            format!("{} ({new_hint})", keymap::label("new-note"))
+        })
         .build();
     let preview_toggle = gtk::ToggleButton::builder()
         .icon_name("view-reveal-symbolic")
@@ -390,7 +401,7 @@ fn build(application: &adw::Application) {
     {
         let state = state.clone();
         let ui = ui.clone();
-        trash_button.connect_clicked(move |_| open_trash(&state, &ui));
+        trash_button.connect_clicked(move |_| open_trash_or_focus(&state, &ui));
     }
 
     // Editor → preview, dirty state, debounced autosave.
@@ -418,39 +429,13 @@ fn build(application: &adw::Application) {
     {
         let state = state.clone();
         let ui = ui.clone();
-        let create = move || {
-            let created = {
-                let mut st = state.borrow_mut();
-                st.workspace
-                    .as_mut()
-                    .and_then(|ws| ws.create_note("Untitled", &[]).ok())
-            };
-            let Some(note) = created else {
-                ui.toast
-                    .add_toast(adw::Toast::new("Open a notes folder first"));
-                return;
-            };
-            ui.search.set_text("");
-            refresh(&state, &ui, false);
-            let position = state
-                .borrow()
-                .rows
-                .iter()
-                .position(|id| *id == note.meta.id);
-            match position.and_then(|p| ui.list.row_at_index(p as i32)) {
-                Some(row) => {
-                    ui.list.select_row(Some(&row));
-                }
-                None => load_note(&state, &ui, note.meta.id),
-            }
-            ui.editor.grab_focus();
-        };
+        let create = move || create_note(&state, &ui);
         let create2 = create.clone();
         new_button.connect_clicked(move |_| create());
         let new_action = gtk::gio::SimpleAction::new("new-note", None);
         new_action.connect_activate(move |_, _| create2());
         application.add_action(&new_action);
-        application.set_accels_for_action("app.new-note", &["<Ctrl>N"]);
+        apply_accels(application, &overrides, "new-note");
     }
 
     // Choose folder (header button and welcome page).
@@ -463,8 +448,8 @@ fn build(application: &adw::Application) {
         welcome_button.connect_clicked(move |_| choose_folder(&state_for_welcome, &ui_for_welcome));
     }
 
-    // Save (Ctrl+S).
-    let save_action = gtk::gio::SimpleAction::new("save", None);
+    // Save the open note.
+    let save_action = gtk::gio::SimpleAction::new("save-note", None);
     {
         let state = state.clone();
         let ui = ui.clone();
@@ -473,10 +458,10 @@ fn build(application: &adw::Application) {
         });
     }
     application.add_action(&save_action);
-    application.set_accels_for_action("app.save", &["<Ctrl>S"]);
+    apply_accels(application, &overrides, "save-note");
 
-    // Focus search (Ctrl+F).
-    let find_action = gtk::gio::SimpleAction::new("find", None);
+    // Focus the sidebar search.
+    let find_action = gtk::gio::SimpleAction::new("focus-search", None);
     {
         let search = search.clone();
         find_action.connect_activate(move |_, _| {
@@ -484,7 +469,36 @@ fn build(application: &adw::Application) {
         });
     }
     application.add_action(&find_action);
-    application.set_accels_for_action("app.find", &["<Ctrl>F"]);
+    apply_accels(application, &overrides, "focus-search");
+
+    // Command palette (Ctrl+P, alias Ctrl+K).
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let palette_action = gtk::gio::SimpleAction::new("command-palette", None);
+        palette_action.connect_activate(move |_, _| open_palette(&state, &ui));
+        application.add_action(&palette_action);
+        apply_accels(application, &overrides, "command-palette");
+    }
+
+    // Trash panel and pin toggle, so `settings.shortcuts` can bind them
+    // (keymap.ts leaves both unbound by default).
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let trash_action = gtk::gio::SimpleAction::new("toggle-trash", None);
+        trash_action.connect_activate(move |_, _| open_trash_or_focus(&state, &ui));
+        application.add_action(&trash_action);
+        apply_accels(application, &overrides, "toggle-trash");
+    }
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let pin_action = gtk::gio::SimpleAction::new("pin-note", None);
+        pin_action.connect_activate(move |_, _| toggle_pin(&state, &ui));
+        application.add_action(&pin_action);
+        apply_accels(application, &overrides, "pin-note");
+    }
 
     // Save when the window closes.
     {
@@ -555,6 +569,93 @@ fn build(application: &adw::Application) {
     window.present();
 }
 
+/// Install an action's keymap accelerators (the effective binding plus the
+/// always-on aliases) on the application.
+fn apply_accels(application: &adw::Application, overrides: &keymap::ShortcutOverrides, id: &str) {
+    let accels = keymap::accels_for(id, overrides);
+    let accels: Vec<&str> = accels.iter().map(String::as_str).collect();
+    application.set_accels_for_action(&format!("app.{id}"), &accels);
+}
+
+/// Present the application's window titled `title`; true when one was found.
+fn focus_window(application: &gtk::Application, title: &str) -> bool {
+    for window in application.windows() {
+        if window.title().as_deref() == Some(title) {
+            window.present();
+            return true;
+        }
+    }
+    false
+}
+
+/// A hand-edited config must not hijack text-editing keys: `keymap.rs`
+/// refuses reserved overrides, and we say so once per bad entry.
+fn warn_reserved_overrides(overrides: &keymap::ShortcutOverrides) {
+    for action in keymap::KEY_ACTIONS {
+        if let Some(Some(binding)) = overrides.get(action.id)
+            && keymap::is_reserved(binding)
+        {
+            eprintln!(
+                "writan: shortcuts.{} = {binding:?} is reserved; keeping {}",
+                action.id,
+                action.default_binding.unwrap_or("unbound")
+            );
+        }
+    }
+}
+
+/// Create a note and open it (the Tauri shell's New note action, and the
+/// palette's first item).
+fn create_note(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let created = {
+        let mut st = state.borrow_mut();
+        st.workspace
+            .as_mut()
+            .and_then(|ws| ws.create_note("Untitled", &[]).ok())
+    };
+    let Some(note) = created else {
+        ui.toast
+            .add_toast(adw::Toast::new("Open a notes folder first"));
+        return;
+    };
+    ui.search.set_text("");
+    refresh(state, ui, false);
+    open_note_by_id(state, ui, note.meta.id);
+    ui.editor.grab_focus();
+}
+
+/// Select a note's row (which loads it) or, when the current search or
+/// filters hide it, load it directly.
+fn open_note_by_id(state: &Rc<RefCell<State>>, ui: &Ui, id: NoteId) {
+    let position = state.borrow().rows.iter().position(|row| *row == id);
+    match position.and_then(|position| ui.list.row_at_index(position as i32)) {
+        Some(row) => {
+            ui.list.select_row(Some(&row));
+        }
+        None => load_note(state, ui, id),
+    }
+}
+
+/// Flip the pin of the open note; the button's own `toggled` handler writes
+/// it, so the palette goes through the same path as the header button.
+fn toggle_pin(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if state.borrow().current.is_some() {
+        let active = ui.pin_button.is_active();
+        ui.pin_button.set_active(!active);
+    }
+}
+
+/// Open the trash panel, or raise the one already up (application
+/// accelerators can fire while the modal panel holds focus).
+fn open_trash_or_focus(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if let Some(application) = ui.window.application()
+        && focus_window(&application, "Trash")
+    {
+        return;
+    }
+    open_trash(state, ui);
+}
+
 /// Show the folder picker and open the chosen vault.
 fn choose_folder(state: &Rc<RefCell<State>>, ui: &Ui) {
     let dialog = gtk::FileDialog::builder()
@@ -606,6 +707,50 @@ fn open_vault(state: &Rc<RefCell<State>>, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The notes the sidebar shows for the current search and filters, in list
+/// order: (id, title, subtitle, pinned). The command palette's note items
+/// come from here too, so both agree on what "visible" means.
+fn visible_entries(state: &Rc<RefCell<State>>, text: &str) -> Vec<(NoteId, String, String, bool)> {
+    let text = text.trim();
+    let (tag, folder) = {
+        let st = state.borrow();
+        (st.tag_filter.clone(), st.folder_filter.clone())
+    };
+    let filtering = !text.is_empty() || tag.is_some() || folder.is_some();
+    let st = state.borrow();
+    let Some(workspace) = st.workspace.as_ref() else {
+        return Vec::new();
+    };
+    if filtering {
+        workspace
+            .search(&SearchQuery {
+                text: text.to_string(),
+                tags: tag.into_iter().collect(),
+                folder,
+                limit: Some(500),
+                ..SearchQuery::default()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|hit| {
+                let subtitle = if hit.snippet.is_empty() {
+                    hit.rel_path
+                } else {
+                    hit.snippet
+                };
+                (hit.id, hit.title, subtitle, hit.pinned)
+            })
+            .collect()
+    } else {
+        workspace
+            .list(500)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|note| (note.id, note.title, note.rel_path, note.pinned))
+            .collect()
+    }
+}
+
 /// Rebuild the note list for the current search and filters. `fallback` opens
 /// the first row when nothing is open — only for user-driven entry points
 /// (startup, vault switch), so deletes and external changes never yank the
@@ -614,46 +759,7 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui, fallback: bool) {
     while let Some(child) = ui.list.first_child() {
         ui.list.remove(&child);
     }
-    let text = ui.search.text().trim().to_string();
-    let (tag, folder) = {
-        let st = state.borrow();
-        (st.tag_filter.clone(), st.folder_filter.clone())
-    };
-    let filtering = !text.is_empty() || tag.is_some() || folder.is_some();
-    let entries: Vec<(NoteId, String, String, bool)> = {
-        let st = state.borrow();
-        let Some(workspace) = st.workspace.as_ref() else {
-            return;
-        };
-        if filtering {
-            workspace
-                .search(&SearchQuery {
-                    text,
-                    tags: tag.into_iter().collect(),
-                    folder,
-                    limit: Some(500),
-                    ..SearchQuery::default()
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .map(|hit| {
-                    let subtitle = if hit.snippet.is_empty() {
-                        hit.rel_path
-                    } else {
-                        hit.snippet
-                    };
-                    (hit.id, hit.title, subtitle, hit.pinned)
-                })
-                .collect()
-        } else {
-            workspace
-                .list(500)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|note| (note.id, note.title, note.rel_path, note.pinned))
-                .collect()
-        }
-    };
+    let entries = visible_entries(state, &ui.search.text());
     let mut rows = Vec::with_capacity(entries.len());
     for (id, title, subtitle, pinned) in &entries {
         let row = gtk::ListBoxRow::new();
@@ -1276,6 +1382,360 @@ fn purge_trash_entry(state: &Rc<RefCell<State>>, ui: &Ui, panel: &TrashPanel, id
                 .add_toast(adw::Toast::new(&format!("Delete failed: {error}")));
         }
     }
+}
+
+/// The command palette: one search entry over the same actions as the Tauri
+/// palette (`components/CommandPalette.svelte`) plus the notes the sidebar
+/// currently shows. A modal window, like the trash panel.
+fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if let Some(application) = ui.window.application()
+        && focus_window(&application, "Command palette")
+    {
+        return;
+    }
+
+    let entry = gtk::Entry::builder()
+        .placeholder_text("Type a command or note name…")
+        .margin_start(10)
+        .margin_end(10)
+        .margin_top(10)
+        .margin_bottom(6)
+        .build();
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .build();
+    list.add_css_class("navigation-sidebar");
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .vexpand(true)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .build();
+
+    let empty = gtk::Label::builder()
+        .label("No matches")
+        .css_classes(["dim-label"])
+        .margin_top(32)
+        .margin_bottom(32)
+        .build();
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.append(&entry);
+    body.append(&empty);
+    body.append(&scroll);
+    body.set_margin_start(6);
+    body.set_margin_end(6);
+    body.set_margin_bottom(6);
+
+    let window = adw::Window::builder()
+        .title("Command palette")
+        .transient_for(&ui.window)
+        .modal(true)
+        .default_width(520)
+        .default_height(420)
+        .content(&body)
+        .build();
+
+    let palette = Palette {
+        entry: entry.clone(),
+        list: list.clone(),
+        empty: empty.clone(),
+        commands: Rc::new(RefCell::new(Vec::new())),
+    };
+    fill_palette(state, ui, &palette);
+
+    // Filter as the query changes; the selection returns to the first row.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let palette = palette.clone();
+        entry.connect_changed(move |_| fill_palette(&state, &ui, &palette));
+    }
+
+    // Enter runs the selected item, then the window closes (Tauri's
+    // `runItem`: close, then run).
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let palette = palette.clone();
+        let window_for_enter = window.clone();
+        entry.connect_activate(move |_| {
+            let index = palette
+                .list
+                .selected_row()
+                .map(|row| row.index())
+                .unwrap_or(0);
+            let command = item_command(&palette, index);
+            window_for_enter.close();
+            if let Some(command) = command {
+                run_palette_command(&state, &ui, command);
+            }
+        });
+    }
+
+    // A click on a row does the same.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let palette = palette.clone();
+        let window_for_click = window.clone();
+        list.connect_row_activated(move |_, row| {
+            let command = item_command(&palette, row.index());
+            window_for_click.close();
+            if let Some(command) = command {
+                run_palette_command(&state, &ui, command);
+            }
+        });
+    }
+
+    // Up/Down move the selection while the entry keeps focus.
+    {
+        let palette = palette.clone();
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        keys.connect_key_pressed(move |_, key, _, _| match key {
+            gtk::gdk::Key::Down => {
+                move_palette_selection(&palette, 1);
+                gtk::glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Up => {
+                move_palette_selection(&palette, -1);
+                gtk::glib::Propagation::Stop
+            }
+            _ => gtk::glib::Propagation::Proceed,
+        });
+        entry.add_controller(keys);
+    }
+
+    // Escape closes the palette, like every GNOME dialog.
+    {
+        let window_for_escape = window.clone();
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                window_for_escape.close();
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        window.add_controller(keys);
+    }
+
+    window.present();
+    entry.grab_focus();
+}
+
+/// The palette's items, in the Tauri palette's order: actions first, then
+/// the notes the sidebar shows, each with its key hint.
+fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
+    let st = state.borrow();
+    let overrides = &st.overrides;
+    let mut items = Vec::new();
+    if st.workspace.is_some() {
+        items.push(PaletteItem {
+            label: keymap::label("new-note").to_string(),
+            hint: keymap::hint("new-note", overrides),
+            command: PaletteCommand::NewNote,
+        });
+        items.push(PaletteItem {
+            label: "Save now".to_string(),
+            hint: keymap::hint("save-note", overrides),
+            command: PaletteCommand::SaveNow,
+        });
+        items.push(PaletteItem {
+            label: "Open trash".to_string(),
+            hint: "Trash".to_string(),
+            command: PaletteCommand::OpenTrash,
+        });
+        items.push(PaletteItem {
+            label: "Rebuild search index".to_string(),
+            hint: "Maintenance".to_string(),
+            command: PaletteCommand::RebuildIndex,
+        });
+        if let Some(note) = st.current.as_ref() {
+            items.push(PaletteItem {
+                label: if note.meta.pinned {
+                    "Unpin this note".to_string()
+                } else {
+                    "Pin this note".to_string()
+                },
+                hint: "Pin".to_string(),
+                command: PaletteCommand::TogglePin,
+            });
+        }
+    } else {
+        // The Tauri palette has no such item: its welcome page is the only
+        // way in. The GTK shell keeps the sidebar usable without a vault, so
+        // the palette offers the folder picker instead.
+        items.push(PaletteItem {
+            label: "Choose notes folder…".to_string(),
+            hint: String::new(),
+            command: PaletteCommand::ChooseFolder,
+        });
+    }
+    for (id, title, _, _) in visible_entries(state, &ui.search.text()) {
+        items.push(PaletteItem {
+            label: if title.is_empty() {
+                "Untitled".to_string()
+            } else {
+                title
+            },
+            hint: "Open note".to_string(),
+            command: PaletteCommand::OpenNote(id),
+        });
+    }
+    items
+}
+
+/// Rebuild the palette's rows for the current query and select the first.
+fn fill_palette(state: &Rc<RefCell<State>>, ui: &Ui, palette: &Palette) {
+    while let Some(child) = palette.list.first_child() {
+        palette.list.remove(&child);
+    }
+    let query = palette.entry.text().trim().to_lowercase();
+    let items: Vec<PaletteItem> = palette_items(state, ui)
+        .into_iter()
+        .filter(|item| query.is_empty() || item.label.to_lowercase().contains(&query))
+        .collect();
+    let no_items = items.is_empty();
+    for item in &items {
+        palette.list.append(&palette_row(item));
+    }
+    palette.empty.set_visible(no_items);
+    if let Some(row) = palette.list.row_at_index(0) {
+        palette.list.select_row(Some(&row));
+    }
+    palette.commands.replace(items);
+}
+
+/// One palette row: label left, key hint (or band) right.
+fn palette_row(item: &PaletteItem) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    let cell = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    cell.set_margin_start(10);
+    cell.set_margin_end(10);
+    cell.set_margin_top(8);
+    cell.set_margin_bottom(8);
+    let label = gtk::Label::builder()
+        .label(&item.label)
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    cell.append(&label);
+    if !item.hint.is_empty() {
+        let hint = gtk::Label::builder()
+            .label(&item.hint)
+            .css_classes(["dim-label", "caption"])
+            .build();
+        cell.append(&hint);
+    }
+    row.set_child(Some(&cell));
+    row
+}
+
+/// The command of the palette row at `index`, if any.
+fn item_command(palette: &Palette, index: i32) -> Option<PaletteCommand> {
+    if index < 0 {
+        return None;
+    }
+    palette
+        .commands
+        .borrow()
+        .get(index as usize)
+        .map(|item| item.command.clone())
+}
+
+/// Move the palette selection by `delta`, clamped to the rows on screen.
+fn move_palette_selection(palette: &Palette, delta: i32) {
+    let count = palette.commands.borrow().len() as i32;
+    if count == 0 {
+        return;
+    }
+    let current = palette
+        .list
+        .selected_row()
+        .map(|row| row.index())
+        .unwrap_or(0);
+    let next = (current + delta).clamp(0, count - 1);
+    if let Some(row) = palette.list.row_at_index(next) {
+        palette.list.select_row(Some(&row));
+    }
+}
+
+/// Run a palette item (the window has closed by now, like the Tauri
+/// palette's `runItem`).
+fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteCommand) {
+    match command {
+        PaletteCommand::NewNote => create_note(state, ui),
+        PaletteCommand::SaveNow => {
+            save_now(state, ui, true);
+        }
+        PaletteCommand::OpenTrash => open_trash_or_focus(state, ui),
+        PaletteCommand::RebuildIndex => rebuild_index(state, ui),
+        PaletteCommand::TogglePin => toggle_pin(state, ui),
+        PaletteCommand::OpenNote(id) => {
+            open_note_by_id(state, ui, id);
+            ui.editor.grab_focus();
+        }
+        PaletteCommand::ChooseFolder => choose_folder(state, ui),
+    }
+}
+
+/// `workspace.rebuild_index()` — the Tauri palette's "Rebuild search index".
+fn rebuild_index(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let outcome = {
+        let mut st = state.borrow_mut();
+        st.workspace
+            .as_mut()
+            .map(|ws| ws.rebuild_index().map_err(|error| error.to_string()))
+    };
+    match outcome {
+        Some(Ok(stats)) => {
+            refresh(state, ui, false);
+            ui.toast.add_toast(adw::Toast::new(&format!(
+                "Index rebuilt: {} added, {} updated, {} removed.",
+                stats.added, stats.updated, stats.removed
+            )));
+        }
+        Some(Err(error)) => {
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Rebuild failed: {error}")));
+        }
+        None => {}
+    }
+}
+
+/// Widgets of the open command palette; the rows are rebuilt as the query
+/// changes, `commands` mirrors them in row order.
+#[derive(Clone)]
+struct Palette {
+    entry: gtk::Entry,
+    list: gtk::ListBox,
+    empty: gtk::Label,
+    commands: Rc<RefCell<Vec<PaletteItem>>>,
+}
+
+/// One palette row: what it shows and what it runs.
+struct PaletteItem {
+    label: String,
+    hint: String,
+    command: PaletteCommand,
+}
+
+/// What a palette item does; `Clone` so a copy can run after the window
+/// closed.
+#[derive(Clone)]
+enum PaletteCommand {
+    NewNote,
+    SaveNow,
+    OpenTrash,
+    RebuildIndex,
+    TogglePin,
+    OpenNote(NoteId),
+    ChooseFolder,
 }
 
 /// `settings.view.showWordCount` — the Tauri editor header shows this.

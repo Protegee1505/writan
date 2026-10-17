@@ -3,7 +3,7 @@
 //! UI-thin: vault, index, trash and search all come from `writan-core`.
 //! This crate is Linux-only; on other targets it compiles to a stub so
 //! `cargo clippy/test --workspace` stays green on Windows, and the pure
-//! modules (`spans`, `config`) are unit-tested everywhere.
+//! modules (`spans`, `config`, `keymap`) are unit-tested everywhere.
 
 #![forbid(unsafe_code)]
 
@@ -11,6 +11,8 @@
 mod config;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod dates;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod keymap;
 #[cfg(any(target_os = "linux", test))]
 mod spans;
 
