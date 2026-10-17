@@ -39,7 +39,7 @@ fn make_body(seed: &mut u64, note: usize) -> String {
         body.push_str(&format!("{:04}", next(seed) % POOL));
         body.push(' ');
     }
-    if note % 500 == 0 {
+    if note.is_multiple_of(500) {
         body.push_str("xylocarp ");
     }
     body
@@ -107,68 +107,69 @@ fn search_stays_within_budget_on_10k_notes() {
         index.count().expect("count"),
     );
 
-    let mut results = Vec::new();
-    results.push((
-        "common word",
-        measure(
-            &index,
+    let results = vec![
+        (
             "common word",
-            &SearchQuery {
-                text: "tok0421".into(),
-                ..Default::default()
-            },
-            100,
+            measure(
+                &index,
+                "common word",
+                &SearchQuery {
+                    text: "tok0421".into(),
+                    ..Default::default()
+                },
+                100,
+            ),
         ),
-    ));
-    results.push((
-        "two-word phrase",
-        measure(
-            &index,
+        (
             "two-word phrase",
-            &SearchQuery {
-                text: "tok0421 tok0055".into(),
-                ..Default::default()
-            },
-            1,
+            measure(
+                &index,
+                "two-word phrase",
+                &SearchQuery {
+                    text: "tok0421 tok0055".into(),
+                    ..Default::default()
+                },
+                1,
+            ),
         ),
-    ));
-    results.push((
-        "tag + word",
-        measure(
-            &index,
+        (
             "tag + word",
-            &SearchQuery {
-                text: "tok0421".into(),
-                tags: vec!["tag2".into()],
-                ..Default::default()
-            },
-            10,
+            measure(
+                &index,
+                "tag + word",
+                &SearchQuery {
+                    text: "tok0421".into(),
+                    tags: vec!["tag2".into()],
+                    ..Default::default()
+                },
+                10,
+            ),
         ),
-    ));
-    results.push((
-        "rare word",
-        measure(
-            &index,
+        (
             "rare word",
-            &SearchQuery {
-                text: "xylocarp".into(),
-                ..Default::default()
-            },
-            20,
+            measure(
+                &index,
+                "rare word",
+                &SearchQuery {
+                    text: "xylocarp".into(),
+                    ..Default::default()
+                },
+                20,
+            ),
         ),
-    ));
-    results.push((
-        "no match",
-        measure(
-            &index,
+        (
             "no match",
-            &SearchQuery {
-                text: "zzzqx".into(),
-                ..Default::default()
-            },
-            0,
+            measure(
+                &index,
+                "no match",
+                &SearchQuery {
+                    text: "zzzqx".into(),
+                    ..Default::default()
+                },
+                0,
+            ),
         ),
-    ));
+    ];
 
     if cfg!(debug_assertions) {
         println!("debug build — budget assertions skipped");
