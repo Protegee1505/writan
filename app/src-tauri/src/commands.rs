@@ -4,12 +4,16 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 use writan_core::{Note, SearchQuery, Workspace};
 use writan_sync::{
-    FolderTarget, FolderVault, KeyringPurpose, SyncReport, SyncState, bootstrap_keyring,
-    generate_recovery_code, keyring_generations, sync as run_engine, unlock_keyring,
+    FolderTarget, FolderVault, KeyringPurpose, S3Config, S3HttpTransport, S3Target, SyncReport,
+    SyncState, SyncTarget, TargetError, bootstrap_keyring, generate_recovery_code,
+    keyring_generations, sync as run_engine, unlock_keyring,
 };
 
-use crate::state::{AppState, Inner, SyncConfig};
-use crate::sync::{SyncSession, forget_vault_key, remember_vault_key};
+use crate::state::{AppState, Inner, S3ConfigFile, SyncConfig, SyncKind};
+use crate::sync::{
+    SyncSession, forget_s3_secret, forget_vault_key, recall_s3_secret, remember_s3_secret,
+    remember_vault_key,
+};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -502,6 +506,8 @@ impl SyncReportDto {
 pub struct SyncStatusDto {
     pub enabled: bool,
     pub unlocked: bool,
+    /// "folder" or "s3" — the kind of configured target.
+    pub kind: String,
     pub target: Option<String>,
     pub vault_id: Option<String>,
     pub device_id: Option<String>,
@@ -519,15 +525,31 @@ pub struct SyncConnectDto {
 }
 
 fn sync_status_from(state: &AppState, inner: &Inner) -> SyncStatusDto {
+    let (kind, target) = match inner.config.sync.kind {
+        SyncKind::Folder => (
+            "folder",
+            inner
+                .config
+                .sync
+                .target
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        ),
+        SyncKind::S3 => (
+            "s3",
+            inner
+                .config
+                .sync
+                .s3
+                .as_ref()
+                .map(|s3| format!("s3://{}", s3.bucket)),
+        ),
+    };
     let mut dto = SyncStatusDto {
         enabled: inner.config.sync.enabled,
         unlocked: inner.sync.is_some(),
-        target: inner
-            .config
-            .sync
-            .target
-            .as_ref()
-            .map(|path| path.display().to_string()),
+        kind: kind.to_string(),
+        target,
         vault_id: None,
         device_id: None,
         last_sync: None,
@@ -545,6 +567,70 @@ fn sync_status_from(state: &AppState, inner: &Inner) -> SyncStatusDto {
     dto
 }
 
+/// The configured target for one engine pass: the shared folder, or the
+/// S3-compatible bucket (ADR-0006).
+enum SyncTargetImpl {
+    Folder(FolderTarget),
+    S3(S3Target<S3HttpTransport>),
+}
+
+impl SyncTarget for SyncTargetImpl {
+    fn list(&self) -> Result<Vec<String>, TargetError> {
+        match self {
+            Self::Folder(target) => target.list(),
+            Self::S3(target) => target.list(),
+        }
+    }
+
+    fn read(&self, path: &str) -> Result<Vec<u8>, TargetError> {
+        match self {
+            Self::Folder(target) => target.read(path),
+            Self::S3(target) => target.read(path),
+        }
+    }
+
+    fn write(&self, path: &str, bytes: &[u8]) -> Result<(), TargetError> {
+        match self {
+            Self::Folder(target) => target.write(path, bytes),
+            Self::S3(target) => target.write(path, bytes),
+        }
+    }
+}
+
+fn build_sync_target(inner: &Inner) -> CmdResult<SyncTargetImpl> {
+    match inner.config.sync.kind {
+        SyncKind::Folder => {
+            let path = inner
+                .config
+                .sync
+                .target
+                .as_ref()
+                .ok_or_else(|| "sync is not configured yet".to_string())?;
+            let target = FolderTarget::open(path).map_err(|e| e.to_string())?;
+            Ok(SyncTargetImpl::Folder(target))
+        }
+        SyncKind::S3 => {
+            let s3 = inner
+                .config
+                .sync
+                .s3
+                .as_ref()
+                .ok_or_else(|| "sync is not configured yet".to_string())?;
+            let secret = recall_s3_secret(&s3.endpoint, &s3.bucket).ok_or_else(|| {
+                "the S3 secret key is not on this device — connect sync again".to_string()
+            })?;
+            let cfg = S3Config {
+                endpoint: s3.endpoint.clone(),
+                region: s3.region.clone(),
+                bucket: s3.bucket.clone(),
+                access_key: s3.access_key.clone(),
+                secret_key: secret,
+            };
+            Ok(SyncTargetImpl::S3(S3Target::new(S3HttpTransport::new(cfg))))
+        }
+    }
+}
+
 #[tauri::command]
 pub fn sync_status(state: State<'_, AppState>) -> CmdResult<SyncStatusDto> {
     let inner = state
@@ -560,9 +646,7 @@ fn run_sync_locked(state: &AppState, inner: &mut Inner) -> CmdResult<SyncReportD
     if !inner.config.sync.enabled {
         return Err("sync is disabled".to_string());
     }
-    let Some(target_path) = inner.config.sync.target.clone() else {
-        return Err("sync is not configured yet".to_string());
-    };
+    let target = build_sync_target(inner)?;
     let bound_vault = inner.config.sync.vault_path.clone();
     let current_vault = inner
         .workspace
@@ -579,7 +663,6 @@ fn run_sync_locked(state: &AppState, inner: &mut Inner) -> CmdResult<SyncReportD
     let Some(session) = inner.sync.as_mut() else {
         return Err("sync is locked; unlock it first".to_string());
     };
-    let target = FolderTarget::open(&target_path).map_err(|e| e.to_string())?;
     let vault = FolderVault::new(workspace.vault());
     let report = run_engine(
         &session.vault_key,
@@ -654,7 +737,114 @@ pub fn sync_connect(
     let device = sync_state.device.unwrap_or_else(Uuid::new_v4);
     sync_state.device = Some(device);
     inner.config.sync = SyncConfig {
+        kind: SyncKind::Folder,
         target: Some(target_path),
+        s3: None,
+        vault_path: Some(vault_path),
+        enabled: true,
+    };
+    inner.sync = Some(SyncSession {
+        vault_id,
+        device,
+        vault_key: zeroize::Zeroizing::new(vault_key),
+        state: sync_state,
+        last_sync: None,
+        last_report: None,
+    });
+    state.save_config(&inner);
+    run_sync_locked(&state, &mut inner)?;
+    Ok(SyncConnectDto {
+        recovery_code,
+        status: sync_status_from(&state, &inner),
+    })
+}
+
+/// Connect this vault to an S3-compatible bucket (ADR-0006). Same keyring
+/// flow as the shared folder; the secret key goes to the OS keychain and the
+/// rest of the connection details to `config.json`.
+#[tauri::command]
+pub fn sync_connect_s3(
+    state: State<'_, AppState>,
+    endpoint: String,
+    bucket: String,
+    region: String,
+    access_key: String,
+    secret_key: String,
+    password: String,
+) -> CmdResult<SyncConnectDto> {
+    let endpoint = endpoint.trim().to_string();
+    let bucket = bucket.trim().to_string();
+    let region = match region.trim() {
+        "" => "us-east-1".to_string(),
+        region => region.to_string(),
+    };
+    let access_key = access_key.trim().to_string();
+    let secret_key = secret_key.trim().to_string();
+    if endpoint.is_empty() {
+        return Err("set the S3 endpoint first".to_string());
+    }
+    if bucket.is_empty() {
+        return Err("set the bucket first".to_string());
+    }
+    if access_key.is_empty() || secret_key.is_empty() {
+        return Err("set the access key and secret first".to_string());
+    }
+    if password.is_empty() {
+        return Err("set a sync password first".to_string());
+    }
+    let cfg = S3Config {
+        endpoint: endpoint.clone(),
+        region: region.clone(),
+        bucket: bucket.clone(),
+        access_key: access_key.clone(),
+        secret_key: secret_key.clone(),
+    };
+    let target = S3Target::new(S3HttpTransport::new(cfg));
+    let generations =
+        keyring_generations(&target).map_err(|e| format!("could not reach the bucket: {e}"))?;
+    let (vault_id, vault_key, recovery_code) = if generations.is_empty() {
+        let vault_id = Uuid::new_v4();
+        let code = generate_recovery_code();
+        let (_file, key) = bootstrap_keyring(&target, vault_id, &password, &code)
+            .map_err(|e| format!("failed to create the keyring: {e}"))?;
+        (vault_id, key, Some(code))
+    } else {
+        let unlocked = unlock_keyring(&generations, KeyringPurpose::Password, &password, None)
+            .map_err(|e| format!("could not unlock the existing keyring: {e}"))?;
+        (unlocked.vault_id, unlocked.vault_key, None)
+    };
+    remember_vault_key(vault_id, &vault_key);
+    remember_s3_secret(&endpoint, &bucket, &secret_key);
+
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let Some(vault_path) = inner
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.vault().root().to_path_buf())
+    else {
+        return Err("open a vault before setting up sync".to_string());
+    };
+    let mut sync_state = SyncState::load(&state.sync_state_path).unwrap_or_default();
+    if let Some(existing) = sync_state.vault_id
+        && existing != vault_id
+    {
+        return Err("this device already syncs a different vault".to_string());
+    }
+    sync_state.vault_id = Some(vault_id);
+    let device = sync_state.device.unwrap_or_else(Uuid::new_v4);
+    sync_state.device = Some(device);
+    inner.config.sync = SyncConfig {
+        kind: SyncKind::S3,
+        target: None,
+        s3: Some(S3ConfigFile {
+            endpoint,
+            region,
+            bucket,
+            access_key,
+        }),
         vault_path: Some(vault_path),
         enabled: true,
     };
@@ -694,20 +884,14 @@ fn unlock_sync(
     if credential.is_empty() {
         return Err("enter the password or recovery code".to_string());
     }
-    let target_path = {
+    let target = {
         let inner = state
             .inner
             .lock()
             .map_err(|_| "state lock poisoned".to_string())?;
-        inner
-            .config
-            .sync
-            .target
-            .clone()
-            .ok_or_else(|| "sync is not configured yet".to_string())?
+        build_sync_target(&inner)?
     };
-    let folder = FolderTarget::open(&target_path).map_err(|e| e.to_string())?;
-    let generations = keyring_generations(&folder).map_err(|e| e.to_string())?;
+    let generations = keyring_generations(&target).map_err(|e| e.to_string())?;
     if generations.is_empty() {
         return Err("the sync folder has no keyring yet".to_string());
     }
@@ -772,6 +956,9 @@ pub fn sync_disable(state: State<'_, AppState>) -> CmdResult<SyncStatusDto> {
         .map_err(|_| "state lock poisoned".to_string())?;
     if let Some(session) = &inner.sync {
         forget_vault_key(session.vault_id);
+    }
+    if let Some(s3) = &inner.config.sync.s3 {
+        forget_s3_secret(&s3.endpoint, &s3.bucket);
     }
     inner.sync = None;
     inner.config.sync.enabled = false;

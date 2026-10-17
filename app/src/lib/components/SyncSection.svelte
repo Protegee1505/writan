@@ -3,7 +3,13 @@
   import { api } from "$lib/api";
   import { store } from "$lib/store.svelte";
 
+  let kind = $state<"folder" | "s3">("folder");
   let target = $state("");
+  let s3Endpoint = $state("");
+  let s3Bucket = $state("");
+  let s3Region = $state("");
+  let s3AccessKey = $state("");
+  let s3SecretKey = $state("");
   let password = $state("");
   let code = $state("");
   let useRecovery = $state(false);
@@ -22,9 +28,23 @@
 
   async function connect() {
     if (working) return;
-    if (!target.trim()) {
+    if (kind === "folder" && !target.trim()) {
       store.error = "Choose a sync folder first.";
       return;
+    }
+    if (kind === "s3") {
+      if (!s3Endpoint.trim()) {
+        store.error = "Set the S3 endpoint first.";
+        return;
+      }
+      if (!s3Bucket.trim()) {
+        store.error = "Set the bucket first.";
+        return;
+      }
+      if (!s3AccessKey.trim() || !s3SecretKey.trim()) {
+        store.error = "Set the access key and secret first.";
+        return;
+      }
     }
     if (!password) {
       store.error = "Set a sync password first.";
@@ -33,14 +53,27 @@
     working = true;
     store.error = null;
     try {
-      const result = await api.syncConnect(target.trim(), password);
+      const result =
+        kind === "s3"
+          ? await api.syncConnectS3(
+              s3Endpoint.trim(),
+              s3Bucket.trim(),
+              s3Region.trim(),
+              s3AccessKey.trim(),
+              s3SecretKey.trim(),
+              password,
+            )
+          : await api.syncConnect(target.trim(), password);
       recoveryCode = result.recoveryCode;
       password = "";
+      s3SecretKey = "";
       store.sync = result.status;
       store.notify(
         result.recoveryCode
           ? "Sync enabled. Save the recovery code — it is shown only now."
-          : "Sync connected to the shared folder.",
+          : kind === "s3"
+            ? "Sync connected to the bucket."
+            : "Sync connected to the shared folder.",
       );
       await store.refresh();
       void store.loadFacets();
@@ -89,7 +122,7 @@
     try {
       store.sync = await api.syncDisable();
       confirmDisable = false;
-      store.notify("Sync is off for this vault. The shared folder was left untouched.");
+      store.notify("Sync is off for this vault. The target was left untouched.");
     } catch (e) {
       store.error = String(e);
     }
@@ -144,24 +177,82 @@
   {/if}
 
   {#if !setupComplete}
-    <div class="row column">
+    <div class="row">
       <div class="meta">
-        <span class="label">Shared folder</span>
+        <span class="label">Where notes sync</span>
         <span class="desc">
-          A folder every device can reach (a synced drive, a network share, or later an S3
-          bucket). Notes go in encrypted; the folder never holds plaintext.
+          A folder every device can reach (a synced drive, a network share) or an S3-compatible
+          bucket. Notes go in encrypted; the target never holds plaintext.
         </span>
       </div>
-      <div class="control wide">
-        <input
-          class="path"
-          bind:value={target}
-          placeholder="Choose a shared folder…"
-          spellcheck="false"
-        />
-        <button class="btn" onclick={() => void chooseFolder()}>Choose folder…</button>
+      <div class="control">
+        <button class="btn" class:selected={kind === "folder"} onclick={() => (kind = "folder")}>
+          Shared folder
+        </button>
+        <button class="btn" class:selected={kind === "s3"} onclick={() => (kind = "s3")}>
+          S3 bucket
+        </button>
       </div>
     </div>
+    {#if kind === "folder"}
+      <div class="row column">
+        <div class="meta">
+          <span class="label">Shared folder</span>
+        </div>
+        <div class="control wide">
+          <input
+            class="path"
+            bind:value={target}
+            placeholder="Choose a shared folder…"
+            spellcheck="false"
+          />
+          <button class="btn" onclick={() => void chooseFolder()}>Choose folder…</button>
+        </div>
+      </div>
+    {:else}
+      <div class="row column">
+        <div class="meta">
+          <span class="label">Endpoint</span>
+          <span class="desc">MinIO or any S3-compatible service; AWS accepts path-style too.</span>
+        </div>
+        <div class="control wide">
+          <input
+            class="path"
+            bind:value={s3Endpoint}
+            placeholder="https://s3.example.com"
+            spellcheck="false"
+          />
+          <input class="path small" bind:value={s3Bucket} placeholder="bucket" spellcheck="false" />
+        </div>
+      </div>
+      <div class="row column">
+        <div class="meta">
+          <span class="label">Region and credentials</span>
+          <span class="desc">The secret key is kept in the OS keychain, never in the config.</span>
+        </div>
+        <div class="control wide">
+          <input
+            class="path small"
+            bind:value={s3Region}
+            placeholder="region (us-east-1)"
+            spellcheck="false"
+          />
+          <input
+            class="path small"
+            bind:value={s3AccessKey}
+            placeholder="access key"
+            spellcheck="false"
+          />
+          <input
+            class="path small"
+            type="password"
+            bind:value={s3SecretKey}
+            placeholder="secret key"
+            spellcheck="false"
+          />
+        </div>
+      </div>
+    {/if}
     <div class="row">
       <div class="meta">
         <span class="label">Sync password</span>
@@ -337,6 +428,10 @@
     font-size: 12px;
   }
 
+  .path.small {
+    width: min(170px, 22vw);
+  }
+
   .btn {
     padding: 6px 12px;
     border-radius: 8px;
@@ -351,6 +446,11 @@
 
   .btn.danger {
     color: var(--danger);
+  }
+
+  .btn.selected {
+    background: var(--accent-soft);
+    border-color: var(--accent);
   }
 
   .btn.armed {

@@ -48,6 +48,7 @@ pub fn run() {
             commands::save_settings,
             commands::sync_status,
             commands::sync_connect,
+            commands::sync_connect_s3,
             commands::sync_unlock,
             commands::sync_unlock_recovery,
             commands::sync_now,

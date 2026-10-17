@@ -20,12 +20,36 @@ pub struct AppConfig {
     pub sync: SyncConfig,
 }
 
+/// Which kind of target notes sync through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncKind {
+    #[default]
+    Folder,
+    S3,
+}
+
+/// S3 target details kept in `config.json` (ADR-0006). The secret key never
+/// lives here — only in the OS keychain (`crate::sync::recall_s3_secret`).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct S3ConfigFile {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub access_key: String,
+}
+
 /// How and where this device syncs; the vault key and bookkeeping live in the
 /// OS keychain and `sync-state.json` (ADR-0005 §§6–10).
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SyncConfig {
-    /// The shared folder notes sync through.
+    #[serde(default)]
+    pub kind: SyncKind,
+    /// The shared folder notes sync through (folder targets).
     pub target: Option<PathBuf>,
+    /// The bucket details (S3 targets); the secret key is in the keychain.
+    #[serde(default)]
+    pub s3: Option<S3ConfigFile>,
     /// The vault this sync was set up for; opening another vault keeps sync
     /// locked rather than mixing notes between vaults.
     pub vault_path: Option<PathBuf>,
@@ -231,6 +255,27 @@ mod tests {
         );
         assert!(inner.config.sync.vault_path.is_none());
         // No keychain entry and no state file: sync stays locked, no error.
+        assert!(inner.sync.is_none());
+        drop(inner);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn s3_sync_config_roundtrips() {
+        let (state, dir) = temp_state();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{ "vault_path": null, "sync": { "enabled": true, "kind": "s3", "s3": { "endpoint": "http://127.0.0.1:9000", "region": "us-east-1", "bucket": "writan-sim", "access_key": "writan" } } }"#,
+        )
+        .unwrap();
+        state.load_config();
+        let inner = state.inner.lock().unwrap();
+        assert!(inner.config.sync.enabled);
+        assert_eq!(inner.config.sync.kind, SyncKind::S3);
+        let s3 = inner.config.sync.s3.as_ref().expect("s3 config");
+        assert_eq!(s3.bucket, "writan-sim");
+        assert!(inner.config.sync.target.is_none());
         assert!(inner.sync.is_none());
         drop(inner);
         let _ = fs::remove_dir_all(&dir);

@@ -75,6 +75,8 @@ export interface SyncReport {
 export interface SyncStatus {
   enabled: boolean;
   unlocked: boolean;
+  /** "folder" or "s3". */
+  kind: string;
   target: string | null;
   vaultId: string | null;
   deviceId: string | null;
@@ -122,6 +124,22 @@ export const api = {
   syncStatus: () => invoke<SyncStatus>("sync_status"),
   syncConnect: (target: string, password: string) =>
     invoke<SyncConnectResult>("sync_connect", { target, password }),
+  syncConnectS3: (
+    endpoint: string,
+    bucket: string,
+    region: string,
+    accessKey: string,
+    secretKey: string,
+    password: string,
+  ) =>
+    invoke<SyncConnectResult>("sync_connect_s3", {
+      endpoint,
+      bucket,
+      region,
+      accessKey,
+      secretKey,
+      password,
+    }),
   syncUnlock: (password: string) => invoke<SyncStatus>("sync_unlock", { password }),
   syncUnlockRecovery: (code: string) => invoke<SyncStatus>("sync_unlock_recovery", { code }),
   syncNow: () => invoke<SyncReport>("sync_now"),
