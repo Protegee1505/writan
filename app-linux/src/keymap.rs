@@ -179,6 +179,126 @@ pub fn accels_for(id: &str, overrides: &ShortcutOverrides) -> Vec<String> {
     accels
 }
 
+/// Whether a key name is a modifier, or another key the recorder swallows
+/// while it waits for a real shortcut (lock keys, the group switch).
+pub fn is_modifier_key(name: &str) -> bool {
+    matches!(
+        name,
+        "ISO_Left_Tab" | "VoidSymbol" | "Caps_Lock" | "Num_Lock"
+    ) || name.starts_with("Control_")
+        || name.starts_with("Shift_")
+        || name.starts_with("Alt_")
+        || name.starts_with("Super_")
+        || name.starts_with("Meta_")
+        || name.ends_with("_Lock")
+}
+
+/// A key press from the settings recorder → a canonical binding, the same
+/// spelling `bindingFromEvent` stores on the Tauri side (`"Ctrl+Shift+P"`).
+/// Returns `None` for presses that cannot become a shortcut: no Ctrl or Alt
+/// (a shortcut must not shadow plain typing), Escape (the recorder reads it as
+/// cancel) and the modifier keys themselves.
+pub fn binding_from_parts(ctrl: bool, alt: bool, shift: bool, key_name: &str) -> Option<String> {
+    if !ctrl && !alt {
+        return None;
+    }
+    if key_name == "Escape" || is_modifier_key(key_name) {
+        return None;
+    }
+    let key = canonical_key_name(key_name)?;
+    let mut binding = String::new();
+    if ctrl {
+        binding.push_str("Ctrl+");
+    }
+    if alt {
+        binding.push_str("Alt+");
+    }
+    if shift {
+        binding.push_str("Shift+");
+    }
+    binding.push_str(&key);
+    Some(binding)
+}
+
+/// GDK key name → the canonical spelling (the inverse of `gtk_key_name`, plus
+/// the shifted punctuation names GDK reports).
+fn canonical_key_name(name: &str) -> Option<String> {
+    let named = match name {
+        "space" => "Space",
+        "comma" => ",",
+        "period" => ".",
+        "slash" => "/",
+        "semicolon" => ";",
+        "apostrophe" => "'",
+        "minus" => "-",
+        "equal" => "=",
+        "bracketleft" => "[",
+        "bracketright" => "]",
+        "backslash" => "\\",
+        "grave" => "`",
+        "Up" => "ArrowUp",
+        "Down" => "ArrowDown",
+        "Left" => "ArrowLeft",
+        "Right" => "ArrowRight",
+        "Return" => "Enter",
+        "BackSpace" => "Backspace",
+        "Page_Up" => "PageUp",
+        "Page_Down" => "PageDown",
+        "exclam" => "!",
+        "at" => "@",
+        "numbersign" => "#",
+        "dollar" => "$",
+        "percent" => "%",
+        "asciicircum" => "^",
+        "ampersand" => "&",
+        "asterisk" => "*",
+        "parenleft" => "(",
+        "parenright" => ")",
+        "underscore" => "_",
+        "plus" => "+",
+        "braceleft" => "{",
+        "braceright" => "}",
+        "colon" => ":",
+        "quotedbl" => "\"",
+        "less" => "<",
+        "greater" => ">",
+        "question" => "?",
+        "bar" => "|",
+        "asciitilde" => "~",
+        other => {
+            if other.chars().count() == 1 {
+                return Some(other.to_uppercase());
+            }
+            if let Some(digits) = other.strip_prefix('f')
+                && !digits.is_empty()
+                && digits.chars().all(|c| c.is_ascii_digit())
+            {
+                return Some(format!("F{digits}"));
+            }
+            return Some(other.to_string());
+        }
+    };
+    Some(named.to_string())
+}
+
+/// The other action that already owns `binding` for `id` — its installed
+/// binding or one of its always-on aliases (keymap.ts `bindingConflict`).
+/// A clash has to be refused: GTK would fire both actions at once.
+pub fn binding_conflict(
+    id: &str,
+    binding: &str,
+    overrides: &ShortcutOverrides,
+) -> Option<&'static str> {
+    KEY_ACTIONS
+        .iter()
+        .find(|action| {
+            action.id != id
+                && (installed_binding(action.id, overrides).as_deref() == Some(binding)
+                    || action.aliases.contains(&binding))
+        })
+        .map(|action| action.id)
+}
+
 /// Canonical binding → GTK accelerator (`"Ctrl+P"` → `"<Ctrl>p"`), the syntax
 /// `gtk_application_set_accels_for_action` parses.
 pub fn to_gtk_accel(binding: &str) -> String {
@@ -357,6 +477,80 @@ mod tests {
         std::fs::write(&file, r#"{"settings":{"shortcuts":"nope"}}"#).expect("write fixture");
         assert!(load_overrides(&file).is_empty());
         std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn recorded_keys_become_canonical_bindings() {
+        assert_eq!(binding_from_parts(false, false, false, "p"), None);
+        assert_eq!(
+            binding_from_parts(true, false, true, "p").as_deref(),
+            Some("Ctrl+Shift+P")
+        );
+        assert_eq!(
+            binding_from_parts(true, false, false, "comma").as_deref(),
+            Some("Ctrl+,")
+        );
+        assert_eq!(
+            binding_from_parts(true, false, false, "space").as_deref(),
+            Some("Ctrl+Space")
+        );
+        assert_eq!(
+            binding_from_parts(true, false, false, "Return").as_deref(),
+            Some("Ctrl+Enter")
+        );
+        assert_eq!(
+            binding_from_parts(true, false, false, "Up").as_deref(),
+            Some("Ctrl+ArrowUp")
+        );
+        assert_eq!(
+            binding_from_parts(true, false, false, "F5").as_deref(),
+            Some("Ctrl+F5")
+        );
+        assert_eq!(binding_from_parts(true, false, false, "Escape"), None);
+        assert_eq!(binding_from_parts(true, false, false, "Control_L"), None);
+        assert_eq!(binding_from_parts(true, false, false, "Shift_L"), None);
+        assert!(is_modifier_key("Shift_L"));
+        assert!(is_modifier_key("Caps_Lock"));
+        assert!(!is_modifier_key("p"), "letters are real keys");
+
+        // Round-trips through the accelerator syntax the shell installs.
+        let recorded = binding_from_parts(true, false, true, "p").expect("binding");
+        assert_eq!(to_gtk_accel(&recorded), "<Ctrl><Shift>p");
+        let comma = binding_from_parts(true, false, false, "comma").expect("binding");
+        assert_eq!(to_gtk_accel(&comma), "<Ctrl>comma");
+    }
+
+    #[test]
+    fn conflicts_include_aliases_and_respect_unbound_overrides() {
+        let none = ShortcutOverrides::new();
+        assert_eq!(
+            binding_conflict("new-note", "Ctrl+P", &none),
+            Some("command-palette"),
+            "another action's binding clashes"
+        );
+        assert_eq!(
+            binding_conflict("new-note", "Ctrl+K", &none),
+            Some("command-palette"),
+            "an always-on alias clashes"
+        );
+        assert_eq!(binding_conflict("new-note", "Ctrl+Shift+K", &none), None);
+        assert_eq!(
+            binding_conflict("command-palette", "Ctrl+P", &none),
+            None,
+            "an action does not clash with itself"
+        );
+
+        let unbound = overrides(&[("command-palette", None)]);
+        assert_eq!(
+            binding_conflict("new-note", "Ctrl+P", &unbound),
+            None,
+            "an unbound action frees its binding"
+        );
+        assert_eq!(
+            binding_conflict("new-note", "Ctrl+K", &unbound),
+            Some("command-palette"),
+            "its alias stays installed regardless"
+        );
     }
 
     /// The Tauri keymap is the source of truth; this fails the moment the

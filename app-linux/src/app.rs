@@ -138,14 +138,9 @@ fn build(application: &adw::Application) {
     let status = gtk::Label::builder()
         .css_classes(["dim-label", "caption"])
         .build();
-    let new_hint = keymap::hint("new-note", &overrides);
     let new_button = gtk::Button::builder()
         .icon_name("document-new-symbolic")
-        .tooltip_text(if new_hint.is_empty() {
-            keymap::label("new-note").to_string()
-        } else {
-            format!("{} ({new_hint})", keymap::label("new-note"))
-        })
+        .tooltip_text(keyed_tooltip("new-note", &overrides))
         .build();
     let preview_toggle = gtk::ToggleButton::builder()
         .icon_name("view-reveal-symbolic")
@@ -156,10 +151,15 @@ fn build(application: &adw::Application) {
         .icon_name("user-trash-symbolic")
         .tooltip_text("Trash")
         .build();
+    let settings_button = gtk::Button::builder()
+        .icon_name("emblem-system-symbolic")
+        .tooltip_text(keyed_tooltip("open-settings", &overrides))
+        .build();
     header.pack_start(&open_button);
     header.pack_start(&status);
     header.pack_end(&preview_toggle);
     header.pack_end(&trash_button);
+    header.pack_end(&settings_button);
     header.pack_end(&new_button);
 
     let toolbar = adw::ToolbarView::new();
@@ -404,6 +404,13 @@ fn build(application: &adw::Application) {
         trash_button.connect_clicked(move |_| open_trash_or_focus(&state, &ui));
     }
 
+    // Open the settings panel.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        settings_button.connect_clicked(move |_| open_settings_or_focus(&state, &ui));
+    }
+
     // Editor → preview, dirty state, debounced autosave.
     {
         let state = state.clone();
@@ -500,6 +507,16 @@ fn build(application: &adw::Application) {
         apply_accels(application, &overrides, "pin-note");
     }
 
+    // Settings (Ctrl+,): the header gear and the palette's "Open settings…".
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let settings_action = gtk::gio::SimpleAction::new("open-settings", None);
+        settings_action.connect_activate(move |_, _| open_settings_or_focus(&state, &ui));
+        application.add_action(&settings_action);
+        apply_accels(application, &overrides, "open-settings");
+    }
+
     // Save when the window closes.
     {
         let state = state.clone();
@@ -571,10 +588,32 @@ fn build(application: &adw::Application) {
 
 /// Install an action's keymap accelerators (the effective binding plus the
 /// always-on aliases) on the application.
-fn apply_accels(application: &adw::Application, overrides: &keymap::ShortcutOverrides, id: &str) {
+fn apply_accels<A: IsA<gtk::Application>>(
+    application: &A,
+    overrides: &keymap::ShortcutOverrides,
+    id: &str,
+) {
     let accels = keymap::accels_for(id, overrides);
     let accels: Vec<&str> = accels.iter().map(String::as_str).collect();
     application.set_accels_for_action(&format!("app.{id}"), &accels);
+}
+
+/// `"Settings (Ctrl+,)"` — an action's label and its current binding, the
+/// header-button tooltip shape.
+fn keyed_tooltip(id: &str, overrides: &keymap::ShortcutOverrides) -> String {
+    let hint = keymap::hint(id, overrides);
+    if hint.is_empty() {
+        keymap::label(id).to_string()
+    } else {
+        format!("{} ({hint})", keymap::label(id))
+    }
+}
+
+/// Reinstall every action's accelerators (used after "Reset all settings").
+fn apply_all_accels(application: &gtk::Application, overrides: &keymap::ShortcutOverrides) {
+    for action in keymap::KEY_ACTIONS {
+        apply_accels(application, overrides, action.id);
+    }
 }
 
 /// Present the application's window titled `title`; true when one was found.
@@ -1533,6 +1572,11 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
     let st = state.borrow();
     let overrides = &st.overrides;
     let mut items = Vec::new();
+    let settings_item = || PaletteItem {
+        label: "Open settings…".to_string(),
+        hint: keymap::hint("open-settings", overrides),
+        command: PaletteCommand::OpenSettings,
+    };
     if st.workspace.is_some() {
         items.push(PaletteItem {
             label: keymap::label("new-note").to_string(),
@@ -1544,6 +1588,7 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
             hint: keymap::hint("save-note", overrides),
             command: PaletteCommand::SaveNow,
         });
+        items.push(settings_item());
         items.push(PaletteItem {
             label: "Open trash".to_string(),
             hint: "Trash".to_string(),
@@ -1574,6 +1619,7 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
             hint: String::new(),
             command: PaletteCommand::ChooseFolder,
         });
+        items.push(settings_item());
     }
     for (id, title, _, _) in visible_entries(state, &ui.search.text()) {
         items.push(PaletteItem {
@@ -1673,6 +1719,7 @@ fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteComm
         PaletteCommand::SaveNow => {
             save_now(state, ui, true);
         }
+        PaletteCommand::OpenSettings => open_settings_or_focus(state, ui),
         PaletteCommand::OpenTrash => open_trash_or_focus(state, ui),
         PaletteCommand::RebuildIndex => rebuild_index(state, ui),
         PaletteCommand::TogglePin => toggle_pin(state, ui),
@@ -1708,6 +1755,615 @@ fn rebuild_index(state: &Rc<RefCell<State>>, ui: &Ui) {
     }
 }
 
+/// A settings row the "Search settings…" filter can hide; a group hides too
+/// when none of its rows match.
+struct Filterable {
+    widget: gtk::Widget,
+    group: adw::PreferencesGroup,
+    haystack: String,
+}
+
+/// Widgets of one shortcut row; the display repaints from the current
+/// overrides whenever a binding changes.
+struct ShortcutUi {
+    id: &'static str,
+    row: adw::ActionRow,
+    binding: gtk::Label,
+    change: gtk::Button,
+    reset: gtk::Button,
+}
+
+fn track_row<W: IsA<gtk::Widget>>(
+    filterables: &Rc<RefCell<Vec<Filterable>>>,
+    widget: &W,
+    group: &adw::PreferencesGroup,
+    haystack: String,
+) {
+    filterables.borrow_mut().push(Filterable {
+        widget: widget.clone().upcast(),
+        group: group.clone(),
+        haystack,
+    });
+}
+
+/// The GTK settings panel: the subset of the Tauri registry this shell
+/// honors. Every change is written to `config.json` immediately and applied
+/// live, so there is no Save button — same as the Tauri panel.
+fn open_settings_or_focus(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let Some(application) = ui.window.application() else {
+        return;
+    };
+    if focus_window(&application, "Settings") {
+        return;
+    }
+    open_settings(state, ui, &application);
+}
+
+fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Application) {
+    let window = adw::Window::builder()
+        .application(application)
+        .title("Settings")
+        .default_width(620)
+        .default_height(560)
+        .transient_for(&ui.window)
+        .modal(true)
+        .build();
+
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&gtk::Label::new(Some("Settings"))));
+
+    let filter = gtk::Entry::builder()
+        .placeholder_text("Search settings…")
+        .build();
+    let filter_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    filter_box.set_margin_top(8);
+    filter_box.set_margin_bottom(4);
+    filter_box.set_margin_start(16);
+    filter_box.set_margin_end(16);
+    filter_box.append(&filter);
+    let no_matches = gtk::Label::builder()
+        .label("No matching settings")
+        .css_classes(["dim-label"])
+        .visible(false)
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    page.set_vexpand(true);
+    let filterables: Rc<RefCell<Vec<Filterable>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Editor: the autosave delay (the Tauri registry's 200–2000 ms slider).
+    let editor_group = adw::PreferencesGroup::builder().title("Editor").build();
+    let autosave = adw::SpinRow::with_range(200.0, 2000.0, 100.0);
+    autosave.set_title("Autosave delay");
+    autosave.set_subtitle("Pause after typing before saving, in milliseconds");
+    autosave.set_value(state.borrow().autosave_ms as f64);
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        autosave.connect_value_notify(move |row| {
+            let ms = row.value().round() as u64;
+            if state.borrow().autosave_ms == ms {
+                return;
+            }
+            state.borrow_mut().autosave_ms = ms;
+            persist_setting(
+                &state,
+                &ui,
+                "editor",
+                "autosaveMs",
+                serde_json::Value::from(ms),
+            );
+        });
+    }
+    editor_group.add(&autosave);
+    track_row(
+        &filterables,
+        &autosave,
+        &editor_group,
+        "autosave delay editor pause typing save milliseconds".to_string(),
+    );
+
+    // View: word count and date format.
+    let view_group = adw::PreferencesGroup::builder().title("View").build();
+    let show_words = adw::SwitchRow::new();
+    show_words.set_title("Show word count");
+    show_words.set_subtitle("Shows the word count in the editor header");
+    show_words.set_active(state.borrow().show_word_count);
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        show_words.connect_active_notify(move |row| {
+            let active = row.is_active();
+            if state.borrow().show_word_count == active {
+                return;
+            }
+            state.borrow_mut().show_word_count = active;
+            persist_setting(
+                &state,
+                &ui,
+                "view",
+                "showWordCount",
+                serde_json::Value::Bool(active),
+            );
+            update_words(&state, &ui, &buffer_text(&ui.editor));
+        });
+    }
+    view_group.add(&show_words);
+    track_row(
+        &filterables,
+        &show_words,
+        &view_group,
+        "show word count view editor header".to_string(),
+    );
+
+    let date_format = adw::ComboRow::new();
+    date_format.set_title("Date format");
+    let formats = gtk::StringList::new(&["Relative (2h ago)", "Absolute (Oct 16, 14:00)"]);
+    date_format.set_model(Some(&formats));
+    let is_absolute = matches!(
+        state.borrow().date_format,
+        crate::dates::DateFormat::Absolute
+    );
+    date_format.set_selected(if is_absolute { 1 } else { 0 });
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        date_format.connect_selected_notify(move |row| {
+            let absolute = row.selected() == 1;
+            let current = matches!(
+                state.borrow().date_format,
+                crate::dates::DateFormat::Absolute
+            );
+            if current == absolute {
+                return;
+            }
+            let format = if absolute {
+                crate::dates::DateFormat::Absolute
+            } else {
+                crate::dates::DateFormat::Relative
+            };
+            state.borrow_mut().date_format = format;
+            persist_setting(
+                &state,
+                &ui,
+                "view",
+                "dateFormat",
+                serde_json::Value::from(if absolute { "absolute" } else { "relative" }),
+            );
+        });
+    }
+    view_group.add(&date_format);
+    track_row(
+        &filterables,
+        &date_format,
+        &view_group,
+        "date format view relative absolute".to_string(),
+    );
+
+    // General: the delete confirmation.
+    let general_group = adw::PreferencesGroup::builder().title("General").build();
+    let confirm = adw::SwitchRow::new();
+    confirm.set_title("Confirm before deleting");
+    confirm.set_subtitle("Asks before a note moves to the trash");
+    confirm.set_active(state.borrow().confirm_delete);
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        confirm.connect_active_notify(move |row| {
+            let active = row.is_active();
+            if state.borrow().confirm_delete == active {
+                return;
+            }
+            state.borrow_mut().confirm_delete = active;
+            persist_setting(
+                &state,
+                &ui,
+                "general",
+                "confirmDelete",
+                serde_json::Value::Bool(active),
+            );
+        });
+    }
+    general_group.add(&confirm);
+    track_row(
+        &filterables,
+        &confirm,
+        &general_group,
+        "confirm before deleting general trash".to_string(),
+    );
+
+    // Shortcuts: one row per keymap action, rebindable in place.
+    let shortcuts_group = adw::PreferencesGroup::builder()
+        .title("Shortcuts")
+        .description(
+            "Click Change, then press the keys. Backspace unbinds, Esc cancels. \
+             Shortcuts cannot clash with another action or with text editing keys.",
+        )
+        .build();
+    let shortcut_rows: Rc<RefCell<Vec<ShortcutUi>>> = Rc::new(RefCell::new(Vec::new()));
+    let recording: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    for action in keymap::KEY_ACTIONS {
+        let row = adw::ActionRow::new();
+        row.set_title(keymap::label(action.id));
+        let binding = gtk::Label::builder().css_classes(["dim-label"]).build();
+        let reset = gtk::Button::with_label("Reset");
+        reset.add_css_class("flat");
+        reset.set_visible(false);
+        let change = gtk::Button::with_label("Change");
+        change.add_css_class("flat");
+        row.add_suffix(&binding);
+        row.add_suffix(&reset);
+        row.add_suffix(&change);
+        {
+            let state = state.clone();
+            let shortcut_rows = shortcut_rows.clone();
+            let recording = recording.clone();
+            change.connect_clicked(move |_| {
+                let is_active = recording.borrow().as_deref() == Some(action.id);
+                recording.replace(if is_active {
+                    None
+                } else {
+                    Some(action.id.to_string())
+                });
+                refresh_shortcut_rows(&state, &shortcut_rows, &recording);
+            });
+        }
+        {
+            let state = state.clone();
+            let ui = ui.clone();
+            let shortcut_rows = shortcut_rows.clone();
+            let recording = recording.clone();
+            let application = application.clone();
+            reset.connect_clicked(move |_| {
+                let path = state.borrow().config_path.clone();
+                if let Err(error) = config::remove_shortcut(&path, action.id) {
+                    ui.toast.add_toast(adw::Toast::new(&format!(
+                        "Could not save settings: {error}"
+                    )));
+                    return;
+                }
+                state.borrow_mut().overrides.remove(action.id);
+                let overrides = state.borrow().overrides.clone();
+                apply_accels(&application, &overrides, action.id);
+                refresh_shortcut_rows(&state, &shortcut_rows, &recording);
+            });
+        }
+        shortcuts_group.add(&row);
+        shortcut_rows.borrow_mut().push(ShortcutUi {
+            id: action.id,
+            row: row.clone(),
+            binding,
+            change,
+            reset,
+        });
+        track_row(
+            &filterables,
+            &row,
+            &shortcuts_group,
+            format!("shortcut {}", keymap::label(action.id)).to_lowercase(),
+        );
+    }
+    refresh_shortcut_rows(state, &shortcut_rows, &recording);
+
+    // Advanced: where state lives, rebuild the index, reset everything.
+    let advanced_group = adw::PreferencesGroup::builder()
+        .title("Advanced")
+        .description("Config, index, trash and keys live here — never inside the vault.")
+        .build();
+    let data_row = adw::ActionRow::new();
+    data_row.set_title("Data folder");
+    data_row.set_subtitle(&state.borrow().data_dir.display().to_string());
+    let open_data = gtk::Button::with_label("Open");
+    open_data.add_css_class("flat");
+    {
+        let ui = ui.clone();
+        let window = window.clone();
+        let path = state.borrow().data_dir.clone();
+        open_data.connect_clicked(move |_| {
+            let uri = gtk::gio::File::for_path(&path).uri();
+            gtk::UriLauncher::new(uri.as_str()).launch(
+                Some(&window),
+                gtk::gio::Cancellable::NONE,
+                {
+                    let ui = ui.clone();
+                    move |result| {
+                        if let Err(error) = result {
+                            ui.toast.add_toast(adw::Toast::new(&format!(
+                                "Could not open the data folder: {error}"
+                            )));
+                        }
+                    }
+                },
+            );
+        });
+    }
+    data_row.add_suffix(&open_data);
+    advanced_group.add(&data_row);
+    track_row(
+        &filterables,
+        &data_row,
+        &advanced_group,
+        "data folder advanced config index trash keys".to_string(),
+    );
+
+    let rebuild_row = adw::ActionRow::new();
+    rebuild_row.set_title("Search index");
+    rebuild_row.set_subtitle("Rebuildable from the Markdown files at any time.");
+    let rebuild_button = gtk::Button::with_label("Rebuild now");
+    rebuild_button.add_css_class("flat");
+    rebuild_button.set_sensitive(state.borrow().workspace.is_some());
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        rebuild_button.connect_clicked(move |_| rebuild_index(&state, &ui));
+    }
+    rebuild_row.add_suffix(&rebuild_button);
+    advanced_group.add(&rebuild_row);
+    track_row(
+        &filterables,
+        &rebuild_row,
+        &advanced_group,
+        "search index rebuild advanced maintenance".to_string(),
+    );
+
+    let reset_row = adw::ActionRow::new();
+    reset_row.set_title("Reset all settings");
+    reset_row.set_subtitle("Back to defaults. Notes are not touched.");
+    let reset_button = gtk::Button::with_label("Reset settings");
+    reset_button.add_css_class("destructive-action");
+    let armed: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let window = window.clone();
+        let application = application.clone();
+        let armed = armed.clone();
+        reset_button.connect_clicked(move |button| {
+            if !*armed.borrow() {
+                armed.replace(true);
+                button.set_label("Confirm reset");
+                let button = button.clone();
+                let armed = armed.clone();
+                gtk::glib::timeout_add_seconds_local(3, move || {
+                    armed.replace(false);
+                    button.set_label("Reset settings");
+                    gtk::glib::ControlFlow::Break
+                });
+                return;
+            }
+            armed.replace(false);
+            let path = state.borrow().config_path.clone();
+            if let Err(error) = config::clear_settings(&path) {
+                ui.toast.add_toast(adw::Toast::new(&format!(
+                    "Could not save settings: {error}"
+                )));
+                return;
+            }
+            {
+                let mut st = state.borrow_mut();
+                st.autosave_ms = config::DEFAULT_AUTOSAVE_MS;
+                st.confirm_delete = true;
+                st.show_word_count = true;
+                st.date_format = crate::dates::DateFormat::Relative;
+                st.overrides.clear();
+            }
+            let overrides = state.borrow().overrides.clone();
+            apply_all_accels(&application, &overrides);
+            update_words(&state, &ui, &buffer_text(&ui.editor));
+            window.close();
+            ui.toast.add_toast(adw::Toast::new(
+                "All settings were reset to their defaults.",
+            ));
+        });
+    }
+    reset_row.add_suffix(&reset_button);
+    advanced_group.add(&reset_row);
+    track_row(
+        &filterables,
+        &reset_row,
+        &advanced_group,
+        "reset all settings advanced defaults".to_string(),
+    );
+
+    page.add(&editor_group);
+    page.add(&view_group);
+    page.add(&general_group);
+    page.add(&shortcuts_group);
+    page.add(&advanced_group);
+
+    // One capture-phase controller: Esc closes the window; while a shortcut
+    // records, Esc cancels and every other press is stored, refused with a
+    // reason, or swallowed (modifiers).
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let state = state.clone();
+        let window_for_escape = window.clone();
+        let shortcut_rows = shortcut_rows.clone();
+        let recording = recording.clone();
+        let application = application.clone();
+        keys.connect_key_pressed(move |_, key, _code, modifiers| {
+            let name = key.name().map(|name| name.to_string()).unwrap_or_default();
+            let Some(active_id) = recording.borrow().clone() else {
+                if name == "Escape" {
+                    window_for_escape.close();
+                    return gtk::glib::Propagation::Stop;
+                }
+                return gtk::glib::Propagation::Proceed;
+            };
+            if name == "Escape" {
+                recording.replace(None);
+                refresh_shortcut_rows(&state, &shortcut_rows, &recording);
+                return gtk::glib::Propagation::Stop;
+            }
+            if keymap::is_modifier_key(&name) {
+                return gtk::glib::Propagation::Stop;
+            }
+            if name == "BackSpace" || name == "Delete" {
+                let path = state.borrow().config_path.clone();
+                if let Err(error) = config::set_shortcut(&path, &active_id, None) {
+                    set_recording_error(
+                        &shortcut_rows,
+                        &active_id,
+                        &format!("Could not save settings: {error}"),
+                    );
+                    return gtk::glib::Propagation::Stop;
+                }
+                state.borrow_mut().overrides.insert(active_id.clone(), None);
+                let overrides = state.borrow().overrides.clone();
+                apply_accels(&application, &overrides, &active_id);
+                recording.replace(None);
+                refresh_shortcut_rows(&state, &shortcut_rows, &recording);
+                return gtk::glib::Propagation::Stop;
+            }
+            let ctrl = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                || modifiers.contains(gtk::gdk::ModifierType::META_MASK);
+            let alt = modifiers.contains(gtk::gdk::ModifierType::ALT_MASK);
+            let shift = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            let Some(binding) = keymap::binding_from_parts(ctrl, alt, shift, &name) else {
+                set_recording_error(
+                    &shortcut_rows,
+                    &active_id,
+                    "Include Ctrl or Alt in the shortcut.",
+                );
+                return gtk::glib::Propagation::Stop;
+            };
+            if keymap::is_reserved(&binding) {
+                set_recording_error(
+                    &shortcut_rows,
+                    &active_id,
+                    &format!("{binding} is reserved for text editing."),
+                );
+                return gtk::glib::Propagation::Stop;
+            }
+            if let Some(other) =
+                keymap::binding_conflict(&active_id, &binding, &state.borrow().overrides)
+            {
+                set_recording_error(
+                    &shortcut_rows,
+                    &active_id,
+                    &format!("{binding} is already used by {}.", keymap::label(other)),
+                );
+                return gtk::glib::Propagation::Stop;
+            }
+            let path = state.borrow().config_path.clone();
+            if let Err(error) = config::set_shortcut(&path, &active_id, Some(&binding)) {
+                set_recording_error(
+                    &shortcut_rows,
+                    &active_id,
+                    &format!("Could not save settings: {error}"),
+                );
+                return gtk::glib::Propagation::Stop;
+            }
+            state
+                .borrow_mut()
+                .overrides
+                .insert(active_id.clone(), Some(binding));
+            let overrides = state.borrow().overrides.clone();
+            apply_accels(&application, &overrides, &active_id);
+            recording.replace(None);
+            refresh_shortcut_rows(&state, &shortcut_rows, &recording);
+            gtk::glib::Propagation::Stop
+        });
+    }
+    window.add_controller(keys);
+
+    {
+        let filterables = filterables.clone();
+        let no_matches = no_matches.clone();
+        filter.connect_changed(move |entry| {
+            let query = entry.text().trim().to_lowercase();
+            let items = filterables.borrow();
+            let mut groups: Vec<adw::PreferencesGroup> = Vec::new();
+            let mut any_visible = false;
+            for item in items.iter() {
+                if !groups.iter().any(|group| group == &item.group) {
+                    groups.push(item.group.clone());
+                }
+                let matches = query.is_empty() || item.haystack.contains(&query);
+                item.widget.set_visible(matches);
+                any_visible |= matches;
+            }
+            for group in &groups {
+                let group_visible = items.iter().any(|item| {
+                    &item.group == group && (query.is_empty() || item.haystack.contains(&query))
+                });
+                group.set_visible(group_visible);
+            }
+            no_matches.set_visible(!any_visible);
+        });
+    }
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&filter_box);
+    content.append(&no_matches);
+    content.append(&page);
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+    window.set_content(Some(&toolbar));
+
+    window.present();
+    filter.grab_focus();
+}
+
+/// Repaint every shortcut row from the current overrides: the binding text,
+/// the Change/Cancel button and the Reset link.
+fn refresh_shortcut_rows(
+    state: &Rc<RefCell<State>>,
+    rows: &Rc<RefCell<Vec<ShortcutUi>>>,
+    recording: &Rc<RefCell<Option<String>>>,
+) {
+    let active = recording.borrow().clone();
+    for shortcut in rows.borrow().iter() {
+        let binding = keymap::hint(shortcut.id, &state.borrow().overrides);
+        let is_recording = active.as_deref() == Some(shortcut.id);
+        shortcut.binding.set_text(if is_recording {
+            "Press keys…"
+        } else if binding.is_empty() {
+            "Not set"
+        } else {
+            binding.as_str()
+        });
+        shortcut
+            .change
+            .set_label(if is_recording { "Cancel" } else { "Change" });
+        shortcut
+            .reset
+            .set_visible(state.borrow().overrides.contains_key(shortcut.id) && !is_recording);
+        shortcut.row.set_subtitle(if is_recording {
+            "Press the keys. Backspace unbinds, Esc cancels."
+        } else {
+            ""
+        });
+    }
+}
+
+/// Put a reason under the row that is recording.
+fn set_recording_error(rows: &Rc<RefCell<Vec<ShortcutUi>>>, id: &str, message: &str) {
+    if let Some(shortcut) = rows.borrow().iter().find(|shortcut| shortcut.id == id) {
+        shortcut.row.set_subtitle(message);
+    }
+}
+
+/// Write one option to `config.json`; a failure only toasts — the in-memory
+/// change stands for this session.
+fn persist_setting(
+    state: &Rc<RefCell<State>>,
+    ui: &Ui,
+    section: &str,
+    key: &str,
+    value: serde_json::Value,
+) {
+    let path = state.borrow().config_path.clone();
+    if let Err(error) = config::set_setting(&path, section, key, value) {
+        ui.toast.add_toast(adw::Toast::new(&format!(
+            "Could not save settings: {error}"
+        )));
+    }
+}
+
 /// Widgets of the open command palette; the rows are rebuilt as the query
 /// changes, `commands` mirrors them in row order.
 #[derive(Clone)]
@@ -1731,6 +2387,7 @@ struct PaletteItem {
 enum PaletteCommand {
     NewNote,
     SaveNow,
+    OpenSettings,
     OpenTrash,
     RebuildIndex,
     TogglePin,

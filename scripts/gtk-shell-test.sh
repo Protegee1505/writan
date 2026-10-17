@@ -25,6 +25,13 @@
 #  18. the rebound Ctrl+Shift+P opens the palette
 #  19. the Ctrl+K alias still opens it
 #  20. Ctrl+N (an untouched default) still creates a note
+#  21. Ctrl+, opens the Settings panel
+#  22. its filter narrows the list and a rebind writes settings.shortcuts
+#  23. Escape closes it
+#  24. the old shortcut is dead and the new one opens the palette
+#  25. Reset in the panel drops the override
+#  26. the default Ctrl+P opens the palette again
+#  27. Show word count off reaches config.json
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
@@ -44,7 +51,7 @@ while [ $# -gt 0 ]; do
     --bin) bin="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --keep) keep=1; shift ;;
-    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "gtk-shell-test: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -149,6 +156,7 @@ shot() { import -window "$window" "$out/$1.png" 2>/dev/null || true; }
 shot_of() { import -window "$2" "$out/$1.png" 2>/dev/null || true; }
 trash_window() { xdotool search --onlyvisible --name '^Trash$' 2>/dev/null | head -1; }
 palette_window() { xdotool search --onlyvisible --name '^Command palette$' 2>/dev/null | head -1; }
+settings_window() { xdotool search --onlyvisible --name '^Settings$' 2>/dev/null | head -1; }
 
 wait_title() { # substring, seconds
   local want="$1" deadline=$(( $(date +%s) + $2 ))
@@ -585,6 +593,158 @@ case "$(xdotool getwindowname "$window")" in
   *) bad "Ctrl+N did not create a note (title: '$(xdotool getwindowname "$window")')" ;;
 esac
 shot 95-new-note
+
+# 21-27. Settings panel: Ctrl+, opens it, the filter narrows it, a rebind
+# writes settings.shortcuts, Escape closes it, the new combo opens the
+# palette while the old one is dead, Reset drops the override, and the Show
+# word count switch reaches config.json. The panel is parked at 0,0 (620x560)
+# so the coordinates below are stable.
+config_file="$config_home/com.writan.desktop/config.json"
+config_has() { grep -q "$1" "$config_file" 2>/dev/null; }
+open_settings() {
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers ctrl+comma
+  settings=""
+  for _ in $(seq 1 25); do
+    settings="$(settings_window || true)"
+    [ -n "$settings" ] && break
+    sleep 0.2
+  done
+  [ -n "$settings" ] || return 1
+  xdotool windowmove "$settings" 0 0
+  sleep 0.3
+  xdotool windowfocus --sync "$settings"
+  xdotool windowraise "$settings"
+}
+
+if open_settings; then
+  geom="$(xdotool getwindowgeometry --shell "$settings" 2>/dev/null || true)"
+  sw="$(sed -n 's/^WIDTH=//p' <<<"$geom")"
+  sh="$(sed -n 's/^HEIGHT=//p' <<<"$geom")"
+  if [ "$sw" = "620" ] && [ "$sh" = "560" ]; then
+    ok "Ctrl+, opened the Settings panel (${sw}x${sh})"
+  else
+    bad "the Settings panel is ${sw:-?}x${sh:-?}, wanted 620x560"
+  fi
+  shot_of 96-settings "$settings"
+else
+  bad "Ctrl+, did not open a window titled 'Settings'"
+fi
+
+# 22. Filter down to the Command palette row and rebind it from the panel.
+if [ -n "$settings" ]; then
+  xdotool mousemove --sync 300 76
+  xdotool click 1
+  xdotool type --delay 25 -- "command"
+  sleep 0.8
+  shot_of 97-settings-filtered "$settings"
+  xdotool mousemove --sync 538 166
+  xdotool click 1
+  sleep 0.4
+  xdotool key --clearmodifiers ctrl+alt+p
+  rebound=""
+  for _ in $(seq 1 25); do
+    if config_has '"command-palette": "Ctrl+Alt+P"'; then rebound=1; break; fi
+    sleep 0.2
+  done
+  if [ -n "$rebound" ]; then
+    ok "the filter narrowed to the Command palette row and rebinding it wrote settings.shortcuts"
+  else
+    bad "rebinding the filtered row did not write settings.shortcuts"
+  fi
+  shot_of 98-rebound "$settings"
+fi
+
+# 23. Escape closes the panel.
+if [ -n "$settings" ]; then
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+  if [ -z "$(settings_window || true)" ]; then
+    ok "Escape closed the Settings panel"
+  else
+    bad "Escape did not close the Settings panel"
+  fi
+fi
+
+# 24. The replaced Ctrl+Shift+P must be dead; the new combo opens the palette.
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+shift+p
+sleep 1.0
+if [ -n "$(palette_window || true)" ]; then
+  bad "the replaced Ctrl+Shift+P still opened the palette"
+  xdotool key --clearmodifiers Escape
+  sleep 0.6
+else
+  xdotool key --clearmodifiers ctrl+alt+p
+  palette=""
+  for _ in $(seq 1 25); do
+    palette="$(palette_window || true)"
+    [ -n "$palette" ] && break
+    sleep 0.2
+  done
+  if [ -n "$palette" ]; then
+    ok "the binding recorded in the panel opens the palette (the old one is dead)"
+    xdotool key --clearmodifiers Escape
+    sleep 0.8
+  else
+    bad "the new binding from the Settings panel did not open the palette"
+  fi
+fi
+
+# 25-26. Reset drops the override and the default Ctrl+P comes back.
+if open_settings; then
+  xdotool mousemove --sync 462 368
+  xdotool click 1
+  reset=""
+  for _ in $(seq 1 25); do
+    if ! config_has 'Ctrl+Alt+P'; then reset=1; break; fi
+    sleep 0.2
+  done
+  if [ -n "$reset" ]; then
+    ok "Reset in the panel dropped the command-palette override"
+  else
+    bad "Reset left the override in config.json"
+  fi
+  shot_of 99-reset-default "$settings"
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers ctrl+p
+  palette=""
+  for _ in $(seq 1 25); do
+    palette="$(palette_window || true)"
+    [ -n "$palette" ] && break
+    sleep 0.2
+  done
+  if [ -n "$palette" ]; then
+    ok "the default Ctrl+P opens the palette again after Reset"
+    xdotool key --clearmodifiers Escape
+    sleep 0.8
+  else
+    bad "Ctrl+P did not open the palette after Reset"
+  fi
+fi
+
+# 27. Show word count off reaches config.json.
+if open_settings; then
+  xdotool mousemove --sync 560 192
+  xdotool click 1
+  words_off=""
+  for _ in $(seq 1 25); do
+    if config_has '"showWordCount": false'; then words_off=1; break; fi
+    sleep 0.2
+  done
+  if [ -n "$words_off" ]; then
+    ok "Show word count off wrote showWordCount: false to config.json"
+  else
+    bad "the Show word count switch did not reach config.json"
+  fi
+  shot_of 100-word-count-off "$settings"
+  xdotool click 1
+  sleep 0.5
+  xdotool key --clearmodifiers Escape
+  sleep 0.5
+fi
 
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

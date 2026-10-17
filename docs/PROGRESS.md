@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-17 (M3.5 slice 4).
+Last updated: 2026-10-17 (M3.5 slice 5).
 
 ## Milestone history
 
@@ -118,11 +118,33 @@ Last updated: 2026-10-17 (M3.5 slice 4).
   `settings.shortcuts` rebind takes effect on restart while Ctrl+P goes dead
   and the Ctrl+K alias survives; untouched defaults stay intact) — 24/24 green
   locally against the release binary.
+- **M3.5 slice 5 — settings panel with live apply in the GTK shell**
+  (2026-10-17): Ctrl+, (the keymap's `open-settings`, plus a header gear button
+  and an `Open settings…` palette item) opens a modal panel with a filter box,
+  a `No matching settings` state and `adw::PreferencesPage` groups — Editor
+  (autosave delay 200–2000 ms), View (show word count, date format), General
+  (confirm before deleting), Shortcuts (one row per keymap action: Change
+  records the next chord, Backspace unbinds, Esc cancels, reserved or
+  already-taken combos are refused with the reason on the row, Reset drops an
+  override) and Advanced (data folder with Open, Rebuild search index, and a
+  two-click Reset settings that clears `settings` from `config.json` and
+  restores defaults). Every change persists immediately and live-applies —
+  shortcut changes re-install accelerators at once, closing slice 4's "live
+  rebind later" caveat. `app-linux/src/config.rs` gained
+  `set_setting`/`remove_setting`/`set_shortcut`/`remove_shortcut`/
+  `clear_settings` over one atomic writer, and `app-linux/src/keymap.rs`
+  gained `binding_from_parts`/`binding_conflict` so a recorded chord is stored
+  in the same `Ctrl+Shift+P` spelling as the Tauri panel (27 unit tests green).
+  `scripts/gtk-shell-test.sh` grew from 24 to 31 checks (panel opens at
+  620x560, the filter narrows to the Command palette row, a rebind recorded in
+  the panel reaches `config.json` and takes effect while the old chord dies,
+  Reset brings the default Ctrl+P back, Show word count off reaches
+  `config.json`) — 31/31 green locally against the release binary.
 
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) in progress — slices
-  1–4 done, next slice 5 (settings panel).
+  1–5 done, next slice 6 (attachments).
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

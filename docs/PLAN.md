@@ -1,7 +1,7 @@
 # Writan — implementation plan
 
-Status: M0–M3 complete (2026-10-17) · M3.5 in progress — slices 1–4 done,
-slice 5 (settings panel) next.
+Status: M0–M3 complete (2026-10-17) · M3.5 in progress — slices 1–5 done,
+slice 6 (attachments) next.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -14,10 +14,10 @@ Order is a suggestion, not a constraint.
    against the < 100 MB budget — then append the outcome to ADR-0004. This also
    closes M2's deferred IME item. Start from the fixture vault and screenshot
    loop in `tools/visual/README.md`.
-2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–4 done
+2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–5 done
    (watcher + autosave, sidebar filters + note actions, trash panel, command
-   palette + rebindable shortcuts). Left: settings panel, attachments, then
-   the parity sweep.
+   palette + rebindable shortcuts, settings panel with live apply). Left:
+   attachments, then the parity sweep.
 3. **Parity checklist** (`docs/PARITY.md`) vs the Tauri shell stays green as
    each M3.5 slice lands.
 4. **Android init** (M5 prep, when the toolchain is available):

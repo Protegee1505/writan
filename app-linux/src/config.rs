@@ -97,6 +97,18 @@ pub fn load_date_format(path: &Path) -> crate::dates::DateFormat {
     }
 }
 
+/// Atomically write the object as pretty JSON (temp file + rename), creating
+/// the parent directory as needed.
+fn write_object(path: &Path, object: serde_json::Map<String, Value>) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    let pretty = serde_json::to_string_pretty(&Value::Object(object))?;
+    std::fs::write(&temporary, pretty)?;
+    std::fs::rename(&temporary, path)
+}
+
 /// Record the vault path with an atomic temp + rename write, preserving every
 /// other key in the file (`settings`, etc. — ADR-0003).
 pub fn save_vault_path(path: &Path, vault: &Path) -> std::io::Result<()> {
@@ -105,13 +117,70 @@ pub fn save_vault_path(path: &Path, vault: &Path) -> std::io::Result<()> {
         "vault_path".to_string(),
         Value::String(vault.display().to_string()),
     );
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    write_object(path, object)
+}
+
+/// Write `settings.<section>.<key> = value`, preserving every other key
+/// (ADR-0003). A malformed `settings` or section value is replaced by an
+/// object, so a hand-edited file cannot block a settings change.
+pub fn set_setting(path: &Path, section: &str, key: &str, value: Value) -> std::io::Result<()> {
+    let mut object = load_object(path);
+    let settings = object
+        .entry("settings".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !settings.is_object() {
+        *settings = Value::Object(serde_json::Map::new());
     }
-    let temporary = path.with_extension("json.tmp");
-    let pretty = serde_json::to_string_pretty(&Value::Object(object))?;
-    std::fs::write(&temporary, pretty)?;
-    std::fs::rename(&temporary, path)
+    let section_value = settings
+        .as_object_mut()
+        .expect("settings is an object")
+        .entry(section.to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !section_value.is_object() {
+        *section_value = Value::Object(serde_json::Map::new());
+    }
+    section_value
+        .as_object_mut()
+        .expect("section is an object")
+        .insert(key.to_string(), value);
+    write_object(path, object)
+}
+
+/// Remove `settings.<section>.<key>` (a no-op when absent), preserving every
+/// other key.
+pub fn remove_setting(path: &Path, section: &str, key: &str) -> std::io::Result<()> {
+    let mut object = load_object(path);
+    if let Some(settings) = object.get_mut("settings").and_then(Value::as_object_mut)
+        && let Some(section_value) = settings.get_mut(section).and_then(Value::as_object_mut)
+    {
+        section_value.remove(key);
+    }
+    write_object(path, object)
+}
+
+/// `settings.shortcuts.<id>`: `Some(binding)` rebinds the action, `None`
+/// persists an explicit `null` (unbound) — the same shape `mergeSettings`
+/// keeps on the Tauri side.
+pub fn set_shortcut(path: &Path, id: &str, binding: Option<&str>) -> std::io::Result<()> {
+    let value = match binding {
+        Some(binding) => Value::String(binding.to_string()),
+        None => Value::Null,
+    };
+    set_setting(path, "shortcuts", id, value)
+}
+
+/// Drop the `settings.shortcuts.<id>` override so the default binding returns.
+pub fn remove_shortcut(path: &Path, id: &str) -> std::io::Result<()> {
+    remove_setting(path, "shortcuts", id)
+}
+
+/// Remove the whole `settings` object: every shell's preferences return to
+/// their defaults, while notes and the vault path stay untouched (the Tauri
+/// panel's "Reset all settings").
+pub fn clear_settings(path: &Path) -> std::io::Result<()> {
+    let mut object = load_object(path);
+    object.remove("settings");
+    write_object(path, object)
 }
 
 #[cfg(test)]
@@ -200,6 +269,79 @@ mod tests {
         let file = temp_file();
         std::fs::write(&file, "not json").expect("write fixture");
         assert!(load_object(&file).is_empty());
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn setting_writes_preserve_other_keys_and_round_trip() {
+        let file = temp_file();
+        std::fs::write(
+            &file,
+            r#"{"vault_path":"/notes","settings":{"appearance":{"theme":"dark"}}}"#,
+        )
+        .expect("write fixture");
+        set_setting(&file, "editor", "autosaveMs", Value::from(1200)).expect("set");
+        set_setting(&file, "view", "showWordCount", Value::Bool(false)).expect("set");
+        assert_eq!(load_autosave_ms(&file), 1200);
+        assert!(!load_show_word_count(&file));
+        let raw = std::fs::read_to_string(&file).expect("read");
+        assert!(raw.contains("\"theme\""), "settings must survive: {raw}");
+        assert!(raw.contains("/notes"), "vault_path must survive: {raw}");
+
+        remove_setting(&file, "view", "showWordCount").expect("remove");
+        assert!(load_show_word_count(&file), "removed key falls back");
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn malformed_settings_are_replaced_not_fatal() {
+        let file = temp_file();
+        std::fs::write(&file, r#"{"settings":7}"#).expect("write fixture");
+        set_setting(&file, "general", "confirmDelete", Value::Bool(false)).expect("set");
+        assert!(!load_confirm_delete(&file));
+        std::fs::write(&file, r#"{"settings":{"view":"yes"}}"#).expect("write fixture");
+        set_setting(&file, "view", "dateFormat", Value::from("absolute")).expect("set");
+        assert_eq!(load_date_format(&file), crate::dates::DateFormat::Absolute);
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn shortcuts_override_null_and_removal_round_trip() {
+        use crate::keymap::load_overrides;
+        let file = temp_file();
+        set_shortcut(&file, "command-palette", Some("Ctrl+Shift+P")).expect("set");
+        assert_eq!(
+            load_overrides(&file)
+                .get("command-palette")
+                .map(Option::as_deref),
+            Some(Some("Ctrl+Shift+P"))
+        );
+        set_shortcut(&file, "command-palette", None).expect("unbind");
+        assert_eq!(
+            load_overrides(&file)
+                .get("command-palette")
+                .map(Option::as_deref),
+            Some(None),
+            "null persists as unbound"
+        );
+        remove_shortcut(&file, "command-palette").expect("remove");
+        assert!(load_overrides(&file).is_empty());
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn clear_settings_drops_only_settings() {
+        let file = temp_file();
+        std::fs::write(
+            &file,
+            r#"{"vault_path":"/notes","settings":{"editor":{"autosaveMs":1200}}}"#,
+        )
+        .expect("write fixture");
+        clear_settings(&file).expect("clear");
+        assert_eq!(load_autosave_ms(&file), DEFAULT_AUTOSAVE_MS);
+        assert_eq!(load_vault_path(&file), Some(PathBuf::from("/notes")));
+        let raw = std::fs::read_to_string(&file).expect("read");
+        assert!(!raw.contains("\"settings\""), "settings gone: {raw}");
         std::fs::remove_file(&file).ok();
     }
 }
