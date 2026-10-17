@@ -7,11 +7,13 @@
 //! silent overwrite.
 //!
 //! Blob layout, payloads and binding are fixed by [`blob`] and
-//! `docs/adr/0005-sync-blob-format.md`.
+//! `docs/adr/0005-sync-blob-format.md`; reconciliation of concurrent versions
+//! is [`merge`]'s bounded diff3 with a last-writer-wins window (ADR-0001).
 
 #![forbid(unsafe_code)]
 
 pub mod blob;
+pub mod merge;
 
 use std::collections::BTreeMap;
 
@@ -23,6 +25,7 @@ pub use blob::{
     blob_aad, blob_path, open_blob, open_note, open_tombstone, parse_blob_path, seal_blob,
     seal_note, seal_tombstone,
 };
+pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 
 pub type DeviceId = Uuid;
 pub type NoteId = Uuid;

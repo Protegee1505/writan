@@ -28,6 +28,7 @@ argon2 = "0.6"
 axum = "0.8"
 blake3 = "1.8"
 chacha20poly1305 = "0.11"
+diffy = "0.5"
 # The gtk-rs crates are renamed to their in-code names here (the crates'
 # library names are `gtk4` / `libadwaita`; ecosystem code says `gtk::`/`adw::`).
 gtk = { package = "gtk4", version = "0.9" }

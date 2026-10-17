@@ -7,8 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+diffy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true, features = ["parsing"] }
 uuid = { workspace = true }
 writan-crypto = { workspace = true }
