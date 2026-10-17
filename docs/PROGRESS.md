@@ -3,15 +3,16 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepted as M3 starts, and the sealed blob codec, bounded-diff3 merge engine, folder sync engine and keyring/recovery-code layer have landed green in CI; search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
+Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepted as M3 starts, and the sealed blob codec, bounded-diff3 merge engine, folder sync engine and keyring/recovery-code layer have landed green in CI, the desktop app wires folder sync (settings, palette commands, keychain unlock), and the N-device simulator soaks the engine green in nightly CI; search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
 
 ## Current state
 
 - Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete,
   M2.5 preferences & polish complete, release build verified. M3 (sync v1 +
   E2EE) underway — ADR-0005 (sync blob format + key hierarchy) accepted, and the
-  blob codec, merge engine (bounded diff3 + LWW window), folder sync engine and
-  keyring/recovery-code layer landed and are green in CI (2026-10-17).**
+  blob codec, merge engine (bounded diff3 + LWW window), folder sync engine,
+  keyring/recovery-code layer and desktop app wiring landed and are green in CI
+  (2026-10-17), with the N-device simulator green in nightly CI.**
   M2 remaining: IME acceptance now rides on the GTK4 shell (ADR-0004); the
   runtime perf budgets are measured (see the Pre-M3 entries). Then M3.5
   (native Linux shell, ADR-0004).
@@ -304,6 +305,25 @@ Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepte
   keychain (Windows Credential Manager) unlock on start — then the N-device
   simulator in nightly CI.
 
+### M3 — app wiring and the N-device simulator (2026-10-17)
+- The desktop app carries folder sync end-to-end: sync config in `config.json`,
+  a keychain-backed session (`keyring`, Windows Credential Manager; best-effort
+  — losing it only costs retyping the password), seven Tauri commands, a
+  Settings → Sync section (enable, unlock, lock, turn off, one-time
+  recovery-code display), palette actions and the `sync-now` shortcut —
+  commits `a86e269`, `0642066`, runs 39009653867, 39009813570.
+- `crates/writan-sync/tests/simulator.rs` soaks three devices through 40 rounds
+  of create/edit/pin/delete against a shared folder until they converge, then
+  demands a fully unchanged final pass; `.github/workflows/nightly.yml` runs it
+  in release nightly (cron `17 3 * * *`) — commit `616dc63`, run 39010072923.
+- The first nightly run caught a real crash: a blob retry re-sealed the same
+  version with a fresh nonce and the create-only write refused it
+  (`Target(Diverged(…))`). `Publisher` now reuses an existing blob when its
+  version vector matches and advances the counter when it does not — ADR-0005
+  §5's seal-once/retry rule made real, pinned by two new unit tests — commit
+  `f393f26`, run 39010800883; nightly 39010833155 converges 3 devices on
+  10 notes in 40 rounds.
+
 ## Next actions
 
 Next (order is a suggestion, not a constraint):
@@ -322,11 +342,10 @@ Next (order is a suggestion, not a constraint):
    release — see the Pre-M3 entry), RAM < 150 MB idle (≈120 MB private
    measured; the working set is higher with WebView2). The Linux GTK
    idle-RAM re-measure rides on item 1.
-3. M3 (sync v1 + E2EE) is underway: the blob codec, merge engine, folder
-   sync engine and keyring/recovery-code layer have landed and are green in CI
-   (see the M3 entries). Next: the app wires sync together (settings, dialogs,
-   keychain unlock) + the N-device simulator in nightly CI; an S3 target
-   follows. The native Linux shell (M3.5, ADR-0004) follows M3.
+3. M3 (sync v1 + E2EE) is all but done: the blob codec, merge engine, folder
+   sync engine, keyring/recovery-code layer and the app wiring have landed, and
+   the N-device simulator runs green nightly (see the M3 entries). Remaining:
+   an S3 target, then the native Linux shell (M3.5, ADR-0004).
 
 ## How to run & verify
 
