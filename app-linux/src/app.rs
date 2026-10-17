@@ -38,7 +38,7 @@ struct Ui {
 
 pub fn run() -> gtk::glib::ExitCode {
     let application = adw::Application::builder()
-        .application_id("com.writan.app")
+        .application_id("com.writan.desktop")
         .build();
     application.connect_activate(build);
     application.run()

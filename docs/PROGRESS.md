@@ -169,8 +169,8 @@ Last updated: 2026-10-17 — YAML frontmatter parser swapped to `serde-saphyr` (
 - Measured: cold start → window ≈396 ms; idle ≈120 MB private / ≈249 MB
   working set across 7 processes (app 4.4 MB private) — the webview helpers
   are the whole weight, which is the motivation note behind ADR-0004.
-- Notes: the bundle id `com.writan.app` ends in `.app` (Tauri warning;
-  harmless for our targets, decide before M3 whether to rename — it moves
+- Notes: the bundle id `com.writan.app` ended in `.app` (Tauri warning;
+  renamed to `com.writan.desktop` on 2026-10-17 — it moves
   `%APPDATA%\com.writan.app`); one 563 kB JS chunk (CodeMirror) triggers
   vite's size hint (gzip 195 kB; candidate for code splitting later).
 - Lessons: close every running `writan-app` before `tauri build` — the

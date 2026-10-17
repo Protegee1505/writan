@@ -19,9 +19,9 @@ On non-Linux targets the crate compiles to a stub; the pure modules
 
 ## State
 
-- config: `~/.config/com.writan.app/config.json` (same shape as the Tauri
+- config: `~/.config/com.writan.desktop/config.json` (same shape as the Tauri
   app: `vault_path` + opaque `settings`; atomic writes — ADR-0003)
-- data: `~/.local/share/com.writan.app/` (`index.sqlite`, `trash/`)
+- data: `~/.local/share/com.writan.desktop/` (`index.sqlite`, `trash/`)
 
 ## Spike status (2026-10-16)
 

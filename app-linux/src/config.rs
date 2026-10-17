@@ -6,15 +6,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-/// `$XDG_CONFIG_HOME/com.writan.app` (default `~/.config/com.writan.app`).
+/// `$XDG_CONFIG_HOME/com.writan.desktop` (default `~/.config/com.writan.desktop`).
 pub fn config_dir() -> PathBuf {
-    base_dir("XDG_CONFIG_HOME", ".config").join("com.writan.app")
+    base_dir("XDG_CONFIG_HOME", ".config").join("com.writan.desktop")
 }
 
-/// `$XDG_DATA_HOME/com.writan.app` (default `~/.local/share/com.writan.app`).
+/// `$XDG_DATA_HOME/com.writan.desktop` (default `~/.local/share/com.writan.desktop`).
 /// Index and trash live here, never in the vault (ADR-0003).
 pub fn state_dir() -> PathBuf {
-    base_dir("XDG_DATA_HOME", ".local/share").join("com.writan.app")
+    base_dir("XDG_DATA_HOME", ".local/share").join("com.writan.desktop")
 }
 
 pub fn default_config_path() -> PathBuf {
