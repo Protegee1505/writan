@@ -3,8 +3,9 @@
 //! Two devices that edited the same note are reconciled by [`LwwDiff3`], the
 //! v1 [`MergeStrategy`] (ADR-0001, `docs/PLAN.md`):
 //!
-//! 1. A side that already contains the other (version-vector dominance, or
-//!    content unchanged since the stored base) is adopted as-is.
+//! 1. A side unchanged since the stored base is adopted as-is. (Vector
+//!    dominance is the engine's call, at the storage level, where a vector
+//!    always describes a whole published version — not an unpublished edit.)
 //! 2. Edits whose `updated` stamps lie within 60 s of each other resolve to
 //!    the newer side, whole (Notesnook-style window).
 //! 3. Otherwise a bounded line-based three-way diff merges both bodies
@@ -77,7 +78,7 @@ pub struct MergePlan {
 /// Which rule decided a [`MergePlan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
-    /// One side was adopted whole (dominance, equality, or untouched side).
+    /// One side was adopted whole (equality, or untouched since the base).
     FastForward,
     /// Within the LWW window, the newer side was adopted whole.
     Lww,
@@ -92,16 +93,6 @@ impl MergeStrategy for LwwDiff3 {
         if same_content(local, remote) {
             return plan(local.clone(), Resolution::FastForward);
         }
-        // Vector dominance is only meaningful once both sides carry history;
-        // an empty vector knows nothing and would dominate vacuously.
-        if !local.vv.0.is_empty() && !remote.vv.0.is_empty() {
-            if remote.vv.contains(&local.vv) {
-                return plan(remote.clone(), Resolution::FastForward);
-            }
-            if local.vv.contains(&remote.vv) {
-                return plan(local.clone(), Resolution::FastForward);
-            }
-        }
         let local_changed = changed(base, local);
         let remote_changed = changed(base, remote);
         if !local_changed {
@@ -112,16 +103,16 @@ impl MergeStrategy for LwwDiff3 {
         }
         let (newer, older) = ordered_halves(local, remote);
         if self.within_lww_window(local, remote) {
-            return plan(newer.clone(), Resolution::Lww);
+            return plan(claim(newer, local, remote), Resolution::Lww);
         }
         let Some(base) = base else {
-            return conflict_plan(newer, older);
+            return conflict_plan(newer, older, local, remote);
         };
         if lines(&base.body) > self.policy.max_lines
             || lines(&local.body) > self.policy.max_lines
             || lines(&remote.body) > self.policy.max_lines
         {
-            return conflict_plan(newer, older);
+            return conflict_plan(newer, older, local, remote);
         }
         let started = Instant::now();
         let merged_body = diffy::merge(&base.body, &local.body, &remote.body);
@@ -131,7 +122,7 @@ impl MergeStrategy for LwwDiff3 {
                 self.merge_meta(base, local, remote, body),
                 Resolution::Diff3,
             ),
-            _ => conflict_plan(newer, older),
+            _ => conflict_plan(newer, older, local, remote),
         }
     }
 }
@@ -196,12 +187,26 @@ fn plan(kept: NoteBlob, resolution: Resolution) -> MergePlan {
     }
 }
 
-fn conflict_plan(newer: &NoteBlob, older: &NoteBlob) -> MergePlan {
+fn conflict_plan(
+    newer: &NoteBlob,
+    older: &NoteBlob,
+    local: &NoteBlob,
+    remote: &NoteBlob,
+) -> MergePlan {
     MergePlan {
-        kept: newer.clone(),
+        kept: claim(newer, local, remote),
         conflict_copy: Some(conflict_copy(older)),
         resolution: Resolution::ConflictCopy,
     }
+}
+
+/// A resolved note carries the union of both sides' knowledge, so no device
+/// ever re-merges the same pair that this resolution already consumed.
+fn claim(note: &NoteBlob, local: &NoteBlob, remote: &NoteBlob) -> NoteBlob {
+    let mut claimed = note.clone();
+    claimed.vv.merge(&local.vv);
+    claimed.vv.merge(&remote.vv);
+    claimed
 }
 
 /// The losing side, turned into an explicit conflict copy (ADR-0001): a fresh
@@ -360,19 +365,34 @@ mod tests {
     }
 
     #[test]
-    fn vector_dominance_adopts_the_dominant_side() {
+    fn a_dominant_remote_version_does_not_discard_a_local_edit() {
         let id = Uuid::new_v4();
         let device_a = Uuid::new_v4();
         let device_b = Uuid::new_v4();
-        let mut local = note(id, "local\n", Some(MIN_10));
+        let base = note(id, &base_body(), Some("2026-10-17T09:00:00Z"));
+        let mut local = note(
+            id,
+            &base_body().replace("line 1\n", "line 1 local\n"),
+            Some(MIN_10),
+        );
         local.vv.observe(&device_a, 1);
-        local.vv.observe(&device_b, 2);
-        let mut remote = note(id, "remote\n", Some(MIN_10));
-        remote.vv.observe(&device_a, 1);
-        let plan = strategy().resolve(None, &local, &remote);
-        assert_eq!(plan.resolution, Resolution::FastForward);
-        assert_eq!(plan.kept.body, "local\n");
-        assert!(plan.conflict_copy.is_none());
+        local.vv.observe(&device_b, 1);
+        let mut remote = note(
+            id,
+            &base_body().replace("line 10\n", "line 10 remote\n"),
+            Some(T0),
+        );
+        remote.vv.observe(&device_a, 2);
+        let plan = strategy().resolve(Some(&base), &local, &remote);
+        assert_eq!(
+            plan.resolution,
+            Resolution::Diff3,
+            "the later local edit must reach the diff, not be dominated away"
+        );
+        assert!(plan.kept.body.contains("line 1 local"));
+        assert!(plan.kept.body.contains("line 10 remote"));
+        assert_eq!(plan.kept.vv.get(&device_a), 2, "dominant counter kept");
+        assert_eq!(plan.kept.vv.get(&device_b), 1, "local knowledge kept");
     }
 
     #[test]

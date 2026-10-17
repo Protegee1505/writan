@@ -13,7 +13,9 @@
 #![forbid(unsafe_code)]
 
 pub mod blob;
+pub mod engine;
 pub mod merge;
+pub mod target;
 
 use std::collections::BTreeMap;
 
@@ -26,6 +28,8 @@ pub use blob::{
     seal_note, seal_tombstone,
 };
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
+pub use engine::{EngineError, FolderVault, NoteFile, SyncReport, SyncState, VaultIo, sync};
+pub use target::{FolderTarget, SyncTarget, TargetError};
 
 pub type DeviceId = Uuid;
 pub type NoteId = Uuid;
