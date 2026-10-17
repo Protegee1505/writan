@@ -11,7 +11,10 @@
     "ghcr.io/devcontainers/features/rust:1": {},
     // Node for the Svelte side — keep in step with the workflows (node 22).
     "ghcr.io/devcontainers/features/node:1": { "version": "22" },
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Codespaces needs an SSH server in the container (for `gh codespace ssh`,
+    // VS Code desktop and forwarding); the base image does not ship one.
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
 
   // Free tier: 120 core-hours/month ⇒ a 2-core machine runs ≈ 60
