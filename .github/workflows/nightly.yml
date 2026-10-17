@@ -1,0 +1,18 @@
+name: nightly
+
+on:
+  schedule:
+    # 03:17 UTC daily — off the top of the hour to avoid the busy window.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  simulator:
+    name: N-device sync simulator (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: N-device sync simulator (release)
+        run: cargo test -p writan-sync --release --test simulator -- --ignored --nocapture
