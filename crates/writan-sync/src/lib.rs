@@ -5,15 +5,27 @@
 //! per-item [`VersionVector`]. Merging is a bounded three-way diff over the
 //! Markdown body with an explicit conflict copy as the fallback, never a
 //! silent overwrite.
+//!
+//! Blob layout, payloads and binding are fixed by [`blob`] and
+//! `docs/adr/0005-sync-blob-format.md`.
 
 #![forbid(unsafe_code)]
+
+pub mod blob;
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use blob::{
+    BlobError, BlobKind, BlobPath, FORMAT_NOTE, FORMAT_TOMBSTONE, NoteBlob, TombstoneBlob,
+    blob_aad, blob_path, open_blob, open_note, open_tombstone, parse_blob_path, seal_blob,
+    seal_note, seal_tombstone,
+};
+
 pub type DeviceId = Uuid;
+pub type NoteId = Uuid;
 
 /// Per-item logical clock: one counter per device that ever touched the item.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
