@@ -3,16 +3,17 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepted as M3 starts, and the sealed blob codec, bounded-diff3 merge engine, folder sync engine and keyring/recovery-code layer have landed green in CI, the desktop app wires folder sync (settings, palette commands, keychain unlock), and the N-device simulator soaks the engine green in nightly CI; search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
+Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepted as M3 starts, and the sealed blob codec, bounded-diff3 merge engine, folder sync engine and keyring/recovery-code layer have landed green in CI, the desktop app wires folder sync (settings, palette commands, keychain unlock), the S3-compatible bucket target (ADR-0006) landed with the app's bucket connect, and the N-device simulator soaks the folder and bucket targets green in nightly CI; search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
 
 ## Current state
 
 - Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete,
   M2.5 preferences & polish complete, release build verified. M3 (sync v1 +
-  E2EE) underway — ADR-0005 (sync blob format + key hierarchy) accepted, and the
+  E2EE) complete — ADR-0005 (sync blob format + key hierarchy) accepted; the
   blob codec, merge engine (bounded diff3 + LWW window), folder sync engine,
-  keyring/recovery-code layer and desktop app wiring landed and are green in CI
-  (2026-10-17), with the N-device simulator green in nightly CI.**
+  keyring/recovery-code layer, desktop app wiring and the S3-compatible bucket
+  target (ADR-0006) landed and are green in CI, with the N-device simulator
+  green in nightly CI against both folder and bucket targets (2026-10-17).**
   M2 remaining: IME acceptance now rides on the GTK4 shell (ADR-0004); the
   runtime perf budgets are measured (see the Pre-M3 entries). Then M3.5
   (native Linux shell, ADR-0004).
@@ -324,6 +325,31 @@ Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepte
   `f393f26`, run 39010800883; nightly 39010833155 converges 3 devices on
   10 notes in 40 rounds.
 
+### M3 — the S3-compatible target (2026-10-17)
+- `writan-sync::s3` speaks a plain S3 REST subset (PUT/GET/ListObjectsV2) over
+  blocking `ureq` (rustls) with `quick-xml` parsing; SigV4 is hand-rolled and
+  pinned by three AWS test-suite vectors (`get-vanilla`, sorted
+  `get-vanilla-query`, `post-x-www-form-urlencoded`) — ADR-0006, commit
+  `2728826`, run 39011674107.
+- Create-only objects: `If-None-Match: *`; a 412 falls back to GET +
+  byte-compare — identical means a safe retry, different is
+  `TargetError::Diverged` (the folder contract, over HTTP). Path-style
+  addressing + configurable endpoint, so MinIO and self-hosted servers work.
+- The app connects to a bucket from Settings → Sync (endpoint, bucket, region,
+  access key; the secret lives in the OS keychain under `com.writan.desktop.s3`,
+  never in `config.json`) — commits `af10549`, `8f5020c`, `763d414`, run
+  39012934728.
+- Nightly now runs the same three-device soak against a bucket. MinIO withdrew
+  its public images and binaries (Docker Hub repo gone, quay.io refuses
+  anonymous pulls, `dl.min.io` returns 410 — checked 2026-10-17), so the job
+  uses adobe/s3mock with its initial-buckets setting; commit `2f9816f`, nightly
+  run 39013139692 (folder: converged in 2 sweeps; bucket: 3 devices converged
+  on 9 notes in 3.33 s).
+- The soak loop prints per-device counters every sweep (12-sweep bound, leftover
+  dump on failure); one earlier nightly saw a longer cascade — conflict copies
+  get fresh random UUIDs, so run shapes differ — and the diagnostics make that
+  visible instead of mysterious.
+
 ## Next actions
 
 Next (order is a suggestion, not a constraint):
@@ -342,10 +368,12 @@ Next (order is a suggestion, not a constraint):
    release — see the Pre-M3 entry), RAM < 150 MB idle (≈120 MB private
    measured; the working set is higher with WebView2). The Linux GTK
    idle-RAM re-measure rides on item 1.
-3. M3 (sync v1 + E2EE) is all but done: the blob codec, merge engine, folder
-   sync engine, keyring/recovery-code layer and the app wiring have landed, and
-   the N-device simulator runs green nightly (see the M3 entries). Remaining:
-   an S3 target, then the native Linux shell (M3.5, ADR-0004).
+3. M3 (sync v1 + E2EE) is **done**: version vectors, encrypted blobs on folder
+   + S3 targets, bounded diff3 with visible conflict copies, recovery-key
+   export, keychain unlock, and the N-device simulator green in nightly CI
+   against both targets (see the M3 entries) — all exit criteria met. Next
+   milestone: the native Linux shell (M3.5, ADR-0004), after the deferred GTK4
+   IME acceptance + idle-RAM re-measure on the user's laptop.
 
 ## How to run & verify
 
@@ -357,6 +385,9 @@ cargo test --workspace
 
 # search perf budget at 10k notes (release; ignored test)
 cargo test -p writan-core --release --test search_perf -- --ignored --nocapture
+
+# N-device sync simulator (release; ignored; the bucket variant needs WRITAN_S3_*)
+cargo test -p writan-sync --release --test simulator -- --ignored --nocapture three_devices_converge_through_a_shared_folder
 
 # desktop app
 npm --prefix app install
