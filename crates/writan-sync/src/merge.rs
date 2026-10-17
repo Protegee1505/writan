@@ -283,9 +283,7 @@ fn ordered_halves<'a>(a: &'a NoteBlob, b: &'a NoteBlob) -> (&'a NoteBlob, &'a No
 /// Three-way pick for one field: an untouched side defers to the other side;
 /// two untouched-relative-to-each-other or conflicting edits go to `newer`.
 fn pick3<T: PartialEq + Clone>(base: &T, local: &T, remote: &T, newer: &T) -> T {
-    if local == remote {
-        local.clone()
-    } else if remote == base {
+    if local == remote || remote == base {
         local.clone()
     } else if local == base {
         remote.clone()
