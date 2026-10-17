@@ -16,3 +16,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: N-device sync simulator (release)
         run: cargo test -p writan-sync --release --test simulator -- --ignored --nocapture
+
+  s3-simulator:
+    name: S3 simulator (MinIO, release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=writan -e MINIO_ROOT_PASSWORD=writan-secret \
+            minio/minio:latest server /data
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live; then exit 0; fi
+            sleep 1
+          done
+          echo "MinIO did not become healthy" >&2
+          docker logs minio
+          exit 1
+      - name: Create the bucket
+        run: |
+          curl -sSLo mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x mc
+          ./mc alias set local http://127.0.0.1:9000 writan writan-secret
+          ./mc mb local/writan-sim
+      - name: S3 simulator (release)
+        env:
+          WRITAN_S3_ENDPOINT: http://127.0.0.1:9000
+          WRITAN_S3_REGION: us-east-1
+          WRITAN_S3_BUCKET: writan-sim
+          WRITAN_S3_ACCESS_KEY: writan
+          WRITAN_S3_SECRET_KEY: writan-secret
+        run: cargo test -p writan-sync --release --test simulator -- --ignored --nocapture three_devices_converge_through_a_bucket

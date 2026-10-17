@@ -1,7 +1,9 @@
 //! N-device sync simulator: a deterministic, seeded soak test.
 //!
 //! Three simulated devices (separate vaults) create, edit, pin and delete
-//! notes while syncing through one shared folder target in interleaved order.
+//! notes while syncing through one shared create-only target — a folder, or
+//! an S3-compatible bucket with the `WRITAN_S3_*` environment set — in
+//! interleaved order.
 //! The run must end in a clean fixpoint: every device converges to the same
 //! note set, and one more pass reports nothing but `unchanged`.
 //!
@@ -11,6 +13,11 @@
 //! ```text
 //! cargo test -p writan-sync --release --test simulator -- --ignored --nocapture
 //! ```
+//!
+//! The bucket variant (`three_devices_converge_through_a_bucket`) needs
+//! `WRITAN_S3_ENDPOINT`, `WRITAN_S3_BUCKET`, `WRITAN_S3_ACCESS_KEY` and
+//! `WRITAN_S3_SECRET_KEY` (`WRITAN_S3_REGION` defaults to `us-east-1`); the
+//! bucket must exist and be empty.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +26,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use writan_core::vault::{Note, Vault};
-use writan_sync::{FolderTarget, FolderVault, SyncReport, SyncState, sync as run_engine};
+use writan_sync::{
+    FolderTarget, FolderVault, S3Config, S3HttpTransport, S3Target, SyncReport, SyncState,
+    SyncTarget, sync as run_engine,
+};
 
 const KEY: [u8; 32] = [9u8; 32];
 const DEVICES: usize = 3;
@@ -59,7 +69,7 @@ struct Device {
 }
 
 impl Device {
-    fn sync(&self, vault_id: Uuid, target: &FolderTarget) -> SyncReport {
+    fn sync<T: SyncTarget>(&self, vault_id: Uuid, target: &T) -> SyncReport {
         let mut state = SyncState::load(&self.state_path).unwrap_or_default();
         let report = run_engine(
             &KEY,
@@ -121,12 +131,9 @@ fn device(root: &Path, name: &str, seed: u128) -> Device {
     }
 }
 
-#[test]
-#[ignore = "N-device simulator; nightly CI runs it in release (see the module docs)"]
-fn three_devices_converge_through_a_shared_folder() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
-    let target = FolderTarget::open(root.join("shared")).expect("folder target");
+/// The soak loop shared by the folder and bucket variants; the bucket must
+/// be empty, since the fixpoint assertions assume a fresh target.
+fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
     let vault_id = Uuid::from_u128(0x51D3_0000);
     let mut devices = [
         device(root, "dev-a", 0xA110),
@@ -211,7 +218,7 @@ fn three_devices_converge_through_a_shared_folder() {
     }
     assert!(!snaps[0].is_empty(), "the simulator lost every note");
     eprintln!(
-        "simulator: {} devices converged on {} notes after {ROUNDS} rounds",
+        "{label}: {} devices converged on {} notes after {ROUNDS} rounds",
         DEVICES,
         snaps[0].len()
     );
@@ -232,4 +239,32 @@ fn three_devices_converge_through_a_shared_folder() {
             "device {i} unchanged count"
         );
     }
+}
+
+#[test]
+#[ignore = "N-device simulator; nightly CI runs it in release (see the module docs)"]
+fn three_devices_converge_through_a_shared_folder() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let target = FolderTarget::open(root.join("shared")).expect("folder target");
+    run_soak(root, &target, "folder simulator");
+}
+
+#[test]
+#[ignore = "S3 simulator; nightly CI runs it in release against MinIO (see the module docs)"]
+fn three_devices_converge_through_a_bucket() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let endpoint = std::env::var("WRITAN_S3_ENDPOINT").expect(
+        "set WRITAN_S3_ENDPOINT (with BUCKET/ACCESS_KEY/SECRET_KEY) to run the bucket simulator",
+    );
+    let cfg = S3Config {
+        endpoint,
+        region: std::env::var("WRITAN_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
+        bucket: std::env::var("WRITAN_S3_BUCKET").expect("WRITAN_S3_BUCKET"),
+        access_key: std::env::var("WRITAN_S3_ACCESS_KEY").expect("WRITAN_S3_ACCESS_KEY"),
+        secret_key: std::env::var("WRITAN_S3_SECRET_KEY").expect("WRITAN_S3_SECRET_KEY"),
+    };
+    let target = S3Target::new(S3HttpTransport::new(cfg));
+    run_soak(root, &target, "s3 simulator");
 }
