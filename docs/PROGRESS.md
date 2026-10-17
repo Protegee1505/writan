@@ -3,7 +3,7 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-17 — YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
+Last updated: 2026-10-17 — search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
 
 ## Current state
 
@@ -228,6 +228,23 @@ Last updated: 2026-10-17 — YAML frontmatter parser swapped to `serde-saphyr` (
   green on ubuntu-latest (2m35s) and windows-latest (3m12s): 73 passed,
   0 failed.
 
+### Pre-M3 — search latency budget verified (2026-10-17)
+- New `crates/writan-core/tests/search_perf.rs` (ignored by default; CI runs
+  it release-only) builds a 10 000-note in-memory index (~12–15 s) and times
+  five warm query shapes over 21 runs each after a warm-up. Expectations sit
+  below the 50-hit default result cap in `Index::search`.
+- First release measurements of the <30 ms budget at 10k notes (averages:
+  ubuntu-latest / windows-latest): common word 5.57 / 5.80 ms, tag + word
+  5.17 / 5.51 ms, two-word phrase 0.29 / 0.33 ms, rare word 0.30 / 0.34 ms,
+  no match 0.05 / 0.05 ms; worst max 6.15 ms — ≈5× headroom.
+- CI: new release-only step after the debug suite
+  (`cargo test -p writan-core --release --test search_perf -- --ignored
+  --nocapture`); evidence commits `d1e9f47`, `2a877d7` (runner wiring
+  `d7176f9`), CI run 39004075344 — all green.
+- Same stretch: bundle id `com.writan.app` → `com.writan.desktop` lands
+  (Tauri `.app`-suffix warning; app data moves to
+  `%APPDATA%\com.writan.desktop`), commit `d33ea18`.
+
 ## Next actions
 
 Next (order is a suggestion, not a constraint):
@@ -241,9 +258,11 @@ Next (order is a suggestion, not a constraint):
    Android (M5): run `npm --prefix app run tauri -- android init` with JDK 17
    + Android SDK/NDK, commit `app/src-tauri/gen/android`, then add an
    `android` job to `artifacts.yml` (debug APK upload).
-2. Perf budgets still open: cold start < 400 ms (≈396 ms measured), search
-   < 30 ms at 10k notes (not measured yet), RAM < 150 MB idle (≈120 MB
-   private measured; the working set is higher with WebView2).
+2. Perf budgets (Windows desktop): cold start < 400 ms (≈396 ms measured),
+   search < 30 ms at 10k notes (≈5.6 ms avg / 6.2 ms max measured in CI
+   release — see the Pre-M3 entry), RAM < 150 MB idle (≈120 MB private
+   measured; the working set is higher with WebView2). The Linux GTK
+   idle-RAM re-measure rides on item 1.
 3. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
    bounded diff3 with visible conflict copies, recovery-key export, keychain
    unlock, N-device sync simulator in nightly CI. The primitives already exist
@@ -257,6 +276,9 @@ Next (order is a suggestion, not a constraint):
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+
+# search perf budget at 10k notes (release; ignored test)
+cargo test -p writan-core --release --test search_perf -- --ignored --nocapture
 
 # desktop app
 npm --prefix app install
@@ -272,7 +294,8 @@ cargo build --release -p writan-linux
 ## CI & builds
 
 - `.github/workflows/ci.yml` (every push): `fmt` / `clippy -D warnings` /
-  `test` on windows-latest + ubuntu-latest, plus `cargo-deny` (licenses, bans,
+  `test` on windows-latest + ubuntu-latest, a release-only `Search perf
+  budget` step (10k-note latency test), plus `cargo-deny` (licenses, bans,
   advisories). The ubuntu job is the free Linux compiler for the GTK shell.
 - `.github/workflows/artifacts.yml` (Actions tab → "Run workflow", or push a
   `v*` tag): publishes downloadable artifacts — `writan-windows-x64`
