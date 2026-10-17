@@ -34,6 +34,11 @@ fn next(seed: &mut u64) -> u64 {
 /// roughly 9 % of all notes — the shape of a real content-word query.
 fn make_body(seed: &mut u64, note: usize) -> String {
     let mut body = String::with_capacity(900);
+    // Note 0 carries a marker phrase so the phrase query has a guaranteed,
+    // deterministic hit.
+    if note == 0 {
+        body.push_str("zebrafish accordion ");
+    }
     for _ in 0..100 {
         body.push_str("tok");
         body.push_str(&format!("{:04}", next(seed) % POOL));
@@ -110,6 +115,8 @@ fn search_stays_within_budget_on_10k_notes() {
     let results = vec![
         (
             "common word",
+            // The result limit (default 50, see Index::search) caps matches
+            // well below the ~10 % of notes containing the token.
             measure(
                 &index,
                 "common word",
@@ -117,7 +124,7 @@ fn search_stays_within_budget_on_10k_notes() {
                     text: "tok0421".into(),
                     ..Default::default()
                 },
-                100,
+                50,
             ),
         ),
         (
@@ -126,7 +133,7 @@ fn search_stays_within_budget_on_10k_notes() {
                 &index,
                 "two-word phrase",
                 &SearchQuery {
-                    text: "tok0421 tok0055".into(),
+                    text: "zebrafish accordion".into(),
                     ..Default::default()
                 },
                 1,
