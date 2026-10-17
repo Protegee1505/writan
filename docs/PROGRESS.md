@@ -3,15 +3,17 @@
 Living document: update it whenever a milestone or notable task lands.
 Plans and exit criteria live in `docs/PLAN.md`; agent instructions in `AGENTS.md`.
 
-Last updated: 2026-10-17 — search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
+Last updated: 2026-10-17 — ADR-0005 (sync blob format + key hierarchy) accepted as M3 starts; search latency budget measured in CI release (≈5.6 ms avg / 6.2 ms max at 10k notes, vs. the 30 ms budget) and the bundle id renamed to `com.writan.desktop`; YAML frontmatter parser swapped to `serde-saphyr` (drops the archived `unsafe-libyaml`; deny ignore removed; ADR-0002 amended); CI remains the Rust compiler for this box (rustup minimal + rustfmt only). Prior: CI fully green at `c8dddbe`; artifacts workflow green — Windows installers + Linux GTK shell binary (3.09 MB, cold start 166 ms, idle RSS ≈131 MB headless/software-rendered); M2.5 release verified; workspace MSRV is Rust 1.90; Linux goes native via ADR-0004.
 
 ## Current state
 
 - Branch `main`. **M0 complete, M1 complete, M2 desktop MVP (first pass) complete,
-  M2.5 preferences & polish complete, release build verified.**
-  M2 remaining: IME acceptance now rides on the GTK4 shell (ADR-0004), plus the
-  runtime perf budgets; then M3 (sync v1 + E2EE), then M3.5 (native Linux shell,
-  ADR-0004).
+  M2.5 preferences & polish complete, release build verified. M3 (sync v1 +
+  E2EE) started — ADR-0005 (sync blob format + key hierarchy) accepted
+  2026-10-17.**
+  M2 remaining: IME acceptance now rides on the GTK4 shell (ADR-0004); the
+  runtime perf budgets are measured (see the Pre-M3 entries). Then M3.5
+  (native Linux shell, ADR-0004).
 - Verification after M2.5: fmt/clippy clean, `cargo test --workspace` 59 tests
   green, `svelte-check` 0 errors / 0 warnings, frontend build OK, app launched
   via `tauri dev`.
@@ -36,7 +38,8 @@ Last updated: 2026-10-17 — search latency budget measured in CI release (≈5.
   documented ignores in `deny.toml` for the unfixable unmaintained crates
   (Tauri's `proc-macro-error` + the `unic-*` family). The `unsafe-libyaml`
   ignore is gone: `serde_yaml_ng` was replaced by `serde-saphyr` (2026-10-17).
-- CI: `.github/workflows/ci.yml` (fmt/clippy/tests on Windows + Ubuntu, deny)
+- CI: `.github/workflows/ci.yml` (fmt/clippy/tests on Windows + Ubuntu, a
+  release search-perf budget step, deny)
   doubles as the free Linux compiler for the GTK shell;
   `.github/workflows/artifacts.yml` builds downloadable Windows installers and
   the Linux binary + headless spike measurement (`workflow_dispatch` or a `v*`
@@ -245,6 +248,22 @@ Last updated: 2026-10-17 — search latency budget measured in CI release (≈5.
   (Tauri `.app`-suffix warning; app data moves to
   `%APPDATA%\com.writan.desktop`), commit `d33ea18`.
 
+### M3 — sync format ADR (2026-10-17)
+- ADR-0005 fixes the blob layout
+  (`items/<note-uuid>/<device-uuid>/<counter>.enc`, `tombstones/…`, append-only
+  keyring generations `keys/<n>.json`), the sealed payloads (writer's full
+  version vector + note fields inside the blob), the AAD scheme (kind byte ‖
+  note id), and the key hierarchy (random vault key; Argon2id KEKs for password
+  *and* recovery code; recovery export mandatory before the first keyring).
+- Create-only immutable blobs + per-device counters + a
+  seal-once/retry-same-bytes rule make uploads crash-safe on dumb targets (no
+  rename needed).
+- Local-only sync state (device id, vectors, merge base, seal cache) stays in
+  app-data, never in the vault; a target is refused if it sits inside the vault
+  or carries a different `vault_id`.
+- Next chunks build on it: blob codec → merge engine → folder target + engine →
+  keys/recovery → app integration (+ N-device simulator).
+
 ## Next actions
 
 Next (order is a suggestion, not a constraint):
@@ -263,11 +282,13 @@ Next (order is a suggestion, not a constraint):
    release — see the Pre-M3 entry), RAM < 150 MB idle (≈120 MB private
    measured; the working set is higher with WebView2). The Linux GTK
    idle-RAM re-measure rides on item 1.
-3. Then M3 (sync v1 + E2EE): version-vector blobs to folder + S3 targets,
-   bounded diff3 with visible conflict copies, recovery-key export, keychain
-   unlock, N-device sync simulator in nightly CI. The primitives already exist
-   in `writan-sync` (version vectors) and `writan-crypto` (Argon2id +
-   XChaCha20-Poly1305); the native Linux shell (M3.5, ADR-0004) follows.
+3. M3 (sync v1 + E2EE) is underway: ADR-0005 fixed the blob format and key
+   hierarchy (see the M3 entry). Next: blob codec → merge engine (bounded diff3
+   + visible conflict copies) → folder target + engine → keys/recovery
+   (recovery-key export, keychain unlock) → app integration + N-device
+   simulator in nightly CI. The primitives already exist in `writan-sync`
+   (version vectors) and `writan-crypto` (Argon2id + XChaCha20-Poly1305); the
+   native Linux shell (M3.5, ADR-0004) follows.
 
 ## How to run & verify
 
