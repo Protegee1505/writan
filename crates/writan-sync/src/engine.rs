@@ -214,32 +214,67 @@ struct Publisher<'a, T: SyncTarget> {
 }
 
 impl<T: SyncTarget> Publisher<'_, T> {
+    /// Seal and write one note version.
+    ///
+    /// Blobs seal with a random nonce, so a retry cannot reproduce the earlier
+    /// bytes; when the counter's blob already holds this version it is reused
+    /// as-is, and when it holds a different one the counter advances — retries
+    /// stay safe on create-only targets (ADR-0005 §5).
     fn publish_note(&self, mut note: NoteBlob) -> Result<(BlobRef, NoteBlob), EngineError> {
-        let counter = note.vv.bump(&self.device);
-        let bytes = blob::seal_note(self.key, &note)?;
-        let path = blob::blob_path(BlobKind::Item, note.id, self.device, counter);
-        self.target.write(&path, &bytes)?;
-        Ok((
-            BlobRef {
-                device: self.device,
-                counter,
-            },
-            note,
-        ))
+        let mut path = String::new();
+        for _ in 0..64 {
+            let counter = note.vv.bump(&self.device);
+            path = blob::blob_path(BlobKind::Item, note.id, self.device, counter);
+            let Ok(existing) = self.target.read(&path) else {
+                let bytes = blob::seal_note(self.key, &note)?;
+                self.target.write(&path, &bytes)?;
+                return Ok((
+                    BlobRef {
+                        device: self.device,
+                        counter,
+                    },
+                    note,
+                ));
+            };
+            if let Ok(prior) = blob::open_note(self.key, note.id, &existing)
+                && prior.vv == note.vv
+            {
+                return Ok((
+                    BlobRef {
+                        device: self.device,
+                        counter,
+                    },
+                    note,
+                ));
+            }
+        }
+        Err(TargetError::Diverged(path).into())
     }
 
+    /// Seal and write one tombstone; same retry rule as [`Self::publish_note`].
     fn publish_tombstone(
         &self,
         id: NoteId,
         deleted_at: String,
         mut vv: VersionVector,
     ) -> Result<(), EngineError> {
-        let counter = vv.bump(&self.device);
-        let tombstone = TombstoneBlob::new(id, deleted_at, vv);
-        let bytes = blob::seal_tombstone(self.key, &tombstone)?;
-        let path = blob::blob_path(BlobKind::Tombstone, id, self.device, counter);
-        self.target.write(&path, &bytes)?;
-        Ok(())
+        let mut path = String::new();
+        for _ in 0..64 {
+            let counter = vv.bump(&self.device);
+            path = blob::blob_path(BlobKind::Tombstone, id, self.device, counter);
+            let Ok(existing) = self.target.read(&path) else {
+                let tombstone = TombstoneBlob::new(id, deleted_at, vv);
+                let bytes = blob::seal_tombstone(self.key, &tombstone)?;
+                self.target.write(&path, &bytes)?;
+                return Ok(());
+            };
+            if let Ok(prior) = blob::open_tombstone(self.key, id, &existing)
+                && prior.vv == vv
+            {
+                return Ok(());
+            }
+        }
+        Err(TargetError::Diverged(path).into())
     }
 
     fn load_note(&self, id: NoteId, reference: &BlobRef) -> Option<NoteBlob> {
@@ -701,6 +736,7 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::FolderTarget;
 
     #[test]
     fn digest_ignores_rel_path_but_tracks_content() {
@@ -740,5 +776,82 @@ mod tests {
         spread.bump(&a);
         spread.bump(&b);
         assert!(vv_key(&spread) > vv_key(&two));
+    }
+
+    #[test]
+    fn publishing_the_same_version_twice_reuses_the_blob() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = FolderTarget::open(dir.path().join("shared")).expect("target opens");
+        let publisher = Publisher {
+            key: &[1u8; 32],
+            device: Uuid::from_u128(7),
+            target: &target,
+        };
+        let id = Uuid::from_u128(42);
+        let blob = NoteBlob::new(
+            id,
+            "n.md".to_string(),
+            "T".to_string(),
+            "b".to_string(),
+            VersionVector::new(),
+        );
+        let (first, _) = publisher.publish_note(blob.clone()).expect("publish");
+        assert_eq!(first.counter, 1);
+        let path = blob::blob_path(BlobKind::Item, id, first.device, first.counter);
+        let bytes = target.read(&path).expect("written");
+
+        let (second, _) = publisher.publish_note(blob).expect("retry");
+        assert_eq!(second.counter, 1, "an identical version is not re-sealed");
+        assert_eq!(
+            target.read(&path).expect("still there"),
+            bytes,
+            "the retry leaves the existing blob untouched"
+        );
+    }
+
+    #[test]
+    fn publishing_past_a_foreign_version_advances_the_counter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = FolderTarget::open(dir.path().join("shared")).expect("target opens");
+        let device = Uuid::from_u128(7);
+        let id = Uuid::from_u128(42);
+        let mut foreign = VersionVector::new();
+        foreign.bump(&Uuid::from_u128(9));
+        foreign.bump(&device);
+        let foreign_blob = NoteBlob::new(
+            id,
+            "n.md".to_string(),
+            "T".to_string(),
+            "foreign".to_string(),
+            foreign,
+        );
+        let taken = blob::blob_path(BlobKind::Item, id, device, 1);
+        let sealed = blob::seal_note(&[1u8; 32], &foreign_blob).expect("seal");
+        target.write(&taken, &sealed).expect("pre-write");
+
+        let publisher = Publisher {
+            key: &[1u8; 32],
+            device,
+            target: &target,
+        };
+        let mine = NoteBlob::new(
+            id,
+            "n.md".to_string(),
+            "T".to_string(),
+            "mine".to_string(),
+            VersionVector::new(),
+        );
+        let (reference, published) = publisher.publish_note(mine).expect("publish");
+        assert_eq!(reference.counter, 2, "the taken counter is skipped");
+        assert_eq!(published.vv.get(&device), 2);
+        assert!(
+            target.read(&taken).is_ok(),
+            "the foreign blob stays untouched"
+        );
+        let written = blob::blob_path(BlobKind::Item, id, device, 2);
+        assert!(
+            target.read(&written).is_ok(),
+            "the new blob lands at counter two"
+        );
     }
 }
