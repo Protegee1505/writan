@@ -6,9 +6,8 @@
 //! hierarchy stays client-side. Configuration is environment-only; the
 //! binary adds `serve` and an admin `reset-password` command.
 //!
-//! Milestone M4 lands in chunks (ADR-0007 §12): this chunk carries accounts,
-//! device sessions and the storage layer; the blob API, change feed, SSE and
-//! pairing follow.
+//! Milestone M4 lands in chunks (ADR-0007 §12): accounts, device sessions,
+//! vaults, the blob API and the change feed are in; SSE and pairing follow.
 
 #![forbid(unsafe_code)]
 

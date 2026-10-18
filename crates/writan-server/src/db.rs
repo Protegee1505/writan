@@ -432,6 +432,189 @@ pub fn vaults_for(conn: &Connection, account_id: Uuid) -> Result<Vec<Vault>, Api
     Ok(vaults)
 }
 
+/// The account's own view of a vault: `None` for unknown and foreign ids, so
+/// callers answer one 404 either way (ADR-0007 §5).
+pub fn owned_vault(
+    conn: &Connection,
+    account_id: Uuid,
+    vault_id: Uuid,
+) -> Result<Option<Vault>, ApiError> {
+    conn.query_row(
+        "SELECT id, created_at FROM vaults WHERE id = ?1 AND account_id = ?2",
+        params![vault_id.to_string(), account_id.to_string()],
+        |row| {
+            Ok(Vault {
+                id: uuid_from_row(row, 0)?,
+                created_at: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// A blob row without its bytes: the listing and change-feed shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobRecord {
+    pub path: String,
+    pub size: i64,
+    pub seq: i64,
+    pub device_id: Uuid,
+    pub created_at: i64,
+}
+
+/// The outcome of a create-only write (ADR-0007 §6 — exactly
+/// `SyncTarget::write`).
+#[derive(Debug)]
+pub enum BlobWrite {
+    /// A new path; the record carries the sequence just assigned.
+    Created(BlobRecord),
+    /// The identical bytes were already stored (a retried write).
+    Unchanged(BlobRecord),
+    /// The path exists with different bytes.
+    Diverged,
+}
+
+/// Store a blob create-only: a new path is inserted and takes the next vault
+/// sequence in the same transaction; identical bytes return the stored
+/// record; different bytes are [`BlobWrite::Diverged`]. A `quota_bytes` of 0
+/// is unlimited, and a refused write never burns a sequence.
+pub fn write_blob(
+    conn: &mut Connection,
+    vault_id: Uuid,
+    path: &str,
+    bytes: &[u8],
+    device_id: Uuid,
+    now: i64,
+    quota_bytes: u64,
+) -> Result<BlobWrite, ApiError> {
+    let tx = conn.transaction()?;
+    let existing = tx
+        .query_row(
+            "SELECT bytes, path, size, seq, device_id, created_at
+             FROM blobs WHERE vault_id = ?1 AND path = ?2",
+            params![vault_id.to_string(), path],
+            |row| {
+                let stored: Vec<u8> = row.get(0)?;
+                Ok((stored, blob_from_row(row, 1)?))
+            },
+        )
+        .optional()?;
+    if let Some((stored, record)) = existing {
+        return if stored == bytes {
+            tx.commit()?;
+            Ok(BlobWrite::Unchanged(record))
+        } else {
+            // Dropping the transaction rolls back; nothing was changed.
+            Ok(BlobWrite::Diverged)
+        };
+    }
+    if quota_bytes > 0 {
+        let used: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(size), 0) FROM blobs WHERE vault_id = ?1",
+            params![vault_id.to_string()],
+            |row| row.get(0),
+        )?;
+        let incoming = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+        let quota = i64::try_from(quota_bytes).unwrap_or(i64::MAX);
+        if used.saturating_add(incoming) > quota {
+            return Err(ApiError::Quota(format!(
+                "this write would exceed the vault quota of {quota_bytes} bytes"
+            )));
+        }
+    }
+    let next_seq: i64 = tx.query_row(
+        "SELECT next_seq FROM vaults WHERE id = ?1",
+        params![vault_id.to_string()],
+        |row| row.get(0),
+    )?;
+    let seq = next_seq + 1;
+    tx.execute(
+        "UPDATE vaults SET next_seq = ?1 WHERE id = ?2",
+        params![seq, vault_id.to_string()],
+    )?;
+    let size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+    tx.execute(
+        "INSERT INTO blobs (vault_id, path, bytes, size, seq, device_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            vault_id.to_string(),
+            path,
+            bytes,
+            size,
+            seq,
+            device_id.to_string(),
+            now
+        ],
+    )?;
+    tx.commit()?;
+    Ok(BlobWrite::Created(BlobRecord {
+        path: path.to_string(),
+        size,
+        seq,
+        device_id,
+        created_at: now,
+    }))
+}
+
+/// One stored blob with its bytes, for `SyncTarget::read`.
+pub fn blob_by_path(
+    conn: &Connection,
+    vault_id: Uuid,
+    path: &str,
+) -> Result<Option<(BlobRecord, Vec<u8>)>, ApiError> {
+    conn.query_row(
+        "SELECT path, size, seq, device_id, created_at, bytes
+         FROM blobs WHERE vault_id = ?1 AND path = ?2",
+        params![vault_id.to_string(), path],
+        |row| Ok((blob_from_row(row, 0)?, row.get(5)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Every path in the vault, sorted (the listing half of `SyncTarget::list`).
+pub fn blob_paths(conn: &Connection, vault_id: Uuid) -> Result<Vec<String>, ApiError> {
+    let mut stmt = conn.prepare("SELECT path FROM blobs WHERE vault_id = ?1 ORDER BY path ASC")?;
+    let rows = stmt.query_map(params![vault_id.to_string()], |row| row.get(0))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row?);
+    }
+    Ok(paths)
+}
+
+/// Blobs with a sequence above `since`, oldest first, at most `limit`.
+pub fn changes_since(
+    conn: &Connection,
+    vault_id: Uuid,
+    since: i64,
+    limit: usize,
+) -> Result<Vec<BlobRecord>, ApiError> {
+    let mut stmt = conn.prepare(
+        "SELECT path, size, seq, device_id, created_at FROM blobs
+         WHERE vault_id = ?1 AND seq > ?2 ORDER BY seq ASC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![vault_id.to_string(), since, limit as i64], |row| {
+        blob_from_row(row, 0)
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn blob_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<BlobRecord> {
+    Ok(BlobRecord {
+        path: row.get(offset)?,
+        size: row.get(offset + 1)?,
+        seq: row.get(offset + 2)?,
+        device_id: uuid_from_row(row, offset + 3)?,
+        created_at: row.get(offset + 4)?,
+    })
+}
+
 fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     Ok(Account {
         id: uuid_from_row(row, 0)?,
@@ -599,5 +782,136 @@ mod tests {
             owner_of_vault(&conn, Uuid::new_v4()).expect("missing"),
             None
         );
+    }
+
+    fn vault_for(conn: &Connection, account: &Account) -> Uuid {
+        let vault_id = Uuid::new_v4();
+        assert!(create_vault(conn, account.id, vault_id, 100).expect("vault"));
+        vault_id
+    }
+
+    fn created(outcome: BlobWrite) -> BlobRecord {
+        match outcome {
+            BlobWrite::Created(record) => record,
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    fn unchanged(outcome: BlobWrite) -> BlobRecord {
+        match outcome {
+            BlobWrite::Unchanged(record) => record,
+            other => panic!("expected Unchanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blobs_are_create_only_and_sequential() {
+        let mut conn = memory_db();
+        let ada = create_account(&conn, "ada@example.com", &SALT, &HASH, 100).expect("create");
+        let vault_id = vault_for(&conn, &ada);
+        let device = Uuid::new_v4();
+
+        let first = created(
+            write_blob(&mut conn, vault_id, "keys/1.json", b"{}", device, 200, 0).expect("write"),
+        );
+        assert_eq!(first.seq, 1);
+        assert_eq!(first.size, 2);
+
+        let retry = unchanged(
+            write_blob(&mut conn, vault_id, "keys/1.json", b"{}", device, 300, 0).expect("retry"),
+        );
+        assert_eq!(retry.seq, 1);
+        assert_eq!(retry.created_at, 200, "the stored record wins");
+
+        let diverged = write_blob(
+            &mut conn,
+            vault_id,
+            "keys/1.json",
+            b"{\"x\":1}",
+            device,
+            400,
+            0,
+        )
+        .expect("diverged");
+        assert!(matches!(diverged, BlobWrite::Diverged));
+
+        let second = created(
+            write_blob(
+                &mut conn,
+                vault_id,
+                "items/a/b/1.enc",
+                b"opaque",
+                device,
+                500,
+                0,
+            )
+            .expect("second"),
+        );
+        assert_eq!(second.seq, 2, "a diverged write never burns a sequence");
+
+        let (record, bytes) = blob_by_path(&conn, vault_id, "items/a/b/1.enc")
+            .expect("read")
+            .expect("found");
+        assert_eq!(record.seq, 2);
+        assert_eq!(record.device_id, device);
+        assert_eq!(bytes, b"opaque");
+        assert_eq!(
+            blob_paths(&conn, vault_id).expect("paths"),
+            vec!["items/a/b/1.enc".to_string(), "keys/1.json".to_string()]
+        );
+        assert!(
+            blob_by_path(&conn, vault_id, "missing")
+                .expect("missing")
+                .is_none()
+        );
+
+        let events = changes_since(&conn, vault_id, 0, 10).expect("changes");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq, 1);
+        assert_eq!(events[1].path, "items/a/b/1.enc");
+        assert!(
+            changes_since(&conn, vault_id, 2, 10)
+                .expect("since")
+                .is_empty()
+        );
+        assert_eq!(changes_since(&conn, vault_id, 0, 1).expect("page").len(), 1);
+
+        // Another vault keeps its own sequence.
+        let other = vault_for(&conn, &ada);
+        let record = created(
+            write_blob(&mut conn, other, "keys/1.json", b"{}", device, 600, 0).expect("other"),
+        );
+        assert_eq!(record.seq, 1);
+    }
+
+    #[test]
+    fn quota_refuses_when_the_vault_is_full() {
+        let mut conn = memory_db();
+        let ada = create_account(&conn, "ada@example.com", &SALT, &HASH, 100).expect("create");
+        let vault_id = vault_for(&conn, &ada);
+        let device = Uuid::new_v4();
+
+        let first =
+            created(write_blob(&mut conn, vault_id, "a", b"12345", device, 200, 8).expect("write"));
+        assert_eq!(first.seq, 1);
+        let retry = unchanged(
+            write_blob(&mut conn, vault_id, "a", b"12345", device, 300, 8).expect("retry"),
+        );
+        assert_eq!(retry.seq, 1, "identical retries ignore the quota");
+
+        let refused =
+            write_blob(&mut conn, vault_id, "b", b"1234", device, 400, 8).expect_err("over quota");
+        assert!(matches!(refused, ApiError::Quota(_)), "{refused}");
+        assert_eq!(blob_paths(&conn, vault_id).expect("paths").len(), 1);
+
+        let fits =
+            created(write_blob(&mut conn, vault_id, "b", b"123", device, 500, 8).expect("fits"));
+        assert_eq!(fits.seq, 2, "the refused write did not burn a sequence");
+
+        // Quota 0 is unlimited.
+        let unlimited = created(
+            write_blob(&mut conn, vault_id, "c", &[0u8; 4096], device, 600, 0).expect("big"),
+        );
+        assert_eq!(unlimited.seq, 3);
     }
 }
