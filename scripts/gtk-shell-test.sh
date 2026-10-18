@@ -437,8 +437,10 @@ fi
 shot 30-pinned
 
 # 7. A tag chip filters the list: #other is Beta's alone, so Alpha must
-# disappear; the active filter's × brings it back.
-xdotool mousemove --sync 160 173
+# disappear; the active filter's × brings it back. The chips sit right under
+# the search field in one compact row, so #other — the second chip — is
+# clicked at y=114.
+xdotool mousemove --sync 160 114
 xdotool click 1
 sleep 1.2
 shot 40-tag-filter

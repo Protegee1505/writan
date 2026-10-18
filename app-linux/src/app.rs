@@ -34,6 +34,11 @@ const MIN_PREVIEW_WIDTH: i32 = 160;
 const MAX_SIDEBAR_WIDTH: i32 = 420;
 const MAX_EDITOR_WIDTH: i32 = 900;
 
+/// The sidebar's facet strip (active filters, folders, tags) is capped like the
+/// Tauri sidebar's filter block (`NoteList.svelte`), so tags can never push the
+/// note list out of the panel.
+const MAX_FACETS_HEIGHT: i32 = 168;
+
 /// How long after the last drag the divider positions are written to
 /// `config.json` (one write per gesture, not per pixel).
 const LAYOUT_SAVE_DELAY: Duration = Duration::from_millis(400);
@@ -142,7 +147,7 @@ struct Ui {
     tag_chips: gtk::FlowBox,
     tag_entry: gtk::Entry,
     editor_placeholder: gtk::Label,
-    facets: gtk::Box,
+    facets: gtk::ScrolledWindow,
     active_filters: gtk::Box,
     folders_flow: gtk::FlowBox,
     tags_flow: gtk::FlowBox,
@@ -313,18 +318,33 @@ fn build(application: &adw::Application) {
     sidebar_scroll.set_child(Some(&sidebar_body));
 
     // Facets, like the Tauri sidebar: active filters first, then folders and
-    // the most used tags, all click-to-toggle.
+    // the most used tags, all click-to-toggle. One scroller holds the whole
+    // strip so it grows with its content up to MAX_FACETS_HEIGHT and scrolls
+    // beyond that, instead of a scroller per section eating the panel's free
+    // height and floating the chips in the middle of it.
     let active_filters = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     active_filters.set_halign(gtk::Align::Start);
     let folders_flow = facet_flow_box();
     let tags_flow = facet_flow_box();
-    let facets = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let facet_body = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    facet_body.append(&active_filters);
+    facet_body.append(&folders_flow);
+    facet_body.append(&tags_flow);
+    // A FlowBox is only measured with height-for-width when a ScrolledWindow
+    // drives it; inside a plain box it gets a single row and its other rows
+    // draw over the widgets below. `propagate_natural_height` keeps the strip
+    // as tall as its content (up to the cap), the scrollbar appears beyond it.
+    let facets = gtk::ScrolledWindow::builder()
+        .child(&facet_body)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(MAX_FACETS_HEIGHT)
+        .vexpand(false)
+        .build();
     facets.set_margin_start(10);
     facets.set_margin_end(10);
     facets.set_margin_bottom(6);
-    facets.append(&active_filters);
-    facets.append(&facet_scroll(&folders_flow));
-    facets.append(&facet_scroll(&tags_flow));
 
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
     // The paned honors this as a hard floor (`shrink-start-child = false`), so
@@ -1780,20 +1800,6 @@ fn facet_flow_box() -> gtk::FlowBox {
         .selection_mode(gtk::SelectionMode::None)
         .column_spacing(6)
         .row_spacing(6)
-        .build()
-}
-
-/// A FlowBox is only measured with height-for-width when a ScrolledWindow
-/// drives it; inside a plain box it gets a single row and its other rows draw
-/// over the widgets below. `propagate_natural_height` keeps it as tall as its
-/// content (up to the cap), the scrollbar appears beyond that.
-fn facet_scroll(flow: &gtk::FlowBox) -> gtk::ScrolledWindow {
-    gtk::ScrolledWindow::builder()
-        .child(flow)
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true)
-        .max_content_height(190)
         .build()
 }
 
@@ -5413,14 +5419,26 @@ fn load_css() {
              box-shadow: none;\n\
              outline: none;\n\
          }\n\
-         /* Sidebar facets: same chip language as the editor's tags. */\n\
+         /* Sidebar facets: same chip language as the editor's tags, and just\n\
+            as small: the state styles are ours, because libadwaita's own ones\n\
+            paint out to the flow box child's padding box (a 40 px highlight\n\
+            and a 31 px checked pill for a 13 px label). */\n\
          button.facet-chip {\n\
              min-height: 0;\n\
              min-width: 0;\n\
-             padding: 1px 8px;\n\
+             padding: 0 7px;\n\
              font-size: 0.82em;\n\
              border-radius: 999px;\n\
+             box-shadow: none;\n\
+             outline: none;\n\
          }\n\
+         button.facet-chip:hover { background-color: alpha(currentColor, 0.08); }\n\
+         button.facet-chip:checked { background-color: alpha(currentColor, 0.16); }\n\
+         button.facet-chip:focus { box-shadow: none; outline: none; }\n\
+         /* The cell a chip sits in: no padding of its own and no hover tint,\n\
+            so nothing grows around the chip under the pointer. */\n\
+         flowbox > flowboxchild { padding: 0; background-color: transparent; }\n\
+         flowbox > flowboxchild:hover { background-color: transparent; }\n\
          /* The command palette lives inside the window as a layer over the\n\
             whole toolbar: a window or popover of its own could be dragged or\n\
             resized, and a popover holding a text entry stranded the keyboard.\n\
