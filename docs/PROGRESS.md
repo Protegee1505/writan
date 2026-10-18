@@ -184,7 +184,8 @@ Last updated: 2026-10-18 (M3.5 slice 8).
   OK. The real-hardware routine (IME + RAM) is written down in
   `docs/REAL-HARDWARE.md`.
 
-- **M3.5 slice 8 — sync UI in the GTK shell** (2026-10-18): the last open
+- **M3.5 slice 8 — sync UI in the GTK shell** (2026-10-18, commit `7c0af7e`,
+  CI run `39093415280` green): the last open
   parity row. The shell-agnostic glue moved out of the Tauri app into
   `writan-sync::session` + `writan-sync::keychain` (sync config object,
   keychain services, connect/join, unlock, pass, status), so both shells share
