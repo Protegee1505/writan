@@ -14,7 +14,7 @@ says why).
 | Three-pane layout | [x] | [x] | |
 | Note list with live search (FTS, CJK) | [x] | [x] | |
 | Folder filter | [x] | [x] | sidebar chips with counts; single active filter |
-| Tag filter | [x] | [x] | sidebar chips with counts; single active filter |
+| Tag filter | [x] | [x] | sidebar chips with counts; single active filter; compact chips in one strip capped at 168 px (Tauri's `.filters` block is the model), so many tags scroll instead of pushing the note list down |
 | Clear filters | [x] | [x] | active filter chips + `Clear` |
 | Pinned notes first + pin/unpin | [x] | [x] | Linux: `●` marker in the list, pin button in the editor header |
 | New note (Ctrl+N) | [x] | [x] | |
@@ -60,6 +60,8 @@ says why).
    quiet Add-tag entry, note context menus in both shells (with core
    `duplicate_note`), pane floors + remembered divider widths, the palette as
    an in-window layer that dismisses on an outside click (no popover, no
-   window), and settings search in both palettes (`gtk-shell-test` checks
+   window), settings search in both palettes, and a follow-up on the sidebar's
+   facet strip: chips compact in hover and checked states too, all three rows
+   in one 168 px strip that hugs the search field (`gtk-shell-test` checks
    44–46, 62/62 green; labels drift-guarded by a Rust test against
    `settings.svelte.ts`).

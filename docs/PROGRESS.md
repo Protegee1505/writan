@@ -226,9 +226,13 @@ Last updated: 2026-10-18 (M4 complete).
   duplicate, palette settings reveal, divider persistence + pane floor) and is
   62/62 green here (run 7, exit 0); two harness fixes: the Settings window
   occludes the main one until closed (focus it before Escape), and an `ERR`
-  trap now names the line of any `set -e` abort. `cargo fmt`/`clippy -D
-  warnings` clean, `cargo test --workspace` green, `svelte-check` 0/0, frontend
-  build OK.
+  trap now names the line of any `set -e` abort. Follow-up the same day (commit
+  `72bb95b`): the sidebar's facet chips took the app's own hover/checked styles
+  (libadwaita painted them 40 px/31 px tall for a 13 px label) and one strip
+  capped at 168 px replaced the per-category scrollers that floated the chips
+  ~75 px below the search field — run 9 is 62/62 green again. `cargo
+  fmt`/`clippy -D warnings` clean, `cargo test --workspace` green, `svelte-check`
+  0/0, frontend build OK.
 
 - **M4 chunk A — noteserver accounts, tokens, storage** (2026-10-18, commit
   `57a0c57`, CI run `39094790760` green): new `crates/writan-server`: email +

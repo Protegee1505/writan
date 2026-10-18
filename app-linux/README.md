@@ -34,7 +34,9 @@ import), tags, appearance (theme + accent), session restore, inline preview
 images, the sync UI (folder/S3 target, recovery code, unlock, sync now,
 lock, turn off — on the shared `writan-sync::session` layer), and the polish
 pass: quiet tag row, note context menus, pane floors + remembered divider
-widths, and the palette as an in-window layer with settings search.
+widths, the palette as an in-window layer with settings search, and a minimal
+sidebar facet strip (compact chips in hover and checked states too, one 168 px
+strip right under the search field).
 
 Checks: `scripts/gtk-shell-test.sh` (62 checks, Xvfb — no real app data
 touched); `WRITAN_MEASURE=1` prints the cold-start and idle-RSS numbers.

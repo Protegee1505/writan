@@ -127,3 +127,13 @@ search). Two harness lessons are encoded there: the Settings window is a real
 window and occludes the main one until it is closed (focus it before Escape),
 and `set -euo pipefail` turns an unguarded `ls … | wc -l` into a silent abort —
 it goes in an `ERR` trap now.
+
+Same day, a second look at the sidebar's facet strip (the user's follow-up, with
+the pointer on a chip): the state styles are the app's own now, because
+libadwaita painted the hover highlight and the checked pill out to the flow box
+child's padding box — 40 px and 31 px for a 13 px label. And one capped strip
+(`MAX_FACETS_HEIGHT = 168`, `vexpand(false)`) replaces the per-category
+scrollers, which each expanded and floated the chips ~75 px below the search
+field in the middle of their share of the free height. The Tauri sidebar's
+`max-height: 168px` filter block is the model; the acceptance script's chip
+coordinates moved up with the strip and run 9 is 62/62 green.
