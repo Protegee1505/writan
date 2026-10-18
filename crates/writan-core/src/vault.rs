@@ -285,6 +285,31 @@ impl Vault {
         Ok(renamed)
     }
 
+    /// Copy a note under a fresh id and file name: same body, tags, pin and
+    /// extra frontmatter, the title with [`duplicate_title`] applied. The copy
+    /// is a new note, so it gets fresh `created`/`updated` stamps.
+    pub fn duplicate(&self, note: &Note) -> Result<Note, VaultError> {
+        let id = Uuid::new_v4();
+        let now = now_rfc3339();
+        let title = duplicate_title(&note.meta.title);
+        let rel_path = self.unique_rel_path(&slugify(&title), id, None);
+        let copy = Note {
+            meta: NoteMeta {
+                id,
+                title,
+                tags: note.meta.tags.clone(),
+                pinned: note.meta.pinned,
+                created: Some(now.clone()),
+                updated: Some(now),
+            },
+            body: note.body.clone(),
+            rel_path,
+            extra: note.extra.clone(),
+        };
+        self.write(&copy)?;
+        Ok(copy)
+    }
+
     pub fn remove(&self, rel: &str) -> Result<(), VaultError> {
         let path = self.abs_path(rel);
         fs::remove_file(&path).map_err(|e| io_err(&path, e))
@@ -349,6 +374,18 @@ pub(crate) fn derive_title(body: &str, rel: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled")
         .to_string()
+}
+
+/// Title for a duplicate: `<title> copy`, so a copy of a copy reads
+/// "Foo copy copy" (like the file name it gets). An empty title becomes
+/// "Untitled copy".
+pub fn duplicate_title(title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        "Untitled copy".to_string()
+    } else {
+        format!("{title} copy")
+    }
 }
 
 /// Turn a title into a filesystem-safe slug (Unicode letters kept).
@@ -530,6 +567,61 @@ mod tests {
         assert!(text.contains("cssclass: fancy"), "{text}");
         assert!(text.contains("pinned: true"), "{text}");
         assert!(text.contains("title: Old"), "{text}");
+    }
+
+    #[test]
+    fn duplicate_copies_content_under_a_new_id() {
+        let (_dir, vault) = vault();
+        let mut note = vault.create("Original", &["tag".into()]).expect("create");
+        note.body = "# Body\n\ntext\n".to_string();
+        note.meta.pinned = true;
+        note.extra
+            .insert("desc".to_string(), Value::String("keep me".to_string()));
+        vault.write(&note).expect("write");
+
+        let copy = vault.duplicate(&note).expect("duplicate");
+        assert_ne!(copy.meta.id, note.meta.id);
+        assert_eq!(copy.meta.title, "Original copy");
+        assert!(
+            copy.rel_path.starts_with("original-copy-"),
+            "{}",
+            copy.rel_path
+        );
+        assert_eq!(copy.body, note.body);
+        assert_eq!(copy.meta.tags, note.meta.tags);
+        assert!(copy.meta.pinned);
+        assert!(copy.meta.created.is_some());
+        assert!(copy.meta.updated.is_some());
+        // Both files exist, with distinct paths, and the custom frontmatter
+        // travelled with the copy.
+        assert!(vault.exists(&note.rel_path));
+        assert!(vault.exists(&copy.rel_path));
+        assert_ne!(note.rel_path, copy.rel_path);
+        let loaded = vault.read(&copy.rel_path).expect("read copy");
+        assert_eq!(
+            loaded.extra.get("desc"),
+            Some(&Value::String("keep me".into()))
+        );
+    }
+
+    #[test]
+    fn duplicate_of_a_duplicate_keeps_copying() {
+        let (_dir, vault) = vault();
+        let note = vault.create("Foo", &[]).expect("create");
+        let first = vault.duplicate(&note).expect("duplicate");
+        let second = vault.duplicate(&first).expect("duplicate");
+        assert_eq!(first.meta.title, "Foo copy");
+        assert_eq!(second.meta.title, "Foo copy copy");
+        // Nothing overwrote anything: three distinct files on disk.
+        assert!(vault.exists(&note.rel_path));
+        assert!(vault.exists(&first.rel_path));
+        assert!(vault.exists(&second.rel_path));
+    }
+
+    #[test]
+    fn duplicate_title_handles_blank_titles() {
+        assert_eq!(duplicate_title("  "), "Untitled copy");
+        assert_eq!(duplicate_title("Note"), "Note copy");
     }
 
     #[test]

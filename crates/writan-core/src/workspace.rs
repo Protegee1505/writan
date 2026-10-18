@@ -219,6 +219,20 @@ impl Workspace {
         Ok(note)
     }
 
+    /// Copy a note: the same body, tags and extra frontmatter under a fresh
+    /// id, a `<title> copy` title and its own file on disk. The note context
+    /// menus call this.
+    pub fn duplicate_note(&mut self, id: &NoteId) -> Result<Note, WorkspaceError> {
+        let Some(row) = self.index.get(id)? else {
+            return Err(WorkspaceError::NotFound(*id));
+        };
+        let source = self.vault.read(&row.rel_path)?;
+        let copy = self.vault.duplicate(&source)?;
+        let rel = copy.rel_path.clone();
+        self.reconcile_one(&rel)?;
+        Ok(copy)
+    }
+
     /// Rename a note's title (and file); `note` is updated in place.
     pub fn rename_note(&mut self, note: &mut Note, new_title: &str) -> Result<(), WorkspaceError> {
         let renamed = self.vault.rename(note, new_title)?;

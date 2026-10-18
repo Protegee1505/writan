@@ -214,6 +214,44 @@ fn save_note_updates_updated_and_index() {
 }
 
 #[test]
+fn duplicate_note_lands_in_the_list_and_the_index() {
+    let (_v, _s, mut ws) = workspace();
+    let note = ws
+        .create_note("Recipe", &["food".to_string()])
+        .expect("create");
+    ws.update_note(&note.meta.id, Some("# Recipe\n\nflour and water\n"), None)
+        .expect("save body");
+
+    let copy = ws.duplicate_note(&note.meta.id).expect("duplicate");
+    assert_ne!(copy.meta.id, note.meta.id);
+    assert_eq!(copy.meta.title, "Recipe copy");
+    assert_eq!(copy.body, "# Recipe\n\nflour and water\n");
+    assert_eq!(copy.meta.tags, vec!["food".to_string()]);
+    assert_ne!(copy.rel_path, note.rel_path);
+
+    // The copy is indexed, searchable and counted right away.
+    let listed = ws.list(10).expect("list");
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().any(|row| row.id == copy.meta.id));
+    assert_eq!(
+        ws.tag_counts().expect("tags"),
+        vec![("food".to_string(), 2)]
+    );
+    let hits = ws
+        .search(&SearchQuery {
+            text: "flour".into(),
+            ..Default::default()
+        })
+        .expect("search");
+    assert_eq!(hits.len(), 2);
+
+    // A copy of the copy keeps going rather than overwriting anything.
+    let again = ws.duplicate_note(&copy.meta.id).expect("duplicate copy");
+    assert_eq!(again.meta.title, "Recipe copy copy");
+    assert_eq!(ws.list(10).expect("list").len(), 3);
+}
+
+#[test]
 fn facets_reports_tags_and_folders() {
     let (v, _s, mut ws) = workspace();
     ws.create_note("Alpha", &["work".to_string(), "rust".to_string()])
