@@ -138,6 +138,9 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout, so gh cannot read the repository from a
+          # git remote; point it at the workflow's own repository.
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --title "Writan $GITHUB_REF_NAME" --generate-notes
