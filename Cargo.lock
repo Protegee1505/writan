@@ -6042,7 +6042,20 @@ name = "writan-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
+ "http-body-util",
+ "rand",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
  "tokio",
+ "tower",
+ "uuid",
+ "writan-crypto",
 ]
 
 [[package]]
