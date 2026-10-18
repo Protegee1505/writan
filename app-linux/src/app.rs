@@ -5404,12 +5404,14 @@ fn load_css() {
              background: none;\n\
              border: none;\n\
              box-shadow: none;\n\
+             outline: none;\n\
              border-radius: 7px;\n\
          }\n\
          entry.tag-entry:hover { background-color: alpha(currentColor, 0.06); }\n\
          entry.tag-entry:focus {\n\
              background-color: alpha(currentColor, 0.10);\n\
              box-shadow: none;\n\
+             outline: none;\n\
          }\n\
          /* Sidebar facets: same chip language as the editor's tags. */\n\
          button.facet-chip {\n\
