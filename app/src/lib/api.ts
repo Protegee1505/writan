@@ -75,7 +75,7 @@ export interface SyncReport {
 export interface SyncStatus {
   enabled: boolean;
   unlocked: boolean;
-  /** "folder" or "s3". */
+  /** "folder", "s3" or "server". */
   kind: string;
   target: string | null;
   vaultId: string | null;
@@ -88,6 +88,16 @@ export interface SyncConnectResult {
   /** Shown exactly once, when this device created the keyring. */
   recoveryCode: string | null;
   status: SyncStatus;
+}
+
+/** A fresh pairing code and its QR (ADR-0007 §4). */
+export interface PairingInfo {
+  code: string;
+  expiresAt: string;
+  /** The exact text the QR carries, for devices without a camera. */
+  payload: string;
+  /** The QR as a standalone SVG document. */
+  svg: string;
 }
 
 export const api = {
@@ -143,6 +153,23 @@ export const api = {
     }),
   syncUnlock: (password: string) => invoke<SyncStatus>("sync_unlock", { password }),
   syncUnlockRecovery: (code: string) => invoke<SyncStatus>("sync_unlock_recovery", { code }),
+  syncConnectServer: (
+    url: string,
+    email: string,
+    accountPassword: string,
+    createAccount: boolean,
+    password: string,
+  ) =>
+    invoke<SyncConnectResult>("sync_connect_server", {
+      url,
+      email,
+      accountPassword,
+      createAccount,
+      password,
+    }),
+  syncJoinServer: (payload: string, password: string) =>
+    invoke<SyncConnectResult>("sync_join_server", { payload, password }),
+  syncPairingCode: () => invoke<PairingInfo>("sync_pairing_code"),
   syncNow: () => invoke<SyncReport>("sync_now"),
   syncLock: () => invoke<SyncStatus>("sync_lock"),
   syncDisable: () => invoke<SyncStatus>("sync_disable"),

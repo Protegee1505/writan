@@ -20,6 +20,7 @@ pub mod engine;
 pub mod keychain;
 pub mod keys;
 pub mod merge;
+pub mod qr;
 pub mod s3;
 pub mod server;
 pub mod session;
@@ -43,6 +44,7 @@ pub use keys::{
     parse_keyring_path, unlock_keyring, unwrap_vault_key,
 };
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
+pub use qr::{QrMatrix, qr_matrix, qr_svg};
 pub use s3::{ListPage, S3Config, S3HttpTransport, S3Target, S3Transport};
 pub use server::{
     PAIRING_FORMAT, PairPayload, Pairing, PutStatus, ServerConnection, ServerError,

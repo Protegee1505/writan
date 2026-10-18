@@ -3065,6 +3065,11 @@ struct SyncUi {
     kind: adw::ComboRow,
     folder: adw::ActionRow,
     s3_rows: Vec<adw::ActionRow>,
+    server_rows: Vec<adw::ActionRow>,
+    server_create: adw::SwitchRow,
+    join_row: adw::ActionRow,
+    join_text: gtk::Entry,
+    pairing_row: adw::ActionRow,
     password_row: adw::ActionRow,
     enable_row: adw::ActionRow,
     recovery_code: adw::ActionRow,
@@ -3091,6 +3096,13 @@ enum SyncMessage {
     Passed {
         session: Box<writan_sync::SyncSession>,
         report: writan_sync::SyncReport,
+    },
+    /// A fresh pairing code and its QR modules (ADR-0007 §4).
+    Paired {
+        code: String,
+        expires_at: String,
+        payload: String,
+        matrix: writan_sync::QrMatrix,
     },
     Failed {
         session: Option<Box<writan_sync::SyncSession>>,
@@ -3205,9 +3217,67 @@ fn build_sync_rows(
         entries.push(entry.clone());
     }
 
+    let (server_url_row, server_url) =
+        field_row(group, "Server", "https://notes.example.com", false);
+    let (server_email_row, server_email) =
+        field_row(group, "Account email", "you@example.com", false);
+    let (server_account_row, server_account) =
+        field_row(group, "Account password", "Account password", true);
+    let server_rows = vec![server_url_row, server_email_row, server_account_row];
+    for entry in [&server_url, &server_email, &server_account] {
+        entries.push(entry.clone());
+    }
+
+    let server_create = adw::SwitchRow::new();
+    server_create.set_title("Create the account");
+    server_create.set_subtitle("Registers this email when the server does not know it yet");
+    group.add(&server_create);
+
+    let join_row = adw::ActionRow::new();
+    join_row.set_title("Join with a pairing code");
+    join_row.set_subtitle("Paste the text from under the QR on a connected device");
+    let join_text = gtk::Entry::builder()
+        .placeholder_text("Pairing text")
+        .width_chars(22)
+        .build();
+    let join = gtk::Button::with_label("Join");
+    join_row.add_suffix(&join_text);
+    join_row.add_suffix(&join);
+    buttons.push(join.clone());
+    entries.push(join_text.clone());
+    group.add(&join_row);
+
     let (password_row, password) = field_row(group, "Sync password", "Sync password", true);
     password_row.set_subtitle("Unlocks this sync on a new device");
     entries.push(password.clone());
+
+    // The join button needs both the pairing text and the sync password.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let join_text = join_text.clone();
+        let password = password.clone();
+        join.connect_clicked(move |_| {
+            if state.borrow().workspace.is_none() {
+                ui.toast
+                    .add_toast(adw::Toast::new("Open a vault before setting up sync."));
+                return;
+            }
+            if join_text.text().trim().is_empty() {
+                ui.toast
+                    .add_toast(adw::Toast::new("Paste the pairing text first."));
+                return;
+            }
+            if password.text().is_empty() {
+                ui.toast
+                    .add_toast(adw::Toast::new("Set the sync password first."));
+                return;
+            }
+            let credential = password.text().to_string();
+            start_sync_join(&state, join_text.text().to_string(), credential);
+            password.set_text("");
+        });
+    }
 
     let enable_row = adw::ActionRow::new();
     enable_row.set_title("Enable sync");
@@ -3225,6 +3295,10 @@ fn build_sync_rows(
         let s3_region = s3_region.clone();
         let s3_access = s3_access.clone();
         let s3_secret = s3_secret.clone();
+        let server_url = server_url.clone();
+        let server_email = server_email.clone();
+        let server_account = server_account.clone();
+        let server_create = server_create.clone();
         enable.connect_clicked(move |_| {
             if state.borrow().workspace.is_none() {
                 ui.toast
@@ -3259,9 +3333,14 @@ fn build_sync_rows(
                     start_sync_s3(&state, details, credential);
                 }
                 writan_sync::SyncKind::Server => {
-                    ui.toast.add_toast(adw::Toast::new(
-                        "Setting up a writan-server from here is not wired up yet.",
-                    ));
+                    let details = writan_sync::ServerConnect {
+                        url: server_url.text().to_string(),
+                        email: server_email.text().to_string(),
+                        account_password: server_account.text().to_string(),
+                        device_name: default_device_name(),
+                        create_account: server_create.is_active(),
+                    };
+                    start_sync_server(&state, details, credential);
                 }
             }
             password.set_text("");
@@ -3454,11 +3533,31 @@ fn build_sync_rows(
     buttons.push(off);
     group.add(&off_row);
 
+    // Connected to a writan-server: mint a one-time code for a new device.
+    let pairing_row = adw::ActionRow::new();
+    pairing_row.set_title("Pair a device");
+    pairing_row.set_subtitle("Shows a one-time QR another device can scan");
+    let pair = gtk::Button::with_label("Show code");
+    pair.add_css_class("flat");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        pair.connect_clicked(move |_| start_sync_pair(&state, &ui));
+    }
+    pairing_row.add_suffix(&pair);
+    buttons.push(pair);
+    group.add(&pairing_row);
+
     Rc::new(SyncUi {
         status,
         kind,
         folder,
         s3_rows,
+        server_rows,
+        server_create,
+        join_row,
+        join_text,
+        pairing_row,
         password_row,
         enable_row,
         recovery_code,
@@ -3503,6 +3602,13 @@ fn refresh_sync(state: &Rc<RefCell<State>>) {
     for row in &sync_ui.s3_rows {
         row.set_visible(setup && snapshot.kind == writan_sync::SyncKind::S3);
     }
+    let server_setup = setup && snapshot.kind == writan_sync::SyncKind::Server;
+    for row in &sync_ui.server_rows {
+        row.set_visible(server_setup);
+    }
+    sync_ui.server_create.set_visible(server_setup);
+    sync_ui.join_row.set_visible(server_setup);
+    sync_ui.join_text.set_sensitive(server_setup && !busy);
     sync_ui.password_row.set_visible(setup);
     sync_ui.enable_row.set_visible(setup);
     let has_recovery = recovery.is_some();
@@ -3523,6 +3629,9 @@ fn refresh_sync(state: &Rc<RefCell<State>>) {
     ] {
         row.set_visible(!setup && unlocked);
     }
+    sync_ui
+        .pairing_row
+        .set_visible(!setup && unlocked && snapshot.kind == writan_sync::SyncKind::Server);
 
     let mut status = if setup {
         "Not set up yet".to_string()
@@ -3640,6 +3749,126 @@ fn start_sync_s3(state: &Rc<RefCell<State>>, details: writan_sync::S3Connect, pa
         });
     }
     refresh_sync(state);
+}
+
+fn start_sync_server(
+    state: &Rc<RefCell<State>>,
+    details: writan_sync::ServerConnect,
+    password: String,
+) {
+    if let Some((sender, state_path)) = begin_sync_job(state) {
+        let vault_path = current_vault_root(state);
+        std::thread::spawn(move || {
+            let message = match writan_sync::connect_server(
+                &details,
+                &password,
+                vault_path.as_deref(),
+                &state_path,
+            ) {
+                Ok(connected) => SyncMessage::Connected(Box::new(connected)),
+                Err(error) => SyncMessage::Failed {
+                    session: None,
+                    error: error.to_string(),
+                },
+            };
+            let _ = sender.send(message);
+        });
+    }
+    refresh_sync(state);
+}
+
+fn start_sync_join(state: &Rc<RefCell<State>>, payload: String, password: String) {
+    if let Some((sender, state_path)) = begin_sync_job(state) {
+        let vault_path = current_vault_root(state);
+        std::thread::spawn(move || {
+            let message = match writan_sync::parse_pair_payload(&payload) {
+                Ok(parsed) => {
+                    let details = writan_sync::ServerPairing {
+                        url: parsed.url,
+                        code: parsed.code,
+                        email: parsed.email,
+                        device_name: default_device_name(),
+                    };
+                    match writan_sync::join_with_code(
+                        &details,
+                        &password,
+                        vault_path.as_deref(),
+                        &state_path,
+                    ) {
+                        Ok(connected) => SyncMessage::Connected(Box::new(connected)),
+                        Err(error) => SyncMessage::Failed {
+                            session: None,
+                            error: error.to_string(),
+                        },
+                    }
+                }
+                Err(error) => SyncMessage::Failed {
+                    session: None,
+                    error: error.to_string(),
+                },
+            };
+            let _ = sender.send(message);
+        });
+    }
+    refresh_sync(state);
+}
+
+/// Mint a one-time pairing code and hand its QR to the main thread.
+fn start_sync_pair(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let (url, email) = match state.borrow().sync_config.server.clone() {
+        Some(server) => (server.url, server.email),
+        None => {
+            ui.toast
+                .add_toast(adw::Toast::new("Sync is not set up to a writan-server."));
+            return;
+        }
+    };
+    let Some(token) = writan_sync::keychain::recall_server_token(&url, &email) else {
+        ui.toast.add_toast(adw::Toast::new(
+            "This device has no server token yet — connect or unlock sync first.",
+        ));
+        return;
+    };
+    if let Some((sender, _state_path)) = begin_sync_job(state) {
+        std::thread::spawn(move || {
+            let message = match writan_sync::create_pairing(&url, &token) {
+                Ok(pairing) => {
+                    let payload = writan_sync::pair_payload(&url, &pairing.code, &email);
+                    match writan_sync::qr_matrix(&payload) {
+                        Ok(matrix) => SyncMessage::Paired {
+                            code: pairing.code,
+                            expires_at: pairing.expires_at,
+                            payload,
+                            matrix,
+                        },
+                        Err(error) => SyncMessage::Failed {
+                            session: None,
+                            error: error.to_string(),
+                        },
+                    }
+                }
+                Err(error) => SyncMessage::Failed {
+                    session: None,
+                    error: error.to_string(),
+                },
+            };
+            let _ = sender.send(message);
+        });
+    }
+    refresh_sync(state);
+}
+
+/// The device name the server records for this machine (ADR-0007 §3).
+fn default_device_name() -> String {
+    let name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    let name = name.trim();
+    if name.is_empty() {
+        "this device".to_string()
+    } else {
+        name.chars().take(64).collect()
+    }
 }
 
 fn start_sync_unlock(
@@ -3832,6 +4061,15 @@ fn handle_sync_message(state: &Rc<RefCell<State>>, ui: &Ui, message: SyncMessage
             refresh_sync(state);
             ui.toast.add_toast(adw::Toast::new(&report.summary()));
         }
+        SyncMessage::Paired {
+            code,
+            expires_at,
+            payload,
+            matrix,
+        } => {
+            refresh_sync(state);
+            show_pairing_dialog(ui, &code, &expires_at, &payload, &matrix);
+        }
         SyncMessage::Failed { session, error } => {
             if let Some(session) = session {
                 state.borrow_mut().sync = Some(*session);
@@ -3840,6 +4078,126 @@ fn handle_sync_message(state: &Rc<RefCell<State>>, ui: &Ui, message: SyncMessage
             refresh_sync(state);
         }
     }
+}
+
+/// One-time QR for a new device: the matrix drawn with cairo, the code text
+/// and the QR payload for a manual paste (ADR-0007 §4).
+fn show_pairing_dialog(
+    ui: &Ui,
+    code: &str,
+    expires_at: &str,
+    payload: &str,
+    matrix: &writan_sync::QrMatrix,
+) {
+    let dialog = gtk::Window::builder()
+        .title("Pair a device")
+        .transient_for(&ui.window)
+        .modal(true)
+        .resizable(false)
+        .default_width(320)
+        .build();
+
+    let area = gtk::DrawingArea::builder()
+        .content_width(240)
+        .content_height(240)
+        .build();
+    area.set_margin_top(16);
+    area.set_margin_bottom(8);
+    area.set_margin_start(16);
+    area.set_margin_end(16);
+    let modules = matrix.clone();
+    area.set_draw_func(move |_, cr, width, height| {
+        let width = f64::from(width);
+        let height = f64::from(height);
+        let side = width.min(height);
+        let cell = side / modules.width() as f64;
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.rectangle(0.0, 0.0, width, height);
+        let _ = cr.fill();
+        cr.set_source_rgb(0.0, 0.0, 0.0);
+        for y in 0..modules.width() {
+            for x in 0..modules.width() {
+                if modules.at(x, y) {
+                    cr.rectangle(
+                        f64::from(x as u32) * cell,
+                        f64::from(y as u32) * cell,
+                        cell,
+                        cell,
+                    );
+                }
+            }
+        }
+        let _ = cr.fill();
+    });
+
+    let code_label = gtk::Label::builder().label(code).selectable(true).build();
+    code_label.add_css_class("monospace");
+
+    let hint = gtk::Label::builder()
+        .label("Scan it on the other device, or copy the text below.")
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .build();
+    hint.add_css_class("dim-label");
+
+    let expiry = gtk::Label::builder()
+        .label(format!("Expires {expires_at}"))
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .build();
+    expiry.add_css_class("dim-label");
+
+    let payload_label = gtk::Label::builder()
+        .label(payload)
+        .selectable(true)
+        .wrap(true)
+        .build();
+    payload_label.set_margin_top(8);
+    payload_label.set_margin_bottom(8);
+    payload_label.set_margin_start(16);
+    payload_label.set_margin_end(16);
+    payload_label.add_css_class("monospace");
+
+    let copy = gtk::Button::with_label("Copy code");
+    {
+        let dialog = dialog.clone();
+        let code = code.to_string();
+        copy.connect_clicked(move |_| {
+            dialog.clipboard().set_text(&code);
+        });
+    }
+    let copy_payload = gtk::Button::with_label("Copy QR text");
+    {
+        let dialog = dialog.clone();
+        let payload = payload.to_string();
+        copy_payload.connect_clicked(move |_| {
+            dialog.clipboard().set_text(&payload);
+        });
+    }
+    let done = gtk::Button::with_label("Done");
+    done.add_css_class("suggested-action");
+    {
+        let dialog = dialog.clone();
+        done.connect_clicked(move |_| dialog.close());
+    }
+
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::Center);
+    buttons.set_margin_top(8);
+    buttons.set_margin_bottom(16);
+    buttons.append(&copy);
+    buttons.append(&copy_payload);
+    buttons.append(&done);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    content.append(&area);
+    content.append(&code_label);
+    content.append(&hint);
+    content.append(&expiry);
+    content.append(&payload_label);
+    content.append(&buttons);
+    dialog.set_child(Some(&content));
+    dialog.present();
 }
 
 /// Repaint every shortcut row from the current overrides: the binding text,

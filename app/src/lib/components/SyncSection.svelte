@@ -1,15 +1,23 @@
 <script lang="ts">
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { api } from "$lib/api";
+  import { api, type PairingInfo } from "$lib/api";
   import { store } from "$lib/store.svelte";
 
-  let kind = $state<"folder" | "s3">("folder");
+  let kind = $state<"folder" | "s3" | "server">("folder");
   let target = $state("");
   let s3Endpoint = $state("");
   let s3Bucket = $state("");
   let s3Region = $state("");
   let s3AccessKey = $state("");
   let s3SecretKey = $state("");
+  let serverUrl = $state("");
+  let serverEmail = $state("");
+  let accountPassword = $state("");
+  let createAccount = $state(false);
+  let joining = $state(false);
+  let pairText = $state("");
+  let pairing = $state<PairingInfo | null>(null);
+  let pairCopied = $state(false);
   let password = $state("");
   let code = $state("");
   let useRecovery = $state(false);
@@ -46,6 +54,27 @@
         return;
       }
     }
+    if (kind === "server") {
+      if (!serverUrl.trim().startsWith("http")) {
+        store.error = "Set the server address first (http:// or https://).";
+        return;
+      }
+      if (joining) {
+        if (!pairText.trim()) {
+          store.error = "Paste the pairing text from the other device first.";
+          return;
+        }
+      } else {
+        if (!serverEmail.trim().includes("@")) {
+          store.error = "Enter the account email first.";
+          return;
+        }
+        if (!accountPassword) {
+          store.error = "Enter the account password first.";
+          return;
+        }
+      }
+    }
     if (!password) {
       store.error = "Set a sync password first.";
       return;
@@ -54,26 +83,42 @@
     store.error = null;
     try {
       const result =
-        kind === "s3"
-          ? await api.syncConnectS3(
-              s3Endpoint.trim(),
-              s3Bucket.trim(),
-              s3Region.trim(),
-              s3AccessKey.trim(),
-              s3SecretKey.trim(),
-              password,
-            )
-          : await api.syncConnect(target.trim(), password);
+        kind === "server"
+          ? joining
+            ? await api.syncJoinServer(pairText.trim(), password)
+            : await api.syncConnectServer(
+                serverUrl.trim(),
+                serverEmail.trim(),
+                accountPassword,
+                createAccount,
+                password,
+              )
+          : kind === "s3"
+            ? await api.syncConnectS3(
+                s3Endpoint.trim(),
+                s3Bucket.trim(),
+                s3Region.trim(),
+                s3AccessKey.trim(),
+                s3SecretKey.trim(),
+                password,
+              )
+            : await api.syncConnect(target.trim(), password);
       recoveryCode = result.recoveryCode;
       password = "";
       s3SecretKey = "";
+      accountPassword = "";
+      pairText = "";
       store.sync = result.status;
       store.notify(
         result.recoveryCode
           ? "Sync enabled. Save the recovery code — it is shown only now."
-          : kind === "s3"
-            ? "Sync connected to the bucket."
-            : "Sync connected to the shared folder.",
+          : kind === "server"
+            ? joining
+              ? "Joined the server with the pairing code."
+              : "Sync connected to the server."
+            : kind === "s3"
+              ? "Sync connected to the bucket."
+              : "Sync connected to the shared folder.",
       );
       await store.refresh();
       void store.loadFacets();
@@ -82,6 +127,37 @@
     } finally {
       working = false;
     }
+  }
+
+  /** Mint a one-time pairing code and show its QR (ADR-0007 §4). */
+  async function showPairing() {
+    if (working) return;
+    working = true;
+    store.error = null;
+    try {
+      pairing = await api.syncPairingCode();
+      pairCopied = false;
+    } catch (e) {
+      store.error = String(e);
+    } finally {
+      working = false;
+    }
+  }
+
+  async function copyPairing() {
+    if (!pairing) return;
+    try {
+      await navigator.clipboard.writeText(pairing.code);
+      pairCopied = true;
+      setTimeout(() => (pairCopied = false), 1500);
+    } catch {
+      store.error = "Could not copy — select the code and copy it manually.";
+    }
+  }
+
+  function when(iso: string): string {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
   }
 
   async function unlock() {
@@ -192,6 +268,9 @@
         <button class="btn" class:selected={kind === "s3"} onclick={() => (kind = "s3")}>
           S3 bucket
         </button>
+        <button class="btn" class:selected={kind === "server"} onclick={() => (kind = "server")}>
+          Writan server
+        </button>
       </div>
     </div>
     {#if kind === "folder"}
@@ -209,7 +288,7 @@
           <button class="btn" onclick={() => void chooseFolder()}>Choose folder…</button>
         </div>
       </div>
-    {:else}
+    {:else if kind === "s3"}
       <div class="row column">
         <div class="meta">
           <span class="label">Endpoint</span>
@@ -252,6 +331,82 @@
           />
         </div>
       </div>
+    {:else}
+      <div class="row column">
+        <div class="meta">
+          <span class="label">Server</span>
+          <span class="desc">
+            Your own writan-server. Notes travel through it encrypted end to end; the server
+            only ever holds ciphertext.
+          </span>
+        </div>
+        <div class="control wide">
+          <input
+            class="path"
+            bind:value={serverUrl}
+            placeholder="https://notes.example.com"
+            spellcheck="false"
+          />
+        </div>
+      </div>
+      {#if joining}
+        <div class="row column">
+          <div class="meta">
+            <span class="label">Pairing text</span>
+            <span class="desc">
+              Paste the text shown under the QR on a device that is already connected.
+            </span>
+          </div>
+          <div class="control wide">
+            <input
+              class="path"
+              bind:value={pairText}
+              placeholder="Pairing text from the other device"
+              spellcheck="false"
+            />
+            <button class="link" onclick={() => (joining = false)}>
+              Sign in with the account password instead
+            </button>
+          </div>
+        </div>
+      {:else}
+        <div class="row column">
+          <div class="meta">
+            <span class="label">Account</span>
+            <span class="desc">
+              The email and password this server knows. Neither is the sync password below.
+            </span>
+          </div>
+          <div class="control wide">
+            <input
+              class="path"
+              bind:value={serverEmail}
+              placeholder="you@example.com"
+              spellcheck="false"
+            />
+            <input
+              class="path"
+              type="password"
+              bind:value={accountPassword}
+              placeholder="Account password"
+              spellcheck="false"
+            />
+          </div>
+        </div>
+        <div class="row">
+          <div class="meta">
+            <span class="label">First device here?</span>
+            <span class="desc">Create the account when the server does not know this email yet.</span>
+          </div>
+          <div class="control">
+            <label class="check">
+              <input type="checkbox" bind:checked={createAccount} />
+              Create the account
+            </label>
+            <button class="link" onclick={() => (joining = true)}>Have a pairing code?</button>
+          </div>
+        </div>
+      {/if}
     {/if}
     <div class="row">
       <div class="meta">
@@ -272,7 +427,7 @@
           }}
         />
         <button class="btn" disabled={working} onclick={() => void connect()}>
-          {working ? "Working…" : "Enable sync"}
+          {working ? "Working…" : kind === "server" && joining ? "Join" : "Enable sync"}
         </button>
       </div>
     </div>
@@ -340,6 +495,37 @@
         </button>
       </div>
     </div>
+    {#if status?.kind === "server"}
+      <div class="row column">
+        <div class="meta">
+          <span class="label">Pair a device</span>
+          <span class="desc">
+            Show a one-time QR for a new device. It carries blob access only — the new device
+            still needs the sync password or recovery code.
+          </span>
+        </div>
+        <div class="control">
+          <button class="btn" disabled={working} onclick={() => void showPairing()}>
+            {pairing ? "New code" : "Show pairing code"}
+          </button>
+        </div>
+      </div>
+      {#if pairing}
+        <div class="row column boxed">
+          <div class="qr" aria-label="Pairing QR code">{@html pairing.svg}</div>
+          <div class="control">
+            <code class="recovery">{pairing.code}</code>
+            <button class="btn" onclick={() => void copyPairing()}>
+              {pairCopied ? "Copied" : "Copy code"}
+            </button>
+          </div>
+          <span class="desc">
+            Expires {when(pairing.expiresAt)}. No camera on the new device? Paste the QR text
+            when it asks for a pairing code.
+          </span>
+        </div>
+      {/if}
+    {/if}
     <div class="row column">
       <div class="meta">
         <span class="label">Last sync</span>
@@ -486,5 +672,29 @@
   .report {
     font-size: 12px;
     color: var(--fg-muted);
+  }
+
+  .qr {
+    background: #fff;
+    padding: 8px;
+    border-radius: 8px;
+    line-height: 0;
+  }
+
+  .qr :global(svg) {
+    width: 168px;
+    height: 168px;
+  }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+
+  input[type="checkbox"] {
+    accent-color: var(--accent);
   }
 </style>

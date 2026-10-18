@@ -4,9 +4,10 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 use writan_core::{Note, SearchQuery, Workspace};
 use writan_sync::{
-    FolderVault, KeyringPurpose, S3Connect, SyncReport, SyncStatus, check_vault, connect_folder,
-    connect_s3, keychain, open_target, run_pass, sync_status as session_status,
-    unlock as unlock_session,
+    FolderVault, KeyringPurpose, S3Connect, ServerConnect, ServerPairing, SyncReport, SyncStatus,
+    check_vault, connect_folder, connect_s3, connect_server, create_pairing, join_with_code,
+    keychain, open_target, pair_payload, parse_pair_payload, qr_svg, run_pass,
+    sync_status as session_status, unlock as unlock_session,
 };
 
 use crate::state::{AppState, Inner};
@@ -623,6 +624,146 @@ pub fn sync_connect_s3(
     Ok(SyncConnectDto {
         recovery_code: connected.recovery_code,
         status: sync_status_from(&state, &inner),
+    })
+}
+
+/// The device name the server shows for this machine (ADR-0007 §3), from the
+/// OS host name; the state file's device id is what really identifies it.
+fn default_device_name() -> String {
+    let name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    let name = name.trim();
+    if name.is_empty() {
+        "this device".to_string()
+    } else {
+        name.chars().take(64).collect()
+    }
+}
+
+/// Connect this vault to a writan-server (ADR-0007): sign in — or register,
+/// with `create_account` — as this device, then run the same keyring flow as
+/// the other targets. The account password doubles as the server credential;
+/// the sync password wraps the vault key and never leaves the devices.
+#[tauri::command]
+pub fn sync_connect_server(
+    state: State<'_, AppState>,
+    url: String,
+    email: String,
+    account_password: String,
+    create_account: bool,
+    password: String,
+) -> CmdResult<SyncConnectDto> {
+    let details = ServerConnect {
+        url,
+        email,
+        account_password,
+        device_name: default_device_name(),
+        create_account,
+    };
+    let vault_path = state.workspace_root();
+    let connected = connect_server(
+        &details,
+        &password,
+        vault_path.as_deref(),
+        &state.sync_state_path,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    inner.config.sync = connected.config;
+    inner.sync = Some(connected.session);
+    state.save_config(&inner);
+    run_sync_locked(&state, &mut inner)?;
+    Ok(SyncConnectDto {
+        recovery_code: connected.recovery_code,
+        status: sync_status_from(&state, &inner),
+    })
+}
+
+/// Join an account with a pairing code instead of its password: paste the
+/// text the other device's QR carried. The code grants blob access only, so
+/// the sync password is still required (ADR-0007 §4).
+#[tauri::command]
+pub fn sync_join_server(
+    state: State<'_, AppState>,
+    payload: String,
+    password: String,
+) -> CmdResult<SyncConnectDto> {
+    let parsed = parse_pair_payload(payload.trim()).map_err(|e| e.to_string())?;
+    let details = ServerPairing {
+        url: parsed.url,
+        code: parsed.code,
+        email: parsed.email,
+        device_name: default_device_name(),
+    };
+    let vault_path = state.workspace_root();
+    let connected = join_with_code(
+        &details,
+        &password,
+        vault_path.as_deref(),
+        &state.sync_state_path,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    inner.config.sync = connected.config;
+    inner.sync = Some(connected.session);
+    state.save_config(&inner);
+    run_sync_locked(&state, &mut inner)?;
+    Ok(SyncConnectDto {
+        recovery_code: connected.recovery_code,
+        status: sync_status_from(&state, &inner),
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingDto {
+    /// The single-use code another device types or scans.
+    pub code: String,
+    /// When it stops working, RFC 3339.
+    pub expires_at: String,
+    /// The exact text the QR carries, for devices without a camera.
+    pub payload: String,
+    /// The QR as a standalone SVG document.
+    pub svg: String,
+}
+
+/// Mint a single-use pairing code and its QR (ADR-0007 §4). The code grants
+/// blob access only; the vault key never travels, and the joining device
+/// still needs the sync password or recovery code.
+#[tauri::command]
+pub fn sync_pairing_code(state: State<'_, AppState>) -> CmdResult<PairingDto> {
+    let (url, email) = {
+        let inner = state
+            .inner
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let server = inner
+            .config
+            .sync
+            .server
+            .as_ref()
+            .ok_or_else(|| "sync is not set up to a writan-server".to_string())?;
+        (server.url.clone(), server.email.clone())
+    };
+    let token = keychain::recall_server_token(&url, &email)
+        .ok_or_else(|| "this device has no server token — unlock sync and try again".to_string())?;
+    let pairing = create_pairing(&url, &token).map_err(|e| e.to_string())?;
+    let payload = pair_payload(&url, &pairing.code, &email);
+    let svg = qr_svg(&payload, 4).map_err(|e| e.to_string())?;
+    Ok(PairingDto {
+        code: pairing.code,
+        expires_at: pairing.expires_at,
+        payload,
+        svg,
     })
 }
 
