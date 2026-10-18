@@ -2156,6 +2156,15 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
                 hint: keymap::hint("sync-now", overrides),
                 command: PaletteCommand::SyncNow,
             });
+            // Pairing needs the unlocked session (the account token) and a
+            // server target (ADR-0007 §4).
+            if st.sync.is_some() && st.sync_config.kind == writan_sync::SyncKind::Server {
+                items.push(PaletteItem {
+                    label: "Pair a device…".to_string(),
+                    hint: "Sync".to_string(),
+                    command: PaletteCommand::PairDevice,
+                });
+            }
         }
         if st.current.is_some() {
             // The Tauri item waits on a vault; inserting needs the open editor
@@ -2303,6 +2312,7 @@ fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteComm
         PaletteCommand::RebuildIndex => rebuild_index(state, ui),
         PaletteCommand::TogglePin => toggle_pin(state, ui),
         PaletteCommand::SyncNow => sync_now_or_settings(state, ui),
+        PaletteCommand::PairDevice => start_sync_pair(state, ui),
         PaletteCommand::OpenNote(id) => {
             open_note_by_id(state, ui, id);
             ui.editor.grab_focus();
@@ -3226,6 +3236,13 @@ fn build_sync_rows(
     let server_rows = vec![server_url_row, server_email_row, server_account_row];
     for entry in [&server_url, &server_email, &server_account] {
         entries.push(entry.clone());
+    }
+
+    // Reconnecting a server target starts from the remembered address and
+    // account; the token stays in the keychain.
+    if let Some(server) = state.borrow().sync_config.server.clone() {
+        server_url.set_text(&server.url);
+        server_email.set_text(&server.email);
     }
 
     let server_create = adw::SwitchRow::new();
@@ -4285,6 +4302,7 @@ enum PaletteCommand {
     RebuildIndex,
     TogglePin,
     SyncNow,
+    PairDevice,
     OpenNote(NoteId),
     ChooseFolder,
 }

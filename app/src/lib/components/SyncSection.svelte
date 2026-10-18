@@ -29,6 +29,20 @@
   const status = $derived(store.sync);
   const setupComplete = $derived(Boolean(status?.target));
 
+  // Coming back to the server form (say, after Turn off) starts from the
+  // remembered address and account; the token stays in the keychain and the
+  // sync password is never stored.
+  let prefilled = $state(false);
+  $effect(() => {
+    if (prefilled) return;
+    const url = status?.serverUrl;
+    const email = status?.serverEmail;
+    if (!url && !email) return;
+    if (!serverUrl) serverUrl = url ?? "";
+    if (!serverEmail) serverEmail = email ?? "";
+    prefilled = true;
+  });
+
   async function chooseFolder() {
     const path = await openDialog({ directory: true, title: "Choose a sync folder" });
     if (typeof path === "string") target = path;

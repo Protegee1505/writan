@@ -37,6 +37,7 @@ says why).
 | Accent color choice | [x] | [x] | same six presets in both shells (the Linux list is drift-guarded against `settings.svelte.ts`); painted by a display-wide CSS provider that recolours switches, selections and suggested actions |
 | Session restore (last note) | [x] | [x] | `settings.session.lastNoteId` written on every note open; `general.reopenLastNote` (default true) is a switch in the Linux General group |
 | Sync (folder/S3, unlock, sync now) | [x] | [x] | one shared `writan-sync::session` layer (same config object, keychain entries and wording); GTK verified by `gtk-shell-test` checks 36–43 — recovery code shown once, password unlock, lock, two-click Turn off, and a second sandbox device joining the folder keyring and adopting notes |
+| Sync to a writan-server (ADR-0007) | [x] | [x] | account sign-in or create-account, "Join with a pairing code", and a "Pair a device" QR card in both shells, backed by the same `writan-sync::server` calls (palette gains `Pair a device…`); wire-level tests are Rust-side (`server_sync.rs`, `writan-server/tests/*`), both panels compile-checked |
 
 ## M3.5 slices
 

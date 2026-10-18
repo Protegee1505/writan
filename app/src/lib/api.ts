@@ -78,6 +78,9 @@ export interface SyncStatus {
   /** "folder", "s3" or "server". */
   kind: string;
   target: string | null;
+  /** The remembered writan-server address and account, for form prefill. */
+  serverUrl: string | null;
+  serverEmail: string | null;
   vaultId: string | null;
   deviceId: string | null;
   lastSync: string | null;

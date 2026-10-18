@@ -468,9 +468,13 @@ impl SyncReportDto {
 pub struct SyncStatusDto {
     pub enabled: bool,
     pub unlocked: bool,
-    /// "folder" or "s3" — the kind of configured target.
+    /// "folder", "s3" or "server" — the kind of configured target.
     pub kind: String,
     pub target: Option<String>,
+    /// The stored writan-server address and account so the setup form can
+    /// prefill them (never a secret; the token stays in the keychain).
+    pub server_url: Option<String>,
+    pub server_email: Option<String>,
     pub vault_id: Option<String>,
     pub device_id: Option<String>,
     pub last_sync: Option<String>,
@@ -493,6 +497,8 @@ impl SyncStatusDto {
             unlocked: status.unlocked,
             kind: status.kind.as_str().to_string(),
             target: status.target,
+            server_url: None,
+            server_email: None,
             vault_id: status.vault_id,
             device_id: status.device_id,
             last_sync: status.last_sync,
@@ -502,11 +508,16 @@ impl SyncStatusDto {
 }
 
 fn sync_status_from(state: &AppState, inner: &Inner) -> SyncStatusDto {
-    SyncStatusDto::from_status(session_status(
+    let mut dto = SyncStatusDto::from_status(session_status(
         &inner.config.sync,
         inner.sync.as_ref(),
         &state.sync_state_path,
-    ))
+    ));
+    if let Some(server) = inner.config.sync.server.as_ref() {
+        dto.server_url = Some(server.url.clone());
+        dto.server_email = Some(server.email.clone());
+    }
+    dto
 }
 
 #[tauri::command]

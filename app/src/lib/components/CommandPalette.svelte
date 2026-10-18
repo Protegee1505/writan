@@ -83,6 +83,14 @@
           hint: keyHint("sync-now") || "Sync",
           run: () => store.syncNow(),
         });
+        if (store.sync.kind === "server") {
+          all.push({
+            id: "sync-pair",
+            label: "Pair a device…",
+            hint: "Sync",
+            run: () => onsettings("sync"),
+          });
+        }
       } else if (store.sync?.enabled) {
         all.push({
           id: "sync-unlock",
@@ -93,7 +101,7 @@
       } else {
         all.push({
           id: "sync-setup",
-          label: "Set up folder sync…",
+          label: "Set up sync…",
           hint: "Sync",
           run: () => onsettings("sync"),
         });

@@ -109,6 +109,8 @@ let sync: SyncStatus = {
   unlocked: false,
   kind: "folder",
   target: null,
+  serverUrl: null,
+  serverEmail: null,
   vaultId: null,
   deviceId: "mock-device",
   lastSync: null,
