@@ -1,7 +1,10 @@
 # Writan — implementation plan
 
-Status: M0–M3 complete (2026-10-17) · M3.5 slices 1–8 done (2026-10-18): the
-parity checklist is green; only the real-hardware acceptance remains. M4
+Status: M0–M3 complete (2026-10-17) · M3.5 slices 1–9 done (2026-10-18): the
+parity checklist is green; only the real-hardware acceptance remains (slice 9
+was the user-reported polish pass: minimal tag chips, note context menus,
+pane floors + remembered widths, the palette as an in-window layer with
+settings search). M4
 noteserver complete (2026-10-18): accounts, blob API, change feed + SSE, the
 server sync target, pairing codes, the QR display and the settings wiring in
 both shells, and the Docker image + `docs/SERVER.md` deploy doc (chunks A–H).
@@ -17,12 +20,14 @@ Order is a suggestion, not a constraint.
    against the < 100 MB budget — then append the outcome to ADR-0004. This also
    closes M2's deferred IME item. The routine is `docs/REAL-HARDWARE.md`; the
    fixture vault is in `tools/visual/README.md`.
-2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–8 done
+2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–9 done
    (watcher + autosave, sidebar filters + note actions, trash panel, command
    palette + rebindable shortcuts, settings panel with live apply, attachments,
-   the parity sweep: tags, appearance, session restore, look polish, and the
+   the parity sweep: tags, appearance, session restore, look polish, the
    sync UI: folder/S3/server targets, recovery code, unlock, sync now, lock,
-   turn off, pairing QR). Left: nothing beyond the real-hardware acceptance
+   turn off, pairing QR, and the polish pass: quiet tag row, note context
+   menus, pane floors + remembered divider widths, the palette layer with
+   settings search). Left: nothing beyond the real-hardware acceptance
    (task 1).
 3. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
    commit as every shell change.

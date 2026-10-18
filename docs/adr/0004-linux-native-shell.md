@@ -95,3 +95,35 @@ Verified by `scripts/gtk-shell-test.sh` checks 36–43 (56/56 green), including 
 second sandbox "device" that joins the folder keyring with the password and
 adopts notes. The interactive IME + idle-RAM re-measure on real hardware is
 still open (`docs/REAL-HARDWARE.md`).
+
+### Amendment (2026-10-18): slice 9 polish
+
+The user reported five rough edges in the native shell and their fixes were
+folded in as slice 9 (tag row, note menus, panes, palette):
+- the command palette is an in-window overlay layer now — a full-size
+  `gtk::Overlay` child holding a card, not an `adw::Window` and not even a
+  `GtkPopover`: it cannot be dragged or resized, an outside click or Escape
+  dismisses it, and it takes no seat grab. The popover step in between stranded
+  the keyboard headlessly (a popover holding a `GtkEntry` left GDK's focus on a
+  dead surface: accelerators still fired, no widget received keys) and was
+  still an OS window a window manager could move — the exact complaint. The
+  note menu stays a popover (buttons only, no text input, no such defect);
+- the palette also searches the settings rows (`Settings: <label>`), with the
+  table shared with the panel's own filter and drift-guarded against
+  `app/src/lib/settings.svelte.ts`;
+- panes cannot collapse: `shrink-*-child = false` plus 200/320/160 px floors
+  (sidebar/editor/preview — 280 squeezed the stored editor width on a 1000 px
+  window), and dragged divider widths persist as
+  `view.sidebarWidth`/`view.editorWidth` (the first of which the Tauri shell
+  honors too);
+- the tag row and sidebar facet chips went minimal, and both shells gained a
+  note context menu (Duplicate · Rename… · Pin/Unpin · Copy note text · Copy
+  file path · Move to trash) on core `Workspace::duplicate_note`.
+
+`scripts/gtk-shell-test.sh` grew 56 → 62 checks (44–46: row menu duplicate,
+palette settings reveal, divider persistence + pane floor) and the palette
+checks were rewritten around the layer (marker typing instead of a window
+search). Two harness lessons are encoded there: the Settings window is a real
+window and occludes the main one until it is closed (focus it before Escape),
+and `set -euo pipefail` turns an unguarded `ls … | wc -l` into a silent abort —
+it goes in an `ERR` trap now.

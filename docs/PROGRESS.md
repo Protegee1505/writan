@@ -206,6 +206,30 @@ Last updated: 2026-10-18 (M4 complete).
   binary. `cargo fmt`/`clippy -D warnings` clean, `cargo test --workspace`
   green (150 tests, 3 ignored), `svelte-check` 0/0, frontend build OK.
 
+- **M3.5 slice 9 — user-reported polish in the GTK shell** (2026-10-18, commit
+  `5035d9e`): five
+  fixes from the user's review, landed with Tauri parity where the shells share
+  a feature. Minimal tag row (`tag-chip`/`tag-entry`): borderless chips plus a
+  quiet Add-tag entry, same look for the sidebar facet chips. A note context
+  menu in both shells (Duplicate · Rename… · Pin/Unpin · Copy note text · Copy
+  file path · Move to trash) on new core `Vault::duplicate` /
+  `Workspace::duplicate_note` (`<title> copy`, fresh id and timestamps, its own
+  file; `duplicate-note` is a bindable action in both keymaps). Panes cannot
+  collapse or overflow (`shrink-*-child = false`, floors 200/320/160) and the
+  dragged widths persist as `view.sidebarWidth` / `view.editorWidth`
+  (`config.rs` load/save, Settings rows, Reset). The palette searches every
+  setting (`SETTINGS_INDEX` shared with the panel filter and drift-guarded
+  against `app/src/lib/settings.svelte.ts`; Enter reveals the row) and is now an
+  in-window `gtk::Overlay` layer rather than a window or popover — the reported
+  "it drags the window" bug, plus a popovers-with-entries keyboard strand found
+  headlessly. `scripts/gtk-shell-test.sh` went 56 → 62 checks (44–46: row menu
+  duplicate, palette settings reveal, divider persistence + pane floor) and is
+  62/62 green here (run 7, exit 0); two harness fixes: the Settings window
+  occludes the main one until closed (focus it before Escape), and an `ERR`
+  trap now names the line of any `set -e` abort. `cargo fmt`/`clippy -D
+  warnings` clean, `cargo test --workspace` green, `svelte-check` 0/0, frontend
+  build OK.
+
 - **M4 chunk A — noteserver accounts, tokens, storage** (2026-10-18, commit
   `57a0c57`, CI run `39094790760` green): new `crates/writan-server`: email +
   password accounts (Argon2id via `writan-crypto`, unknown emails pay the same
@@ -276,7 +300,7 @@ Last updated: 2026-10-18 (M4 complete).
 
 ## Current state
 
-- Branch `main`; M0–M3 complete, M3.5 (native Linux shell) slices 1–8 done —
+- Branch `main`; M0–M3 complete, M3.5 (native Linux shell) slices 1–9 done —
   `docs/PARITY.md` is green; only the real-hardware acceptance (IME + RAM)
   waits on the user's laptop (`docs/REAL-HARDWARE.md`). M4 noteserver complete
   (`crates/writan-server`, ADR-0007): accounts, blob API, change feed/SSE, the
@@ -345,7 +369,7 @@ cargo build --release -p writan-linux
 
 # GTK shell headless checks (Xvfb; no real app data touched)
 scripts/gui-shot.sh --bin target/release/writan        # walkthrough screenshots
-scripts/gtk-shell-test.sh --bin target/release/writan  # 56-check shell acceptance run
+scripts/gtk-shell-test.sh --bin target/release/writan  # 62-check shell acceptance run
 ```
 
 ## Environment & gotchas

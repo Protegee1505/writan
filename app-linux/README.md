@@ -27,14 +27,16 @@ On non-Linux targets the crate compiles to a stub; the pure modules
 
 ## Status (2026-10-18)
 
-M3.5 slices 1–8 are done and `docs/PARITY.md` is green: watcher + autosave,
+M3.5 slices 1–9 are done and `docs/PARITY.md` is green: watcher + autosave,
 sidebar filters + note actions, trash panel, command palette + rebindable
 shortcuts, settings panel (live apply), attachments (paste, drop, palette
 import), tags, appearance (theme + accent), session restore, inline preview
-images, and the sync UI (folder/S3 target, recovery code, unlock, sync now,
-lock, turn off — on the shared `writan-sync::session` layer).
+images, the sync UI (folder/S3 target, recovery code, unlock, sync now,
+lock, turn off — on the shared `writan-sync::session` layer), and the polish
+pass: quiet tag row, note context menus, pane floors + remembered divider
+widths, and the palette as an in-window layer with settings search.
 
-Checks: `scripts/gtk-shell-test.sh` (56 checks, Xvfb — no real app data
+Checks: `scripts/gtk-shell-test.sh` (62 checks, Xvfb — no real app data
 touched); `WRITAN_MEASURE=1` prints the cold-start and idle-RSS numbers.
 The real-hardware IME + idle-RAM acceptance is still on the list
 (`docs/REAL-HARDWARE.md`).
