@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-18 (M4 chunks A–C and E).
+Last updated: 2026-10-18 (M4 chunks A–E and H).
 
 ## Milestone history
 
@@ -233,15 +233,37 @@ Last updated: 2026-10-18 (M4 chunks A–C and E).
   never reaches the server), and `serve_blocking` so a test runs the real server
   in-process. The live round-trip test converges two devices through the server;
   the shells compile with `Server` in the kind list (the setup UI is chunk F).
+- **M4 chunk D — pairing codes and the QR payload** (2026-10-18, commit
+  `fc1629b`, CI run `39097641001` green): `POST /api/v1/pairings` mints a
+  32-byte single-use code (SHA-256 at rest, 600 s TTL, expired rows pruned) and
+  `POST /api/v1/pairings/redeem` registers the joining device and hands it its
+  token. The code grants blob access only — the vault key never travels, so the
+  joining device still needs the sync password or recovery code. The payload
+  both shells share is compact JSON
+  `{"format":"writan-pair/1","url":…,"code":…,"email":…}`
+  (`pair_payload` / `parse_pair_payload`), and `join_with_code` joins a vault
+  through it; a live test joins a second device by code and refuses a used one.
+- **M4 chunk H — server setup and the pairing QR in both shells** (2026-10-18,
+  commit `a491a55`, CI run `39099064379` green after the serve-test fix in
+  `7a2cac3`): `writan-sync::qr` renders the payload as a module matrix or a
+  standalone SVG (`qrcode` crate, EC level M). Tauri gains
+  `sync_connect_server`, `sync_join_server` (paste the QR text) and
+  `sync_pairing_code` (code + expiry + payload + SVG); the Svelte sync panel
+  gains the writan-server kind, account sign-in with a create-account switch,
+  the join-with-code path and a "Pair a device" card with the inline QR, the
+  code and copy; the GTK shell adds the same rows and a pairing dialog that
+  paints the matrix with cairo. The serve smoke test now polls `/health`
+  instead of trusting the first TCP connect (a CI runner reset that window).
 
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) slices 1–8 done —
   `docs/PARITY.md` is green; only the real-hardware acceptance (IME + RAM)
   waits on the user's laptop (`docs/REAL-HARDWARE.md`). M4 noteserver in
-  progress (`crates/writan-server`, ADR-0007): accounts + blob API + change
-  feed/SSE + the server sync target landed (chunks A/B/C/E); pairing, QR
-  display, shell wiring and the Docker image follow.
+  progress (`crates/writan-server`, ADR-0007): accounts, blob API, change
+  feed/SSE, the server sync target, pairing codes and the QR display in both
+  shells landed (chunks A–E and H); server sync-settings wiring + parity rows
+  (F) and the Docker image + `docs/SERVER.md` deploy doc (G) follow.
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

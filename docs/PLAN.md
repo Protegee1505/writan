@@ -2,9 +2,10 @@
 
 Status: M0–M3 complete (2026-10-17) · M3.5 slices 1–8 done (2026-10-18): the
 parity checklist is green; only the real-hardware acceptance remains. M4
-noteserver in progress: accounts, blob API, change feed + SSE and the server
-sync target shipped (chunks A/B/C/E); pairing, QR display, shell wiring and the
-Docker image left.
+noteserver in progress: accounts, blob API, change feed + SSE, the server sync
+target, pairing codes and the QR display in both shells shipped (chunks
+A/B/C/E/D/H); server sync-settings wiring + parity rows and the Docker image
+left.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -12,10 +13,9 @@ rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
 Order is a suggestion, not a constraint.
 
-1. **M4 noteserver** (`crates/writan-server`, ADR-0007; chunks A/B/C/E shipped
-   2026-10-18): left: pairing API + redemption (D), QR display in both shells
-   (H), server sync-settings wiring + PARITY rows (F), Docker image +
-   `docs/SERVER.md` deploy doc + GHCR push on `v*` (G).
+1. **M4 noteserver** (`crates/writan-server`, ADR-0007; chunks A/B/C/E/D/H
+   shipped 2026-10-18): left: server sync-settings wiring + PARITY rows (F),
+   Docker image + `docs/SERVER.md` deploy doc + GHCR push on `v*` (G).
 2. **GTK4 acceptance on real Linux hardware** (the user's laptop): interactive
    smoke, IME (ibus + fcitx5, CJK composition), and the idle-RAM re-measure
    against the < 100 MB budget — then append the outcome to ADR-0004. This also
