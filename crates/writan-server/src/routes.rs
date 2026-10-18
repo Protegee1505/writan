@@ -1,11 +1,14 @@
-//! The HTTP surface (ADR-0007 §§2–7). Chunks A–B: health, accounts,
-//! sessions, vaults, the blob API and the change feed.
+//! The HTTP surface (ADR-0007 §§2–7). Chunks A–C: health, accounts,
+//! sessions, vaults, the blob API, the change feed and its SSE stream.
 //!
 //! Handlers take the single writer connection behind a mutex — cheap at one
 //! user per instance (ADR-0007 §8); a connection pool is a later change with
 //! no format or API impact.
 
+use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
@@ -15,14 +18,17 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post, put};
+use futures_util::stream::unfold;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::auth;
 use crate::config::ServerConfig;
-use crate::db::{self, Account, Device};
+use crate::db::{self, Account, BlobRecord, Device};
 use crate::error::ApiError;
 use crate::util::{now_unix, rfc3339, validate_blob_path};
 
@@ -40,6 +46,14 @@ const CHANGES_LIMIT_MAX: u32 = 2_000;
 /// (ADR-0007 §9).
 const BODY_LIMIT_SLACK: usize = 64 * 1024;
 
+/// Live fan-out buffer for the SSE stream. A subscriber that falls further
+/// behind than this is told it lagged and re-reads the REST feed — which is
+/// authoritative (ADR-0007 §7).
+const FEED_CAPACITY: usize = 256;
+
+/// What a blob write publishes to SSE subscribers.
+type FeedEvent = (Uuid, BlobRecord);
+
 /// Everything the handlers need.
 #[derive(Clone)]
 pub struct AppState {
@@ -47,14 +61,18 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     /// Startup configuration (limits, registration switch, lockout).
     pub config: Arc<ServerConfig>,
+    /// Live change events for the SSE streams.
+    pub events: broadcast::Sender<FeedEvent>,
 }
 
 impl AppState {
     /// Wrap an open connection.
     pub fn new(conn: Connection, config: ServerConfig) -> Self {
+        let (events, _) = broadcast::channel(FEED_CAPACITY);
         Self {
             db: Arc::new(Mutex::new(conn)),
             config: Arc::new(config),
+            events,
         }
     }
 
@@ -83,6 +101,7 @@ pub fn app(state: AppState) -> Router {
             get(read_blob).put(write_blob),
         )
         .route("/api/v1/vaults/{vault_id}/changes", get(changes))
+        .route("/api/v1/vaults/{vault_id}/events", get(events))
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(state)
 }
@@ -384,7 +403,12 @@ async fn write_blob(
         now,
         state.config.vault_quota_bytes,
     )? {
-        db::BlobWrite::Created(_) => Ok(StatusCode::CREATED),
+        db::BlobWrite::Created(record) => {
+            // Advisory fan-out to blocking SSE readers; a missed event only
+            // costs a later poll (ADR-0007 §7).
+            let _ = state.events.send((vault_id, record));
+            Ok(StatusCode::CREATED)
+        }
         db::BlobWrite::Unchanged(_) => Ok(StatusCode::NO_CONTENT),
         db::BlobWrite::Diverged => Err(ApiError::Conflict(format!(
             "`{path}` already exists with different bytes"
@@ -411,18 +435,114 @@ async fn changes(
     let records = db::changes_since(&conn, vault_id, since, limit as usize)?;
     let next = records.last().map_or(since, |record| record.seq);
     Ok(Json(ChangePage {
-        events: records
-            .iter()
-            .map(|record| ChangeEvent {
-                seq: record.seq,
-                path: record.path.clone(),
-                device_id: record.device_id,
-                size: record.size,
-                at: rfc3339(record.created_at),
-            })
-            .collect(),
+        events: records.iter().map(change_event).collect(),
         next,
     }))
+}
+
+/// `GET /api/v1/vaults/{vault_id}/events` — the same feed as SSE
+/// (ADR-0007 §7): `id:` is the sequence, so a reconnecting client resumes
+/// with `Last-Event-ID` (or `?since=`). Each connection first replays
+/// everything it missed, then follows live writes.
+async fn events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Query(query): Query<ChangesQuery>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let cursor = last_event_id(&headers)?.or(query.since).unwrap_or(0).max(0);
+
+    // Subscribe before reading the backlog: anything written in between is
+    // seen twice and dropped by the sequence filter, never missed.
+    let receiver = state.events.subscribe();
+    let mut queue = VecDeque::new();
+    let mut last = cursor;
+    {
+        let conn = state.conn();
+        let (account, _) = require_auth(&conn, &headers)?;
+        own_vault(&conn, account.id, vault_id)?;
+        loop {
+            let page = db::changes_since(&conn, vault_id, last, CHANGES_LIMIT_MAX as usize)?;
+            let Some(max) = page.last().map(|record| record.seq) else {
+                break;
+            };
+            last = max;
+            let exhausted = page.len() < CHANGES_LIMIT_MAX as usize;
+            queue.extend(page.iter().map(sse_event));
+            if exhausted {
+                break;
+            }
+        }
+    }
+
+    let stream = unfold(
+        (queue, receiver, last, vault_id, state),
+        |(mut queue, mut receiver, mut last, vault_id, state)| async move {
+            loop {
+                if let Some(event) = queue.pop_front() {
+                    return Some((Ok(event), (queue, receiver, last, vault_id, state)));
+                }
+                match receiver.recv().await {
+                    Ok((written, record)) if written == vault_id && record.seq > last => {
+                        last = record.seq;
+                        let event = sse_event(&record);
+                        return Some((Ok(event), (queue, receiver, last, vault_id, state)));
+                    }
+                    // Other vaults and events the backlog already carried.
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Too far behind: re-read from the authoritative feed.
+                        let conn = state.conn();
+                        if let Ok(page) =
+                            db::changes_since(&conn, vault_id, last, CHANGES_LIMIT_MAX as usize)
+                        {
+                            if let Some(max) = page.last().map(|record| record.seq) {
+                                last = max;
+                            }
+                            queue.extend(page.iter().map(sse_event));
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        },
+    );
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
+}
+
+fn change_event(record: &BlobRecord) -> ChangeEvent {
+    ChangeEvent {
+        seq: record.seq,
+        path: record.path.clone(),
+        device_id: record.device_id,
+        size: record.size,
+        at: rfc3339(record.created_at),
+    }
+}
+
+fn sse_event(record: &BlobRecord) -> Event {
+    let data = serde_json::to_string(&change_event(record)).unwrap_or_else(|_| "{}".to_string());
+    Event::default().id(record.seq.to_string()).data(data)
+}
+
+/// The `Last-Event-ID` request header (ADR-0007 §7); a malformed value is a
+/// client bug, not something to guess at.
+fn last_event_id(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
+    let Some(value) = headers.get("last-event-id") else {
+        return Ok(None);
+    };
+    let raw = value
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("last-event-id is not a sequence number".to_string()))?;
+    raw.trim()
+        .parse::<i64>()
+        .map(Some)
+        .map_err(|_| ApiError::BadRequest("last-event-id is not a sequence number".to_string()))
 }
 
 fn vault_info(vault: &db::Vault) -> VaultInfo {
@@ -520,5 +640,18 @@ mod tests {
         assert_eq!(clean_device_name("  Pixel 9  "), "Pixel 9");
         assert_eq!(clean_device_name("   "), "unnamed device");
         assert_eq!(clean_device_name(&"n".repeat(100)).chars().count(), 64);
+    }
+
+    #[test]
+    fn last_event_id_parses_but_does_not_guess() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(last_event_id(&headers).expect("absent"), None);
+        headers.insert("last-event-id", HeaderValue::from_static(" 42 "));
+        assert_eq!(last_event_id(&headers).expect("number"), Some(42));
+        headers.insert("last-event-id", HeaderValue::from_static("nope"));
+        assert!(matches!(
+            last_event_id(&headers),
+            Err(ApiError::BadRequest(_))
+        ));
     }
 }

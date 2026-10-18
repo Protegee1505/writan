@@ -7,7 +7,8 @@
 //! binary adds `serve` and an admin `reset-password` command.
 //!
 //! Milestone M4 lands in chunks (ADR-0007 §12): accounts, device sessions,
-//! vaults, the blob API and the change feed are in; SSE and pairing follow.
+//! vaults, the blob API, the change feed and its SSE stream are in; pairing
+//! follows.
 
 #![forbid(unsafe_code)]
 

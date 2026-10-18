@@ -30,6 +30,7 @@ base64 = "0.22"
 blake3 = "1.8"
 chacha20poly1305 = "0.11"
 diffy = "0.5"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hmac = "0.12"
 keyring = { version = "3", features = ["windows-native", "linux-native"] }
 # The gtk-rs crates are renamed to their in-code names here (the crates'
@@ -50,7 +51,7 @@ serde-saphyr = { version = "2.0.0", default-features = false, features = ["seria
 sha2 = "0.10"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
-tokio = { version = "1.53", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1.53", features = ["macros", "net", "rt-multi-thread", "sync"] }
 ureq = "3"
 uuid = { version = "1.28", features = ["serde", "v4"] }
 zeroize = "1.9"
