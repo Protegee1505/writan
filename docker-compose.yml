@@ -1,0 +1,26 @@
+# The optional self-hosted sync server (docs/SERVER.md, ADR-0007).
+#
+#   docker compose up -d --build
+#
+# Plain HTTP on purpose: put a TLS reverse proxy in front (the Caddy example in
+# docs/SERVER.md) and keep this on localhost.
+services:
+  writan-server:
+    build: .
+    # Once a v* tag has built the image, pull it instead of building:
+    # image: ghcr.io/protegee1505/writan-server:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      WRITAN_DATA_DIR: /data
+      # Close registration once your account exists:
+      # WRITAN_REGISTRATION: closed
+      # WRITAN_MAX_BLOB_KIB: "4096"
+      # WRITAN_VAULT_QUOTA_MIB: "512"
+      # WRITAN_PAIRING_TTL_SECS: "600"
+    volumes:
+      - writan-data:/data
+
+volumes:
+  writan-data:

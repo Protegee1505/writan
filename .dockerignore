@@ -1,0 +1,11 @@
+# Keep the build context small — the Dockerfile only copies Cargo manifests,
+# the crates and (later) the app manifests.
+.git
+.github
+.devcontainer
+**/target
+**/node_modules
+**/.svelte-kit
+**/dist
+tools
+docs

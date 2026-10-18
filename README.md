@@ -24,6 +24,7 @@ S3-compatible bucket. Next: M3.5, the native Linux shell.
 - Milestones & upcoming tasks: [`docs/PLAN.md`](docs/PLAN.md)
 - Progress log: [`docs/PROGRESS.md`](docs/PROGRESS.md)
 - Decisions (ADRs): [`docs/adr/README.md`](docs/adr/README.md)
+- Self-hosting the sync server: [`docs/SERVER.md`](docs/SERVER.md)
 - Working with AI agents in this repo: [`AGENTS.md`](AGENTS.md)
 
 ## Try it (development)
