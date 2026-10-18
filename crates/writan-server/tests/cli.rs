@@ -129,30 +129,33 @@ fn serve_listens_and_answers_health() {
         .expect("spawn the server");
     let _guard = Guard(child);
 
+    // Poll with the real request rather than a bare connect: the first
+    // connection can land before the accept loop runs, and a CI runner reset
+    // in that window is not an answer.
     let deadline = Instant::now() + Duration::from_secs(20);
-    let mut stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(stream) => break stream,
-            Err(error) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "the server never accepted a connection: {error}"
-                );
-                std::thread::sleep(Duration::from_millis(100));
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        match health(port) {
+            Ok(response) => {
+                if response.starts_with("HTTP/1.1 200 OK") && response.contains("\"status\":\"ok\"")
+                {
+                    return;
+                }
+                last = format!("unexpected response: {response}");
             }
+            Err(error) => last = error.to_string(),
         }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("timeout");
-    stream
-        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .expect("request");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("the server never answered /health: {last}");
+}
+
+/// One HTTP/1.1 exchange against `/health`, closed by the server.
+fn health(port: u16) -> std::io::Result<String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
     let mut response = String::new();
-    stream.read_to_string(&mut response).expect("response");
-    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
-    assert!(
-        response.contains("\"status\":\"ok\""),
-        "health body: {response}"
-    );
+    stream.read_to_string(&mut response)?;
+    Ok(response)
 }
