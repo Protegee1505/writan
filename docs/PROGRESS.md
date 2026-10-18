@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-18 (M4 chunks A–E and H).
+Last updated: 2026-10-18 (M4 complete).
 
 ## Milestone history
 
@@ -254,18 +254,36 @@ Last updated: 2026-10-18 (M4 chunks A–E and H).
   code and copy; the GTK shell adds the same rows and a pairing dialog that
   paints the matrix with cairo. The serve smoke test now polls `/health`
   instead of trusting the first TCP connect (a CI runner reset that window).
+- **M4 chunk F — sync settings polish and palette entries** (2026-10-18, commit
+  `7b42da1`, CI run `39113987376` green): the sync status DTO carries the
+  writan-server url and email, so both shells prefill the server fields when the
+  settings open; the Tauri palette's "Set up sync…" is no longer folder-only,
+  and a connected server vault adds a "Pair a device…" entry (the GTK palette
+  gains the same one, wired to the pairing dialog). `docs/PARITY.md` records the
+  writan-server row for both shells, and the Svelte panel was eyeballed in the
+  `?mock=1` browser loop.
+- **M4 chunk G — Docker image and deploy doc** (2026-10-18, commit `39f6b5a`,
+  CI run `39115161620` and Docker run `39115161634` green): a multi-stage
+  `Dockerfile` (rust:1.99-slim-bookworm → debian:bookworm-slim, non-root
+  `writan`, `/data` volume, plain HTTP behind a reverse proxy) with a cached
+  dependency layer, `docker-compose.yml`, `.github/workflows/docker.yml`
+  (builds every push; pushes `ghcr.io/<owner>/writan-server` on `v*` tags or a
+  manual run) and the deploy doc `docs/SERVER.md` (env table, Caddy TLS,
+  backups, upgrades, free-tier notes incl. Oracle's idle-reclaim caveat). The
+  image was built and smoke-tested locally: health, account, vault, blob and
+  change feed over the container, uid 10001, SQLite persisted in the volume.
+  **M4 complete.**
 
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) slices 1–8 done —
   `docs/PARITY.md` is green; only the real-hardware acceptance (IME + RAM)
-  waits on the user's laptop (`docs/REAL-HARDWARE.md`). M4 noteserver in
-  progress (`crates/writan-server`, ADR-0007): accounts, blob API, change
-  feed/SSE, the server sync target, pairing codes and the QR display in both
-  shells landed (chunks A–E and H); server sync-settings wiring + parity rows
-  (F) and the Docker image + `docs/SERVER.md` deploy doc (G) follow.
-  Verification after M3: `cargo fmt`/`clippy` clean,
-  `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
+  waits on the user's laptop (`docs/REAL-HARDWARE.md`). M4 noteserver complete
+  (`crates/writan-server`, ADR-0007): accounts, blob API, change feed/SSE, the
+  server sync target, pairing codes, the QR display and the settings wiring in
+  both shells, and the Docker image + `docs/SERVER.md` (chunks A–H).
+  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 206 tests
+  green (3 ignored), `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
   `%APPDATA%\com.writan.desktop`). Workspace MSRV: Rust 1.90.
 - CI is the compiler: this box re-images regularly and carries rustup minimal +
@@ -276,8 +294,9 @@ Last updated: 2026-10-18 (M4 chunks A–E and H).
   release search-perf step, cargo-deny), `artifacts.yml` (Windows installers +
   `writan-linux-x64` binary and `measure.txt`; manual dispatch or a `v*` tag,
   kept 90 days), `nightly.yml` (three-device sync soak, folder + bucket, cron
-  `17 3 * * *`), `web.yml` (static SPA → GitHub Pages preview). The ubuntu job
-  is the free Linux compiler for `app-linux/`.
+  `17 3 * * *`), `docker.yml` (the writan-server image; builds every push,
+  pushes GHCR on `v*` tags or a manual run), `web.yml` (static SPA → GitHub
+  Pages preview). The ubuntu job is the free Linux compiler for `app-linux/`.
 - Cloud-first dev: **Google Cloud Shell** is the agent host
   (`scripts/cloudshell-setup.sh`, `docs/CLOUD.md`); the free `opencode/*` models
   answer from its IP but are rate-limited from Codespaces' — the codespace

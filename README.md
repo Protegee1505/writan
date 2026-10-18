@@ -18,8 +18,10 @@ Notes are plain Markdown files on disk; everything else is built around that.
 
 Active development. **M0–M3 are complete** — the app opens a notes folder and
 creates/edits/searches/pins/trashes notes with autosave and external-edit
-tracking, and syncs them end-to-end-encrypted to a plain folder or an
-S3-compatible bucket. Next: M3.5, the native Linux shell.
+tracking, and syncs them end-to-end-encrypted to a plain folder, an
+S3-compatible bucket or your own server (`docs/SERVER.md`; M4 complete). The
+native Linux shell (M3.5) is in place, awaiting a real-hardware acceptance
+pass. Next: Android (M5).
 
 - Milestones & upcoming tasks: [`docs/PLAN.md`](docs/PLAN.md)
 - Progress log: [`docs/PROGRESS.md`](docs/PROGRESS.md)
