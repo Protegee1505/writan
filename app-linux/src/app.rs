@@ -22,6 +22,26 @@ use crate::preview::Preview;
 /// How often the main loop drains the watcher's event channel.
 const WATCH_POLL: Duration = Duration::from_millis(200);
 
+/// Hard floors for the three panes, in px. The paneds are built with
+/// `shrink-*-child = false`, so these requests are also the window's minimum
+/// width (about 700 px with the two separator grips) — a divider can never be
+/// dragged past its child's floor.
+const MIN_SIDEBAR_WIDTH: i32 = 200;
+const MIN_EDITOR_WIDTH: i32 = 320;
+const MIN_PREVIEW_WIDTH: i32 = 160;
+
+/// Matching maxima, as in the settings registry's sliders (200–420 / 320–900).
+const MAX_SIDEBAR_WIDTH: i32 = 420;
+const MAX_EDITOR_WIDTH: i32 = 900;
+
+/// How long after the last drag the divider positions are written to
+/// `config.json` (one write per gesture, not per pixel).
+const LAYOUT_SAVE_DELAY: Duration = Duration::from_millis(400);
+
+/// How long after startup divider drags start being remembered — by then the
+/// first allocation has settled (see `layout_ready`).
+const LAYOUT_SETTLE_DELAY: Duration = Duration::from_millis(400);
+
 struct State {
     workspace: Option<Workspace>,
     /// Note ids in list order (row index → note).
@@ -53,6 +73,15 @@ struct State {
     show_word_count: bool,
     /// `settings.view.dateFormat` for trash timestamps.
     date_format: crate::dates::DateFormat,
+    /// `settings.view.sidebarWidth`: the list/detail divider (px).
+    sidebar_width: i32,
+    /// `settings.view.editorWidth`: the editor/preview divider (px).
+    editor_width: i32,
+    /// Pending debounced write of the dragged divider positions.
+    layout_save: Option<gtk::glib::SourceId>,
+    /// False until the first layout has settled, so GTK clamping a stored
+    /// position in a small window cannot overwrite the stored width.
+    layout_ready: bool,
     /// True while widgets are updated from code, so their signals do not
     /// re-enter the actions that set them.
     programmatic: bool,
@@ -81,6 +110,16 @@ struct State {
     sync_busy: bool,
     /// The Sync rows of the Settings window while it is open.
     sync_ui: Option<Rc<SyncUi>>,
+    /// The Settings window's own search state while it is open.
+    settings_ui: Option<SettingsUi>,
+    /// True while the command palette is up.
+    palette_open: bool,
+    /// What had the keyboard when the palette opened, so closing it hands the
+    /// keyboard back to the same place.
+    palette_return_focus: Option<gtk::Widget>,
+    /// The note row's right-click menu while it is up (closed when the list
+    /// is rebuilt).
+    note_menu: Option<gtk::Popover>,
     config_path: PathBuf,
     data_dir: PathBuf,
 }
@@ -109,6 +148,15 @@ struct Ui {
     tags_flow: gtk::FlowBox,
     editor: sourceview5::View,
     preview: Preview,
+    /// The two dividers — list|content and editor|preview — so the width rows
+    /// in Settings move them and their drags can be remembered.
+    split: gtk::Paned,
+    inner: gtk::Paned,
+    /// The window's header bar: the palette's card is placed under it.
+    header: adw::HeaderBar,
+    /// The command palette, built once when the window is (see
+    /// `build_palette`) and shown or hidden by `open_palette`/`close_palette`.
+    palette: Palette,
 }
 
 pub fn run() -> gtk::glib::ExitCode {
@@ -144,6 +192,10 @@ fn build(application: &adw::Application) {
         delete_timer: None,
         show_word_count: config::load_show_word_count(&config_path),
         date_format: config::load_date_format(&config_path),
+        sidebar_width: config::load_sidebar_width(&config_path),
+        editor_width: config::load_editor_width(&config_path),
+        layout_save: None,
+        layout_ready: false,
         programmatic: false,
         overrides: overrides.clone(),
         last_note_id: config::load_last_note(&config_path).and_then(|id| id.parse().ok()),
@@ -157,6 +209,10 @@ fn build(application: &adw::Application) {
         sync_jobs: None,
         sync_busy: false,
         sync_ui: None,
+        settings_ui: None,
+        palette_open: false,
+        palette_return_focus: None,
+        note_menu: None,
         config_path,
         data_dir: config::state_dir(),
     }));
@@ -271,7 +327,9 @@ fn build(application: &adw::Application) {
     facets.append(&facet_scroll(&tags_flow));
 
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    sidebar.set_width_request(280);
+    // The paned honors this as a hard floor (`shrink-start-child = false`), so
+    // the list never collapses into a clipped sliver.
+    sidebar.set_width_request(MIN_SIDEBAR_WIDTH);
     sidebar.append(&search);
     sidebar.append(&facets);
     sidebar.append(&sidebar_scroll);
@@ -329,10 +387,12 @@ fn build(application: &adw::Application) {
     editor_header.append(&delete_button);
 
     // Tags row, like the Tauri editor: an "Add tag…" entry (Enter or comma
-    // commits) followed by removable chips. Hidden until a note is open.
+    // commits) followed by removable chips. Hidden until a note is open. Both
+    // are styled as quiet inline elements (`tag-entry`, `tag-chip`).
     let tag_entry = gtk::Entry::builder()
         .placeholder_text("Add tag…")
-        .width_chars(10)
+        .width_chars(8)
+        .css_classes(["tag-entry"])
         .valign(gtk::Align::Center)
         .tooltip_text("Type a tag and press Enter; a comma separates several")
         .build();
@@ -366,6 +426,7 @@ fn build(application: &adw::Application) {
     editor_overlay.add_overlay(&editor_placeholder);
 
     let editor_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    editor_pane.set_size_request(MIN_EDITOR_WIDTH, -1);
     editor_pane.append(&editor_header);
     editor_pane.append(&tag_row);
     editor_pane.append(&editor_overlay);
@@ -377,21 +438,29 @@ fn build(application: &adw::Application) {
         .hexpand(true)
         .vexpand(true)
         .build();
+    preview_scroll.set_size_request(MIN_PREVIEW_WIDTH, -1);
     preview_scroll.add_css_class("preview-pane");
 
+    // Neither divider may be dragged away: `shrink-*-child = false` makes the
+    // children's minimums (the requests above) the paned's own minimum, so no
+    // pane can be squeezed to nothing and lose its handle off the edge.
     let inner = gtk::Paned::new(gtk::Orientation::Horizontal);
     inner.set_start_child(Some(&editor_pane));
     inner.set_end_child(Some(&preview_scroll));
     inner.set_resize_start_child(true);
     inner.set_resize_end_child(false);
-    inner.set_position(520);
+    inner.set_shrink_start_child(false);
+    inner.set_shrink_end_child(false);
+    inner.set_position(state.borrow().editor_width);
 
     let split = gtk::Paned::new(gtk::Orientation::Horizontal);
     split.set_start_child(Some(&sidebar));
     split.set_end_child(Some(&inner));
     split.set_resize_start_child(false);
     split.set_resize_end_child(true);
-    split.set_position(280);
+    split.set_shrink_start_child(false);
+    split.set_shrink_end_child(false);
+    split.set_position(state.borrow().sidebar_width);
 
     // Welcome page (no vault yet).
     let welcome = gtk::Box::builder()
@@ -426,7 +495,16 @@ fn build(application: &adw::Application) {
     let toast = adw::ToastOverlay::new();
     toast.set_child(Some(&stack));
     toolbar.set_content(Some(&toast));
-    window.set_content(Some(&toolbar));
+
+    // The command palette is a layer of this window, over the whole toolbar
+    // (header bar included) — see `build_palette`. A window or a popover of
+    // its own could be dragged or resized by the window manager, which is
+    // exactly what the user hit.
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&toolbar));
+    window.set_content(Some(&overlay));
+
+    let palette = build_palette(&overlay);
 
     let ui = Ui {
         window: window.clone(),
@@ -450,7 +528,15 @@ fn build(application: &adw::Application) {
         tags_flow: tags_flow.clone(),
         editor: editor.clone(),
         preview: preview.clone(),
+        split: split.clone(),
+        inner: inner.clone(),
+        header: header.clone(),
+        palette,
     };
+
+    // The palette's own wiring: queries, Enter, clicks, Escape and the click
+    // outside its card that dismisses it.
+    setup_palette(&state, &ui);
 
     // Keep the editor scheme, accent colours and preview links in step with
     // the effective light/dark preference (system change, GTK_THEME or the
@@ -466,6 +552,45 @@ fn build(application: &adw::Application) {
         });
     }
     apply_accent(&state, &ui);
+
+    // Dragged dividers are remembered: each gesture ends with one debounced
+    // write of `settings.view.sidebarWidth` / `settings.view.editorWidth`.
+    // Persistence only starts once the first layout has settled — GTK clamps
+    // a stored position in a window too small for it, and that clamped value
+    // must not overwrite what the user chose.
+    gtk::glib::timeout_add_local_once(LAYOUT_SETTLE_DELAY, {
+        let state = state.clone();
+        let ui = ui.clone();
+        move || {
+            state.borrow_mut().layout_ready = true;
+            {
+                let state = state.clone();
+                let ui = ui.clone();
+                let paned = ui.split.clone();
+                paned.connect_position_notify(move |paned| {
+                    let width = paned.position();
+                    if !state.borrow().layout_ready || state.borrow().sidebar_width == width {
+                        return;
+                    }
+                    state.borrow_mut().sidebar_width = width;
+                    schedule_layout_save(&state, &ui);
+                });
+            }
+            {
+                let state = state.clone();
+                let ui = ui.clone();
+                let paned = ui.inner.clone();
+                paned.connect_position_notify(move |paned| {
+                    let width = paned.position();
+                    if !state.borrow().layout_ready || state.borrow().editor_width == width {
+                        return;
+                    }
+                    state.borrow_mut().editor_width = width;
+                    schedule_layout_save(&state, &ui);
+                });
+            }
+        }
+    });
 
     // Selection loads the note; a programmatic re-selection of the open note
     // is ignored so typing is never interrupted.
@@ -707,6 +832,14 @@ fn build(application: &adw::Application) {
         pin_action.connect_activate(move |_, _| toggle_pin(&state, &ui));
         application.add_action(&pin_action);
         apply_accels(application, &overrides, "pin-note");
+    }
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let duplicate_action = gtk::gio::SimpleAction::new("duplicate-note", None);
+        duplicate_action.connect_activate(move |_, _| duplicate_note(&state, &ui));
+        application.add_action(&duplicate_action);
+        apply_accels(application, &overrides, "duplicate-note");
     }
 
     // Settings (Ctrl+,): the header gear and the palette's "Open settings…".
@@ -980,6 +1113,31 @@ fn toggle_pin(state: &Rc<RefCell<State>>, ui: &Ui) {
     }
 }
 
+/// Copy the open note (`Workspace::duplicate_note`) and open the copy, like
+/// the Tauri shell's "Duplicate note" palette item.
+fn duplicate_note(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let id = state.borrow().current.as_ref().map(|note| note.meta.id);
+    let Some(id) = id else {
+        return;
+    };
+    // The copy should carry what is on screen, not the last autosave.
+    save_now(state, ui, false);
+    let copied = {
+        let mut st = state.borrow_mut();
+        st.workspace
+            .as_mut()
+            .and_then(|workspace| workspace.duplicate_note(&id).ok())
+    };
+    let Some(copy) = copied else {
+        ui.toast
+            .add_toast(adw::Toast::new("Could not duplicate the note"));
+        return;
+    };
+    refresh(state, ui, false);
+    open_note_by_id(state, ui, copy.meta.id);
+    ui.toast.add_toast(adw::Toast::new("Duplicated the note"));
+}
+
 /// Open the trash panel, or raise the one already up (application
 /// accelerators can fire while the modal panel holds focus).
 fn open_trash_or_focus(state: &Rc<RefCell<State>>, ui: &Ui) {
@@ -1241,6 +1399,10 @@ fn visible_entries(state: &Rc<RefCell<State>>, text: &str) -> Vec<(NoteId, Strin
 /// (startup, vault switch), so deletes and external changes never yank the
 /// editor to another note.
 fn refresh(state: &Rc<RefCell<State>>, ui: &Ui, fallback: bool) {
+    // A menu on a row that is about to be dropped closes first.
+    if let Some(menu) = state.borrow_mut().note_menu.take() {
+        menu.popdown();
+    }
     while let Some(child) = ui.list.first_child() {
         ui.list.remove(&child);
     }
@@ -1285,6 +1447,19 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui, fallback: bool) {
             cell.append(&pin);
         }
         row.set_child(Some(&cell));
+        // Right-click opens the row's menu; the Tauri list has the same one on
+        // `contextmenu` (PARITY.md).
+        {
+            let menu = gtk::GestureClick::new();
+            menu.set_button(3);
+            let state = state.clone();
+            let ui = ui.clone();
+            let row_for_menu = row.clone();
+            menu.connect_pressed(move |_, _, x, y| {
+                note_menu(&state, &ui, &row_for_menu, (x, y));
+            });
+            row.add_controller(menu);
+        }
         ui.list.append(&row);
         rows.push(*id);
     }
@@ -1305,6 +1480,172 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui, fallback: bool) {
         state.borrow_mut().suppress_select = false;
     }
     refresh_facets(state, ui);
+}
+
+/// Right-click menu for a note row — the same items as the Tauri list's
+/// `contextmenu` menu (PARITY.md). The row is selected first, so every item
+/// acts on the note the menu names, and a pending edit is flushed before the
+/// load. "Move to trash" is the explicit act the `general.confirmDelete`
+/// header button asks for twice; the trash panel is where it can come back.
+fn note_menu(state: &Rc<RefCell<State>>, ui: &Ui, row: &gtk::ListBoxRow, position: (f64, f64)) {
+    ui.list.select_row(Some(row));
+    let picked = state
+        .borrow()
+        .current
+        .as_ref()
+        .map(|note| (note.meta.id, note.meta.pinned));
+    let Some((id, pinned)) = picked else {
+        return;
+    };
+    let path = {
+        let st = state.borrow();
+        st.workspace.as_ref().and_then(|workspace| {
+            let rel = workspace.note_path(&id).ok().flatten()?;
+            Some(
+                workspace
+                    .vault()
+                    .abs_path(&rel)
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        })
+    };
+
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .css_classes(["menu"])
+        .build();
+    let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    items.set_size_request(200, -1);
+    popover.set_child(Some(&items));
+    popover.set_parent(row);
+
+    let duplicate = menu_button("Duplicate");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let popover = popover.clone();
+        duplicate.connect_clicked(move |_| {
+            popover.popdown();
+            duplicate_note(&state, &ui);
+            // The menu held the keyboard while it was up: give it back.
+            ui.editor.grab_focus();
+        });
+    }
+    items.append(&duplicate);
+
+    let rename = menu_button("Rename…");
+    {
+        let ui = ui.clone();
+        let popover = popover.clone();
+        rename.connect_clicked(move |_| {
+            popover.popdown();
+            ui.title_entry.grab_focus();
+            ui.title_entry.select_region(0, -1);
+        });
+    }
+    items.append(&rename);
+
+    let pin = menu_button(if pinned { "Unpin" } else { "Pin" });
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let popover = popover.clone();
+        pin.connect_clicked(move |_| {
+            popover.popdown();
+            toggle_pin(&state, &ui);
+            ui.editor.grab_focus();
+        });
+    }
+    items.append(&pin);
+
+    let copy_text = menu_button("Copy note text");
+    {
+        let ui = ui.clone();
+        let popover = popover.clone();
+        copy_text.connect_clicked(move |_| {
+            popover.popdown();
+            ui.window.clipboard().set_text(&buffer_text(&ui.editor));
+            ui.toast.add_toast(adw::Toast::new("Copied the note text"));
+            ui.editor.grab_focus();
+        });
+    }
+    items.append(&copy_text);
+
+    if let Some(path) = path {
+        let copy_path = menu_button("Copy file path");
+        {
+            let ui = ui.clone();
+            let popover = popover.clone();
+            copy_path.connect_clicked(move |_| {
+                popover.popdown();
+                ui.window.clipboard().set_text(&path);
+                ui.toast.add_toast(adw::Toast::new("Copied the file path"));
+                ui.editor.grab_focus();
+            });
+        }
+        items.append(&copy_path);
+    }
+
+    items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let trash = menu_button("Move to trash");
+    trash.add_css_class("destructive-action");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let popover = popover.clone();
+        trash.connect_clicked(move |_| {
+            popover.popdown();
+            move_to_trash(&state, &ui);
+            // The note is gone: the list is where the next choice happens.
+            ui.list.grab_focus();
+        });
+    }
+    items.append(&trash);
+
+    // The list is rebuilt whenever the notes change, so a menu still up when
+    // that happens is closed by `refresh` — which is also where the handle is
+    // dropped again.
+    popover.connect_closed({
+        let state = state.clone();
+        move |popover| {
+            {
+                let mut st = state.borrow_mut();
+                if st.note_menu.as_ref() == Some(popover) {
+                    st.note_menu = None;
+                }
+            }
+            popover.unparent();
+        }
+    });
+    state.borrow_mut().note_menu = Some(popover.clone());
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+        position.0 as i32,
+        position.1 as i32,
+        1,
+        1,
+    )));
+    // The first entry takes focus once the menu has a surface, so the menu is
+    // usable from the keyboard (Return duplicates) as well as by pointer.
+    {
+        let duplicate = duplicate.clone();
+        popover.connect_map(move |_| {
+            duplicate.grab_focus();
+        });
+    }
+    popover.popup();
+}
+
+/// One entry of the note menu: a flat, full-width button that reads like a
+/// menu row.
+fn menu_button(label: &str) -> gtk::Button {
+    let label_widget = gtk::Label::builder().label(label).xalign(0.0).build();
+    gtk::Button::builder()
+        .child(&label_widget)
+        .has_frame(false)
+        .halign(gtk::Align::Fill)
+        .build()
 }
 
 /// Rebuild the sidebar facets from the index, mirroring the Tauri sidebar's
@@ -1381,7 +1722,7 @@ fn refresh_facets(state: &Rc<RefCell<State>>, ui: &Ui) {
         let chip = gtk::ToggleButton::builder()
             .label(format!("{name} {count}"))
             .tooltip_text(name)
-            .css_classes(["pill", "caption"])
+            .css_classes(["facet-chip", "caption", "flat"])
             .active(folder_filter.as_deref() == Some(name.as_str()))
             .build();
         let state_for_chip = state.clone();
@@ -1400,7 +1741,7 @@ fn refresh_facets(state: &Rc<RefCell<State>>, ui: &Ui) {
         let chip = gtk::ToggleButton::builder()
             .label(format!("#{name} {count}"))
             .tooltip_text(format!("#{name}"))
-            .css_classes(["pill", "caption"])
+            .css_classes(["facet-chip", "caption", "flat"])
             .active(tag_filter.as_deref() == Some(name.as_str()))
             .build();
         let state_for_chip = state.clone();
@@ -1429,7 +1770,7 @@ fn facet_clear_chip(label: &str, tooltip: &str) -> gtk::Button {
     gtk::Button::builder()
         .label(label)
         .tooltip_text(tooltip)
-        .css_classes(["pill", "caption"])
+        .css_classes(["facet-chip", "caption", "flat"])
         .build()
 }
 
@@ -1542,7 +1883,7 @@ fn tag_chip(state: &Rc<RefCell<State>>, ui: &Ui, tag: &str) -> gtk::Button {
     let button = gtk::Button::builder()
         .child(&content)
         .tooltip_text(format!("Remove tag {tag}"))
-        .css_classes(["flat", "pill", "caption"])
+        .css_classes(["tag-chip"])
         .valign(gtk::Align::Center)
         .build();
     let state = state.clone();
@@ -1986,17 +2327,17 @@ fn purge_trash_entry(state: &Rc<RefCell<State>>, ui: &Ui, panel: &TrashPanel, id
 }
 
 /// The command palette: one search entry over the same actions as the Tauri
-/// palette (`components/CommandPalette.svelte`) plus the notes the sidebar
-/// currently shows. A modal window, like the trash panel.
-fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
-    if let Some(application) = ui.window.application()
-        && focus_window(&application, "Command palette")
-    {
-        return;
-    }
-
+/// palette (`components/CommandPalette.svelte`), the settings rows it can
+/// search, and the notes the sidebar currently shows.
+///
+/// It is a layer *inside* the window, not a window and not a popover: it
+/// cannot be moved or resized, a click outside its card dismisses it, and it
+/// takes no keyboard grab — closing it hands the keyboard straight back. (A
+/// popover that holds a text entry left the keyboard dead in this shell; a
+/// window of its own could be dragged by the window manager.)
+fn build_palette(overlay: &gtk::Overlay) -> Palette {
     let entry = gtk::Entry::builder()
-        .placeholder_text("Type a command or note name…")
+        .placeholder_text("Type a command, setting or note name…")
         .margin_start(10)
         .margin_end(10)
         .margin_top(10)
@@ -2012,6 +2353,9 @@ fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
         .child(&list)
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_height(180)
+        .max_content_height(360)
+        .propagate_natural_height(true)
         .build();
 
     let empty = gtk::Label::builder()
@@ -2021,54 +2365,114 @@ fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
         .margin_bottom(32)
         .build();
 
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    body.append(&entry);
-    body.append(&empty);
-    body.append(&scroll);
-    body.set_margin_start(6);
-    body.set_margin_end(6);
-    body.set_margin_bottom(6);
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    card.append(&entry);
+    card.append(&empty);
+    card.append(&scroll);
+    card.set_margin_start(6);
+    card.set_margin_end(6);
+    card.set_margin_bottom(6);
+    card.set_size_request(520, -1);
+    card.set_halign(gtk::Align::Center);
+    card.set_valign(gtk::Align::Start);
+    // A popover used to supply the card's background; libadwaita's `card`
+    // class and a quiet outline of our own replace it.
+    card.add_css_class("card");
+    card.add_css_class("palette");
 
-    let window = adw::Window::builder()
-        .title("Command palette")
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(520)
-        .default_height(420)
-        .content(&body)
-        .build();
+    // The layer is up only while the palette is, and it covers the whole
+    // window: the click that dismisses the palette never reaches what is
+    // behind it (the Tauri backdrop behaves the same way).
+    let layer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    layer.set_hexpand(true);
+    layer.set_vexpand(true);
+    layer.add_css_class("palette-layer");
+    layer.append(&card);
+    layer.set_visible(false);
+    overlay.add_overlay(&layer);
 
-    let palette = Palette {
-        entry: entry.clone(),
-        list: list.clone(),
-        empty: empty.clone(),
+    Palette {
+        layer,
+        card,
+        entry,
+        list,
+        empty,
         commands: Rc::new(RefCell::new(Vec::new())),
+    }
+}
+
+/// Show the palette over the window: a fresh query, the settings and notes as
+/// they are now, and the keyboard in its entry.
+fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if state.borrow().palette_open {
+        return;
+    }
+    {
+        let mut st = state.borrow_mut();
+        st.palette_open = true;
+        st.palette_return_focus = gtk::prelude::GtkWindowExt::focus(&ui.window);
+    }
+    // The card hangs under the header bar, clear of it.
+    ui.palette.card.set_margin_top(ui.header.height() + 12);
+    ui.palette.entry.set_text("");
+    fill_palette(state, ui, &ui.palette);
+    ui.palette.layer.set_visible(true);
+    ui.palette.entry.grab_focus();
+}
+
+/// Close the palette and hand the keyboard back to whatever had it: the layer
+/// took no grab, so nothing else is needed. The editor is the fallback for
+/// when the old focus holder is gone.
+fn close_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let previous = {
+        let mut st = state.borrow_mut();
+        if !st.palette_open {
+            return;
+        }
+        st.palette_open = false;
+        st.palette_return_focus.take()
     };
-    fill_palette(state, ui, &palette);
+    ui.palette.layer.set_visible(false);
+    let fallback: gtk::Widget = ui.editor.clone().upcast();
+    let target = previous
+        .filter(|widget| widget.root().is_some() && widget.is_focusable())
+        .unwrap_or(fallback);
+    target.grab_focus();
+}
+
+/// Wire the palette's surface once: a query filters, Enter and a click run the
+/// selected item, Escape and a click outside the card close it, and focus
+/// leaving the card closes it too (the keyboard belongs to the palette while
+/// it is up, as it does under the Tauri backdrop).
+fn setup_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let entry = ui.palette.entry.clone();
+    let list = ui.palette.list.clone();
+    let card = ui.palette.card.clone();
+    let layer = ui.palette.layer.clone();
 
     // Filter as the query changes; the selection returns to the first row.
     {
         let state = state.clone();
         let ui = ui.clone();
-        let palette = palette.clone();
-        entry.connect_changed(move |_| fill_palette(&state, &ui, &palette));
+        entry.connect_changed(move |_| {
+            fill_palette(&state, &ui, &ui.palette);
+        });
     }
 
-    // Enter runs the selected item, then the window closes (Tauri's
+    // Enter runs the selected item, then the palette closes (Tauri's
     // `runItem`: close, then run).
     {
         let state = state.clone();
         let ui = ui.clone();
-        let palette = palette.clone();
-        let window_for_enter = window.clone();
         entry.connect_activate(move |_| {
-            let index = palette
+            let index = ui
+                .palette
                 .list
                 .selected_row()
                 .map(|row| row.index())
                 .unwrap_or(0);
-            let command = item_command(&palette, index);
-            window_for_enter.close();
+            let command = item_command(&ui.palette, index);
+            close_palette(&state, &ui);
             if let Some(command) = command {
                 run_palette_command(&state, &ui, command);
             }
@@ -2079,11 +2483,9 @@ fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
     {
         let state = state.clone();
         let ui = ui.clone();
-        let palette = palette.clone();
-        let window_for_click = window.clone();
         list.connect_row_activated(move |_, row| {
-            let command = item_command(&palette, row.index());
-            window_for_click.close();
+            let command = item_command(&ui.palette, row.index());
+            close_palette(&state, &ui);
             if let Some(command) = command {
                 run_palette_command(&state, &ui, command);
             }
@@ -2092,7 +2494,7 @@ fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
 
     // Up/Down move the selection while the entry keeps focus.
     {
-        let palette = palette.clone();
+        let palette = ui.palette.clone();
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         keys.connect_key_pressed(move |_, key, _, _| match key {
@@ -2109,23 +2511,72 @@ fn open_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
         entry.add_controller(keys);
     }
 
-    // Escape closes the palette, like every GNOME dialog.
+    // Escape closes the palette, like every GNOME popover.
     {
-        let window_for_escape = window.clone();
+        let state = state.clone();
+        let ui = ui.clone();
         let keys = gtk::EventControllerKey::new();
         keys.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
-                window_for_escape.close();
+                close_palette(&state, &ui);
                 gtk::glib::Propagation::Stop
             } else {
                 gtk::glib::Propagation::Proceed
             }
         });
-        window.add_controller(keys);
+        card.add_controller(keys);
     }
 
-    window.present();
-    entry.grab_focus();
+    // A click outside the card dismisses the palette; a click on the card
+    // belongs to the card. The click is claimed so that nothing below reacts
+    // to it either.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let card = card.clone();
+        let weak = gtk::glib::WeakRef::new();
+        weak.set(Some(&layer));
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(1);
+        gesture.connect_released(move |gesture, _, x, y| {
+            let Some(layer) = weak.upgrade() else {
+                return;
+            };
+            let inside = card.compute_bounds(&layer).is_some_and(|bounds| {
+                let (left, top) = (f64::from(bounds.x()), f64::from(bounds.y()));
+                let (right, bottom) = (
+                    left + f64::from(bounds.width()),
+                    top + f64::from(bounds.height()),
+                );
+                x >= left && x <= right && y >= top && y <= bottom
+            });
+            if !inside {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                close_palette(&state, &ui);
+            }
+        });
+        layer.add_controller(gesture);
+    }
+
+    // Focus must land on the entry the moment the surface maps: grabbing it
+    // while the layer is still hidden leaves the keyboard where it was.
+    {
+        let entry = entry.clone();
+        card.connect_map(move |_| {
+            entry.grab_focus();
+        });
+    }
+
+    // The keyboard belongs to the palette while it is up, so focus leaving the
+    // card closes it (Tab, or a click on a widget that takes focus). The
+    // `palette_open` guard makes the closing focus move itself a no-op.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_leave(move |_| close_palette(&state, &ui));
+        card.add_controller(focus);
+    }
 }
 
 /// The palette's items, in the Tauri palette's order: actions first, then
@@ -2188,6 +2639,11 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
         });
         if let Some(note) = st.current.as_ref() {
             items.push(PaletteItem {
+                label: "Duplicate this note".to_string(),
+                hint: keymap::hint("duplicate-note", overrides),
+                command: PaletteCommand::DuplicateNote,
+            });
+            items.push(PaletteItem {
                 label: if note.meta.pinned {
                     "Unpin this note".to_string()
                 } else {
@@ -2223,15 +2679,27 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
 }
 
 /// Rebuild the palette's rows for the current query and select the first.
+/// Commands are matched on their label; the Settings window's own index adds
+/// a `Settings: <row>` item for every settings hit (the same table the panel's
+/// filter uses, so the two can never disagree).
 fn fill_palette(state: &Rc<RefCell<State>>, ui: &Ui, palette: &Palette) {
     while let Some(child) = palette.list.first_child() {
         palette.list.remove(&child);
     }
     let query = palette.entry.text().trim().to_lowercase();
-    let items: Vec<PaletteItem> = palette_items(state, ui)
+    let mut items: Vec<PaletteItem> = palette_items(state, ui)
         .into_iter()
         .filter(|item| query.is_empty() || item.label.to_lowercase().contains(&query))
         .collect();
+    items.extend(
+        settings_hits(&query, 6)
+            .into_iter()
+            .map(|entry| PaletteItem {
+                label: format!("Settings: {}", entry.label),
+                hint: entry.section.to_string(),
+                command: PaletteCommand::OpenSetting(entry.id),
+            }),
+    );
     let no_items = items.is_empty();
     for item in &items {
         palette.list.append(&palette_row(item));
@@ -2298,7 +2766,7 @@ fn move_palette_selection(palette: &Palette, delta: i32) {
     }
 }
 
-/// Run a palette item (the window has closed by now, like the Tauri
+/// Run a palette item (the palette has popped down by now, like the Tauri
 /// palette's `runItem`).
 fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteCommand) {
     match command {
@@ -2308,9 +2776,11 @@ fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteComm
         }
         PaletteCommand::AttachFile => attach_file(state, ui),
         PaletteCommand::OpenSettings => open_settings_or_focus(state, ui),
+        PaletteCommand::OpenSetting(id) => open_settings_or_reveal(state, ui, Some(id)),
         PaletteCommand::OpenTrash => open_trash_or_focus(state, ui),
         PaletteCommand::RebuildIndex => rebuild_index(state, ui),
         PaletteCommand::TogglePin => toggle_pin(state, ui),
+        PaletteCommand::DuplicateNote => duplicate_note(state, ui),
         PaletteCommand::SyncNow => sync_now_or_settings(state, ui),
         PaletteCommand::PairDevice => start_sync_pair(state, ui),
         PaletteCommand::OpenNote(id) => {
@@ -2348,9 +2818,174 @@ fn rebuild_index(state: &Rc<RefCell<State>>, ui: &Ui) {
 /// A settings row the "Search settings…" filter can hide; a group hides too
 /// when none of its rows match.
 struct Filterable {
+    /// The `SETTINGS_INDEX` entry this row shows.
+    id: &'static str,
     widget: gtk::Widget,
     group: adw::PreferencesGroup,
     haystack: String,
+}
+
+/// One row of the Settings window, as both the panel's "Search settings…"
+/// filter and the command palette see it. The panel builds a row per
+/// `track_row(id, …)` call and the palette lists the same table, so a setting
+/// cannot be findable in one place and missing from the other.
+struct SettingEntry {
+    /// Stable id, shared by the panel's row and the palette item.
+    id: &'static str,
+    /// The group the row lives under; the palette shows it as the hint.
+    section: &'static str,
+    /// The row's title, spelled exactly as the settings registry's label.
+    label: &'static str,
+    /// Extra query words; the label itself is matched too.
+    keywords: &'static str,
+    /// The settings-registry path this row mirrors; `None` for rows only the
+    /// GTK shell has (Sync, Shortcuts, Advanced). Read by the drift guard
+    /// that keeps `label` spelt the way the registry spells it.
+    #[allow(dead_code)]
+    registry: Option<&'static str>,
+}
+
+/// Every row of the GTK Settings window. The order matches the panel's groups.
+const SETTINGS_INDEX: &[SettingEntry] = &[
+    SettingEntry {
+        id: "appearance.theme",
+        section: "Appearance",
+        label: "Theme",
+        keywords: "follow system preference dark light",
+        registry: Some("appearance.theme"),
+    },
+    SettingEntry {
+        id: "appearance.accent",
+        section: "Appearance",
+        label: "Accent color",
+        keywords: "colour theme preview links buttons selections",
+        registry: Some("appearance.accent"),
+    },
+    SettingEntry {
+        id: "editor.autosaveMs",
+        section: "Editor",
+        label: "Autosave delay",
+        keywords: "pause typing save milliseconds",
+        registry: Some("editor.autosaveMs"),
+    },
+    SettingEntry {
+        id: "view.showWordCount",
+        section: "View",
+        label: "Show word count",
+        keywords: "editor header stats words",
+        registry: Some("view.showWordCount"),
+    },
+    SettingEntry {
+        id: "view.dateFormat",
+        section: "View",
+        label: "Date format",
+        keywords: "relative absolute time",
+        registry: Some("view.dateFormat"),
+    },
+    SettingEntry {
+        id: "view.sidebarWidth",
+        section: "View",
+        label: "Sidebar width",
+        keywords: "layout panel divider resize note list",
+        registry: Some("view.sidebarWidth"),
+    },
+    SettingEntry {
+        id: "view.editorWidth",
+        section: "View",
+        label: "Editor pane width",
+        keywords: "layout panel divider resize preview",
+        registry: Some("view.editorWidth"),
+    },
+    SettingEntry {
+        id: "sync",
+        section: "Sync",
+        label: "Sync",
+        keywords: "folder s3 bucket endpoint unlock recovery code password encryption",
+        registry: None,
+    },
+    SettingEntry {
+        id: "general.confirmDelete",
+        section: "General",
+        label: "Confirm before deleting",
+        keywords: "trash",
+        registry: Some("general.confirmDelete"),
+    },
+    SettingEntry {
+        id: "general.reopenLastNote",
+        section: "General",
+        label: "Reopen last note on launch",
+        keywords: "session startup restore",
+        registry: Some("general.reopenLastNote"),
+    },
+    SettingEntry {
+        id: "shortcuts",
+        section: "Shortcuts",
+        label: "Keyboard shortcuts",
+        keywords: "keymap binding rebind keys change reset",
+        registry: None,
+    },
+    SettingEntry {
+        id: "advanced.dataFolder",
+        section: "Advanced",
+        label: "Data folder",
+        keywords: "config index trash keys open",
+        registry: None,
+    },
+    SettingEntry {
+        id: "advanced.rebuildIndex",
+        section: "Advanced",
+        label: "Search index",
+        keywords: "rebuild maintenance",
+        registry: None,
+    },
+    SettingEntry {
+        id: "advanced.resetSettings",
+        section: "Advanced",
+        label: "Reset all settings",
+        keywords: "defaults",
+        registry: None,
+    },
+];
+
+/// The index entry with this id, if any.
+fn setting_entry(id: &str) -> Option<&'static SettingEntry> {
+    SETTINGS_INDEX.iter().find(|entry| entry.id == id)
+}
+
+/// The text the panel's filter matches: the label, then the keywords.
+fn setting_haystack(entry: &SettingEntry) -> String {
+    format!("{} {}", entry.label.to_lowercase(), entry.keywords)
+}
+
+/// The settings rows matching a palette query, best first: a label prefix
+/// beats a keyword hit, like the Tauri palette's `searchSettings`.
+fn settings_hits(query: &str, limit: usize) -> Vec<&'static SettingEntry> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(u8, &'static SettingEntry)> = Vec::new();
+    for entry in SETTINGS_INDEX {
+        if entry.label.to_lowercase().starts_with(&query) {
+            scored.push((2, entry));
+        } else if setting_haystack(entry).contains(&query) {
+            scored.push((1, entry));
+        }
+    }
+    scored.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+/// The open Settings window's search state, so a palette hit can reveal a row
+/// of a panel that is already up.
+#[derive(Clone)]
+struct SettingsUi {
+    filter: gtk::Entry,
+    rows: Rc<RefCell<Vec<Filterable>>>,
 }
 
 /// Widgets of one shortcut row; the display repaints from the current
@@ -2363,13 +2998,42 @@ struct ShortcutUi {
     reset: gtk::Button,
 }
 
+/// Track one settings row for the panel's filter; the haystack comes from the
+/// index, so the palette and the panel always match the same words.
 fn track_row<W: IsA<gtk::Widget>>(
     filterables: &Rc<RefCell<Vec<Filterable>>>,
+    id: &'static str,
     widget: &W,
     group: &adw::PreferencesGroup,
-    haystack: String,
 ) {
+    let entry = setting_entry(id);
+    debug_assert!(
+        entry.is_some(),
+        "settings row `{id}` is missing from SETTINGS_INDEX"
+    );
+    let haystack = entry.map(setting_haystack).unwrap_or_default();
     filterables.borrow_mut().push(Filterable {
+        id,
+        widget: widget.clone().upcast(),
+        group: group.clone(),
+        haystack,
+    });
+}
+
+/// Track one shortcut row: the group's haystack plus the action's label.
+fn track_shortcut_row(
+    filterables: &Rc<RefCell<Vec<Filterable>>>,
+    widget: &adw::ActionRow,
+    group: &adw::PreferencesGroup,
+    label: &str,
+) {
+    let mut haystack = setting_entry("shortcuts")
+        .map(setting_haystack)
+        .unwrap_or_default();
+    haystack.push(' ');
+    haystack.push_str(&label.to_lowercase());
+    filterables.borrow_mut().push(Filterable {
+        id: "shortcuts",
         widget: widget.clone().upcast(),
         group: group.clone(),
         haystack,
@@ -2397,17 +3061,59 @@ fn theme_at_index(index: u32) -> &'static str {
     }
 }
 
+/// Open Settings, or bring the panel that is already up to the front.
 fn open_settings_or_focus(state: &Rc<RefCell<State>>, ui: &Ui) {
+    open_settings_or_reveal(state, ui, None);
+}
+
+/// Open Settings (or bring it forward) and highlight the row `reveal` names;
+/// the command palette's "Settings: …" items land here.
+fn open_settings_or_reveal(state: &Rc<RefCell<State>>, ui: &Ui, reveal: Option<&'static str>) {
     let Some(application) = ui.window.application() else {
         return;
     };
     if focus_window(&application, "Settings") {
+        if let Some(id) = reveal {
+            reveal_setting(state, id);
+        }
         return;
     }
-    open_settings(state, ui, &application);
+    open_settings(state, ui, &application, reveal);
 }
 
-fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Application) {
+/// Show a row of the open Settings window: filter the panel down to it and
+/// flash it. The filter hides every other row and group, so the hit is on
+/// screen without scrolling.
+fn reveal_setting(state: &Rc<RefCell<State>>, id: &str) {
+    let Some(entry) = setting_entry(id) else {
+        return;
+    };
+    let Some(settings_ui) = state.borrow().settings_ui.clone() else {
+        return;
+    };
+    settings_ui.filter.set_text(entry.label);
+    let row = settings_ui
+        .rows
+        .borrow()
+        .iter()
+        .find(|row| row.id == id)
+        .map(|row| row.widget.clone());
+    let Some(row) = row else {
+        return;
+    };
+    row.add_css_class("settings-flash");
+    gtk::glib::timeout_add_seconds_local(2, move || {
+        row.remove_css_class("settings-flash");
+        gtk::glib::ControlFlow::Break
+    });
+}
+
+fn open_settings(
+    state: &Rc<RefCell<State>>,
+    ui: &Ui,
+    application: &gtk::Application,
+    reveal: Option<&'static str>,
+) {
     let window = adw::Window::builder()
         .application(application)
         .title("Settings")
@@ -2471,9 +3177,9 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     appearance_group.add(&theme_row);
     track_row(
         &filterables,
+        "appearance.theme",
         &theme_row,
         &appearance_group,
-        "theme appearance follow system system preference dark light".to_string(),
     );
 
     let accent_row = adw::ComboRow::new();
@@ -2515,9 +3221,9 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     appearance_group.add(&accent_row);
     track_row(
         &filterables,
+        "appearance.accent",
         &accent_row,
         &appearance_group,
-        "accent color colour appearance theme preview links buttons selections".to_string(),
     );
 
     // Editor: the autosave delay (the Tauri registry's 200–2000 ms slider).
@@ -2545,12 +3251,7 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
         });
     }
     editor_group.add(&autosave);
-    track_row(
-        &filterables,
-        &autosave,
-        &editor_group,
-        "autosave delay editor pause typing save milliseconds".to_string(),
-    );
+    track_row(&filterables, "editor.autosaveMs", &autosave, &editor_group);
 
     // View: word count and date format.
     let view_group = adw::PreferencesGroup::builder().title("View").build();
@@ -2578,12 +3279,7 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
         });
     }
     view_group.add(&show_words);
-    track_row(
-        &filterables,
-        &show_words,
-        &view_group,
-        "show word count view editor header".to_string(),
-    );
+    track_row(&filterables, "view.showWordCount", &show_words, &view_group);
 
     let date_format = adw::ComboRow::new();
     date_format.set_title("Date format");
@@ -2622,13 +3318,71 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
         });
     }
     view_group.add(&date_format);
+    track_row(&filterables, "view.dateFormat", &date_format, &view_group);
+
+    // The two dividers: dragging them writes the same keys these rows edit.
+    let sidebar_width =
+        adw::SpinRow::with_range(MIN_SIDEBAR_WIDTH as f64, MAX_SIDEBAR_WIDTH as f64, 10.0);
+    sidebar_width.set_title("Sidebar width");
+    sidebar_width.set_subtitle("Width of the note list, in pixels");
+    sidebar_width.set_value(state.borrow().sidebar_width as f64);
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        sidebar_width.connect_value_notify(move |row| {
+            let width = row.value().round() as i32;
+            if state.borrow().sidebar_width == width {
+                return;
+            }
+            state.borrow_mut().sidebar_width = width;
+            if ui.split.position() != width {
+                ui.split.set_position(width);
+            }
+            persist_setting(
+                &state,
+                &ui,
+                "view",
+                "sidebarWidth",
+                serde_json::Value::from(width),
+            );
+        });
+    }
+    view_group.add(&sidebar_width);
     track_row(
         &filterables,
-        &date_format,
+        "view.sidebarWidth",
+        &sidebar_width,
         &view_group,
-        "date format view relative absolute".to_string(),
     );
 
+    let editor_width =
+        adw::SpinRow::with_range(MIN_EDITOR_WIDTH as f64, MAX_EDITOR_WIDTH as f64, 10.0);
+    editor_width.set_title("Editor pane width");
+    editor_width.set_subtitle("Width of the Markdown editor; the preview takes the rest");
+    editor_width.set_value(state.borrow().editor_width as f64);
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        editor_width.connect_value_notify(move |row| {
+            let width = row.value().round() as i32;
+            if state.borrow().editor_width == width {
+                return;
+            }
+            state.borrow_mut().editor_width = width;
+            if ui.inner.position() != width {
+                ui.inner.set_position(width);
+            }
+            persist_setting(
+                &state,
+                &ui,
+                "view",
+                "editorWidth",
+                serde_json::Value::from(width),
+            );
+        });
+    }
+    view_group.add(&editor_width);
+    track_row(&filterables, "view.editorWidth", &editor_width, &view_group);
     // Sync: the Tauri shell's SyncSection, state for state — not set up
     // (folder or S3), the one-time recovery code, locked (password or
     // recovery code) and connected (target, ids, last pass, lock, turn off).
@@ -2643,18 +3397,14 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     let sync_ui = build_sync_rows(state, ui, &window, &sync_group);
     state.borrow_mut().sync_ui = Some(sync_ui.clone());
     refresh_sync(state);
-    track_row(
-        &filterables,
-        &sync_ui.status,
-        &sync_group,
-        "sync folder s3 bucket endpoint unlock recovery code password encryption".to_string(),
-    );
+    track_row(&filterables, "sync", &sync_ui.status, &sync_group);
     {
         let state = state.clone();
         window.connect_close_request(move |_| {
             {
                 let mut st = state.borrow_mut();
                 st.sync_ui = None;
+                st.settings_ui = None;
                 // "Shown once": closing Settings drops the recovery code.
                 st.sync_recovery = None;
             }
@@ -2689,13 +3439,13 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     general_group.add(&confirm);
     track_row(
         &filterables,
+        "general.confirmDelete",
         &confirm,
         &general_group,
-        "confirm before deleting general trash".to_string(),
     );
 
     let reopen = adw::SwitchRow::new();
-    reopen.set_title("Reopen last note");
+    reopen.set_title("Reopen last note on launch");
     reopen.set_subtitle("Opens the note you had open when Writan starts");
     reopen.set_active(state.borrow().reopen_last_note);
     {
@@ -2719,9 +3469,9 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     general_group.add(&reopen);
     track_row(
         &filterables,
+        "general.reopenLastNote",
         &reopen,
         &general_group,
-        "reopen last note general session startup".to_string(),
     );
 
     // Shortcuts: one row per keymap action, rebindable in place.
@@ -2788,11 +3538,11 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
             change,
             reset,
         });
-        track_row(
+        track_shortcut_row(
             &filterables,
             &row,
             &shortcuts_group,
-            format!("shortcut {}", keymap::label(action.id)).to_lowercase(),
+            keymap::label(action.id),
         );
     }
     refresh_shortcut_rows(state, &shortcut_rows, &recording);
@@ -2833,9 +3583,9 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     advanced_group.add(&data_row);
     track_row(
         &filterables,
+        "advanced.dataFolder",
         &data_row,
         &advanced_group,
-        "data folder advanced config index trash keys".to_string(),
     );
 
     let rebuild_row = adw::ActionRow::new();
@@ -2853,9 +3603,9 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     advanced_group.add(&rebuild_row);
     track_row(
         &filterables,
+        "advanced.rebuildIndex",
         &rebuild_row,
         &advanced_group,
-        "search index rebuild advanced maintenance".to_string(),
     );
 
     let reset_row = adw::ActionRow::new();
@@ -2900,12 +3650,18 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
                 st.theme = "system".to_string();
                 st.accent = appearance::ACCENTS[0].id.to_string();
                 st.reopen_last_note = true;
+                st.sidebar_width = config::DEFAULT_SIDEBAR_WIDTH;
+                st.editor_width = config::DEFAULT_EDITOR_WIDTH;
                 st.overrides.clear();
             }
             let overrides = state.borrow().overrides.clone();
             apply_all_accels(&application, &overrides);
             appearance::apply_theme(&adw::StyleManager::default(), "system");
             apply_accent(&state, &ui);
+            ui.split
+                .set_position(state.borrow().sidebar_width.max(MIN_SIDEBAR_WIDTH));
+            ui.inner
+                .set_position(state.borrow().editor_width.max(MIN_EDITOR_WIDTH));
             update_words(&state, &ui, &buffer_text(&ui.editor));
             window.close();
             ui.toast.add_toast(adw::Toast::new(
@@ -2917,9 +3673,9 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     advanced_group.add(&reset_row);
     track_row(
         &filterables,
+        "advanced.resetSettings",
         &reset_row,
         &advanced_group,
-        "reset all settings advanced defaults".to_string(),
     );
 
     page.add(&appearance_group);
@@ -3063,8 +3819,18 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     toolbar.set_content(Some(&content));
     window.set_content(Some(&toolbar));
 
+    // A palette hit can land in a panel that is already open.
+    state.borrow_mut().settings_ui = Some(SettingsUi {
+        filter: filter.clone(),
+        rows: filterables.clone(),
+    });
+
     window.present();
+    if let Some(id) = reveal {
+        reveal_setting(state, id);
+    }
     filter.grab_focus();
+    filter.select_region(0, -1);
 }
 
 /// The Sync rows of the Settings window, so a worker job that finishes while
@@ -4273,10 +5039,51 @@ fn persist_setting(
     }
 }
 
-/// Widgets of the open command palette; the rows are rebuilt as the query
-/// changes, `commands` mirrors them in row order.
+/// Remember the dragged divider positions: one debounced write per gesture.
+fn schedule_layout_save(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if let Some(id) = state.borrow_mut().layout_save.take() {
+        id.remove();
+    }
+    let state_for_save = state.clone();
+    let ui_for_save = ui.clone();
+    let id = gtk::glib::timeout_add_local(LAYOUT_SAVE_DELAY, move || {
+        save_layout(&state_for_save, &ui_for_save);
+        gtk::glib::ControlFlow::Break
+    });
+    state.borrow_mut().layout_save = Some(id);
+}
+
+/// Write `settings.view.sidebarWidth` and `settings.view.editorWidth` — the
+/// same two keys the Settings rows edit.
+fn save_layout(state: &Rc<RefCell<State>>, ui: &Ui) {
+    state.borrow_mut().layout_save = None;
+    let (sidebar, editor) = {
+        let st = state.borrow();
+        (st.sidebar_width, st.editor_width)
+    };
+    persist_setting(
+        state,
+        ui,
+        "view",
+        "sidebarWidth",
+        serde_json::Value::from(sidebar),
+    );
+    persist_setting(
+        state,
+        ui,
+        "view",
+        "editorWidth",
+        serde_json::Value::from(editor),
+    );
+}
+
+/// Widgets of the command palette: the window-sized layer that is visible only
+/// while it is up, the card it holds, and the rows it lists — `commands`
+/// mirrors the rows in order.
 #[derive(Clone)]
 struct Palette {
+    layer: gtk::Box,
+    card: gtk::Box,
     entry: gtk::Entry,
     list: gtk::ListBox,
     empty: gtk::Label,
@@ -4290,7 +5097,7 @@ struct PaletteItem {
     command: PaletteCommand,
 }
 
-/// What a palette item does; `Clone` so a copy can run after the window
+/// What a palette item does; `Clone` so a copy can run after the palette
 /// closed.
 #[derive(Clone)]
 enum PaletteCommand {
@@ -4298,9 +5105,12 @@ enum PaletteCommand {
     SaveNow,
     AttachFile,
     OpenSettings,
+    /// Open Settings at the row with this `SETTINGS_INDEX` id.
+    OpenSetting(&'static str),
     OpenTrash,
     RebuildIndex,
     TogglePin,
+    DuplicateNote,
     SyncNow,
     PairDevice,
     OpenNote(NoteId),
@@ -4565,7 +5375,62 @@ fn load_css() {
     };
     let provider = gtk::CssProvider::new();
     provider.load_from_data(
-        "scrolledwindow.preview-pane { background-color: alpha(currentColor, 0.04); }",
+        "scrolledwindow.preview-pane { background-color: alpha(currentColor, 0.04); }\n\
+         /* Dividers: the default separator is a 1px line that is hard to grab\n\
+            and easy to lose; a wider transparent hit area keeps both panes\n\
+            reachable, and it tints while hovered or dragged. */\n\
+         paned > separator { min-width: 6px; background-color: transparent; }\n\
+         paned > separator:hover, paned > separator:active {\n\
+             background-color: alpha(currentColor, 0.14);\n\
+         }\n\
+         /* Tag chips: small quiet pills, so the row reads as part of the note\n\
+            header instead of a toolbar of buttons. */\n\
+         button.tag-chip {\n\
+             min-height: 0;\n\
+             min-width: 0;\n\
+             padding: 1px 7px;\n\
+             font-size: 0.82em;\n\
+             border: none;\n\
+             box-shadow: none;\n\
+             border-radius: 999px;\n\
+             background-color: alpha(currentColor, 0.07);\n\
+         }\n\
+         button.tag-chip:hover { background-color: alpha(currentColor, 0.15); }\n\
+         /* The add-tag field is an inline text slot, not a filled box. */\n\
+         entry.tag-entry {\n\
+             min-height: 0;\n\
+             padding: 1px 6px;\n\
+             font-size: 0.85em;\n\
+             background: none;\n\
+             border: none;\n\
+             box-shadow: none;\n\
+             border-radius: 7px;\n\
+         }\n\
+         entry.tag-entry:hover { background-color: alpha(currentColor, 0.06); }\n\
+         entry.tag-entry:focus {\n\
+             background-color: alpha(currentColor, 0.10);\n\
+             box-shadow: none;\n\
+         }\n\
+         /* Sidebar facets: same chip language as the editor's tags. */\n\
+         button.facet-chip {\n\
+             min-height: 0;\n\
+             min-width: 0;\n\
+             padding: 1px 8px;\n\
+             font-size: 0.82em;\n\
+             border-radius: 999px;\n\
+         }\n\
+         /* The command palette lives inside the window as a layer over the\n\
+            whole toolbar: a window or popover of its own could be dragged or\n\
+            resized, and a popover holding a text entry stranded the keyboard.\n\
+            The layer is invisible but must stay hittable, so it paints almost\n\
+            nothing; the card takes libadwaita's card background. */\n\
+         box.palette-layer { background-color: alpha(currentColor, 0.001); }\n\
+         box.palette {\n\
+             border: 1px solid alpha(currentColor, 0.12);\n\
+             border-radius: 12px;\n\
+         }\n\
+         /* The row a palette search revealed in Settings. */\n\
+         row.settings-flash { background-color: alpha(currentColor, 0.12); }\n",
     );
     gtk::style_context_add_provider_for_display(
         &display,
@@ -4588,5 +5453,84 @@ fn apply_style_scheme(buffer: &sourceview5::Buffer) {
     };
     if let Some(scheme) = sourceview5::StyleSchemeManager::new().scheme(id) {
         buffer.set_style_scheme(Some(&scheme));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// This file, with runs of whitespace collapsed: a call rustfmt breaks
+    /// over lines still reads as one.
+    fn shell_source() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs");
+        let source = std::fs::read_to_string(&path).expect("read the GTK shell source");
+        source.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The label the shared settings registry gives `path`: the first `label:`
+    /// after that `path:` belongs to the same entry, unless another `path:`
+    /// comes first.
+    fn registry_label(source: &str, path: &str) -> Option<String> {
+        let needle = format!("path: \"{path}\"");
+        let rest = &source[source.find(&needle)? + needle.len()..];
+        let label_at = rest.find("label: \"")?;
+        if rest.find("path: \"").is_some_and(|next| next < label_at) {
+            return None;
+        }
+        let value = &rest[label_at + "label: \"".len()..];
+        Some(value[..value.find('"')?].to_string())
+    }
+
+    /// The settings registry is shared; this fails the moment the GTK panel
+    /// names a setting differently, and it keeps the palette honest: every
+    /// `SETTINGS_INDEX` row must be a row the panel really tracks, and every
+    /// row must be findable by the label the palette reveals it with.
+    #[test]
+    fn settings_index_matches_the_panel_and_the_registry() {
+        let shell = shell_source();
+        let registry_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../app/src/lib/settings.svelte.ts");
+        let registry =
+            std::fs::read_to_string(&registry_path).expect("read app/src/lib/settings.svelte.ts");
+
+        let mut ids: Vec<&str> = SETTINGS_INDEX.iter().map(|entry| entry.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            SETTINGS_INDEX.len(),
+            "SETTINGS_INDEX has a duplicate id"
+        );
+
+        for entry in SETTINGS_INDEX {
+            let tracked = if entry.id == "shortcuts" {
+                shell.contains("track_shortcut_row(")
+            } else {
+                shell.contains(&format!("&filterables, \"{}\"", entry.id))
+            };
+            assert!(
+                tracked,
+                "{} is in SETTINGS_INDEX but the panel tracks no such row",
+                entry.id
+            );
+
+            if let Some(path) = entry.registry {
+                assert_eq!(
+                    registry_label(&registry, path).as_deref(),
+                    Some(entry.label),
+                    "label drift for {path} (settings.svelte.ts vs SETTINGS_INDEX)"
+                );
+            }
+
+            // Revealing a setting searches the panel with its own label, so
+            // the label has to land on the row the palette meant.
+            let hits = settings_hits(entry.label, SETTINGS_INDEX.len());
+            assert!(
+                hits.iter().any(|hit| hit.id == entry.id),
+                "searching \"{}\" does not find the row it reveals",
+                entry.label
+            );
+        }
     }
 }

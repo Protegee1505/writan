@@ -145,6 +145,31 @@ pub fn load_date_format(path: &Path) -> crate::dates::DateFormat {
     }
 }
 
+/// Default widths (px) for the two dividers, the settings registry's values.
+pub const DEFAULT_SIDEBAR_WIDTH: i32 = 280;
+pub const DEFAULT_EDITOR_WIDTH: i32 = 520;
+
+fn setting_f64(object: &serde_json::Map<String, Value>, section: &str, key: &str) -> Option<f64> {
+    object.get("settings")?.get(section)?.get(key)?.as_f64()
+}
+
+/// `settings.view.sidebarWidth` — the note list's width in px. Defensively
+/// clamped to the registry's 200–420 so a hand-edited config cannot collapse
+/// or swamp the pane.
+pub fn load_sidebar_width(path: &Path) -> i32 {
+    let raw = setting_f64(&load_object(path), "view", "sidebarWidth")
+        .unwrap_or(DEFAULT_SIDEBAR_WIDTH as f64);
+    (raw.round() as i32).clamp(200, 420)
+}
+
+/// `settings.view.editorWidth` — the editor pane's width in px, clamped to the
+/// registry's 320–900 (the preview takes the rest of the window).
+pub fn load_editor_width(path: &Path) -> i32 {
+    let raw = setting_f64(&load_object(path), "view", "editorWidth")
+        .unwrap_or(DEFAULT_EDITOR_WIDTH as f64);
+    (raw.round() as i32).clamp(320, 900)
+}
+
 /// Atomically write the object as pretty JSON (temp file + rename), creating
 /// the parent directory as needed.
 fn write_object(path: &Path, object: serde_json::Map<String, Value>) -> std::io::Result<()> {

@@ -72,6 +72,12 @@ pub const KEY_ACTIONS: &[KeyAction] = &[
         aliases: &[],
     },
     KeyAction {
+        id: "duplicate-note",
+        label: "Duplicate note",
+        default_binding: None,
+        aliases: &[],
+    },
+    KeyAction {
         id: "sync-now",
         label: "Sync now",
         default_binding: None,
