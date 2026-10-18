@@ -31,6 +31,7 @@ blake3 = "1.8"
 chacha20poly1305 = "0.11"
 diffy = "0.5"
 hmac = "0.12"
+keyring = { version = "3", features = ["windows-native", "linux-native"] }
 # The gtk-rs crates are renamed to their in-code names here (the crates'
 # library names are `gtk4` / `libadwaita`; ecosystem code says `gtk::`/`adw::`).
 gtk = { package = "gtk4", version = "0.9" }

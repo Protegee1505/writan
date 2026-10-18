@@ -17,9 +17,11 @@
 
 pub mod blob;
 pub mod engine;
+pub mod keychain;
 pub mod keys;
 pub mod merge;
 pub mod s3;
+pub mod session;
 pub mod target;
 
 use std::collections::BTreeMap;
@@ -41,6 +43,11 @@ pub use keys::{
 };
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 pub use s3::{ListPage, S3Config, S3HttpTransport, S3Target, S3Transport};
+pub use session::{
+    AnyTarget, Connected, S3ConfigFile, S3Connect, SYNC_STATE_FILE, SessionError, SyncConfig,
+    SyncKind, SyncSession, SyncStatus, check_vault, connect_folder, connect_s3, open_target,
+    resume, run_pass, status as sync_status, unlock,
+};
 pub use target::{FolderTarget, SyncTarget, TargetError};
 
 pub type DeviceId = Uuid;

@@ -237,6 +237,26 @@ pub fn clear_settings(path: &Path) -> std::io::Result<()> {
     write_object(path, object)
 }
 
+/// The `sync` object of `config.json` (ADR-0005 §§6–10), the same shape the
+/// Tauri shell writes. A missing or malformed object reads as "not set up".
+pub fn load_sync(path: &Path) -> writan_sync::SyncConfig {
+    load_object(path)
+        .remove("sync")
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the `sync` object (connect, unlock, turn off), preserving every
+/// other key.
+pub fn save_sync(path: &Path, sync: &writan_sync::SyncConfig) -> std::io::Result<()> {
+    let mut object = load_object(path);
+    match serde_json::to_value(sync) {
+        Ok(value) => object.insert("sync".to_string(), value),
+        Err(_) => object.remove("sync"),
+    };
+    write_object(path, object)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +435,45 @@ mod tests {
         );
         remove_shortcut(&file, "command-palette").expect("remove");
         assert!(load_overrides(&file).is_empty());
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn sync_object_round_trips_and_malformed_reads_as_unset() {
+        use writan_sync::{S3ConfigFile, SyncConfig, SyncKind};
+        let file = temp_file();
+        assert!(!load_sync(&file).enabled);
+
+        let config = SyncConfig {
+            kind: SyncKind::S3,
+            target: None,
+            s3: Some(S3ConfigFile {
+                endpoint: "http://127.0.0.1:9000".to_string(),
+                region: "us-east-1".to_string(),
+                bucket: "notes".to_string(),
+                access_key: "key".to_string(),
+            }),
+            vault_path: Some(PathBuf::from("/notes")),
+            enabled: true,
+        };
+        std::fs::write(
+            &file,
+            r#"{"vault_path":"/notes","settings":{"editor":{"autosaveMs":1200}}}"#,
+        )
+        .expect("write fixture");
+        save_sync(&file, &config).expect("save");
+        let loaded = load_sync(&file);
+        assert!(loaded.enabled);
+        assert_eq!(loaded.kind, SyncKind::S3);
+        assert_eq!(
+            loaded.s3.as_ref().map(|s3| s3.bucket.as_str()),
+            Some("notes")
+        );
+        assert_eq!(load_autosave_ms(&file), 1200);
+
+        // A malformed sync object reads as "not set up", like the Tauri shell.
+        std::fs::write(&file, r#"{"sync":{"enabled":"yes"}}"#).expect("write");
+        assert!(!load_sync(&file).enabled);
         std::fs::remove_file(&file).ok();
     }
 

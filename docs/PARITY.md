@@ -36,7 +36,7 @@ says why).
 | Theme: light/dark/follow-OS | [x] | [x] | Linux: `adw::StyleManager` color scheme, `system` follows the desktop (`toggle-theme` action live since slice 7) |
 | Accent color choice | [x] | [x] | same six presets in both shells (the Linux list is drift-guarded against `settings.svelte.ts`); painted by a display-wide CSS provider that recolours switches, selections and suggested actions |
 | Session restore (last note) | [x] | [x] | `settings.session.lastNoteId` written on every note open; `general.reopenLastNote` (default true) is a switch in the Linux General group |
-| Sync (folder/S3, unlock, sync now) | [x] | [ ] | slice 8 (GTK sync UI) |
+| Sync (folder/S3, unlock, sync now) | [x] | [x] | one shared `writan-sync::session` layer (same config object, keychain entries and wording); GTK verified by `gtk-shell-test` checks 36–43 — recovery code shown once, password unlock, lock, two-click Turn off, and a second sandbox device joining the folder keyring and adopting notes |
 
 ## M3.5 slices
 
@@ -49,5 +49,6 @@ says why).
 7. Parity sweep + docs + measurement prep — done (2026-10-18): tags, appearance
    (theme + accent), session restore, the Tauri `Empty Trash`, GTK polish
    (empty states, `GTK_THEME` dark fallback, inline preview images).
-8. Sync UI in the GTK shell — the last open parity row (folder/S3 target,
-   unlock, sync now).
+8. Sync UI in the GTK shell — done (2026-10-18): folder and S3 targets,
+   recovery code (shown once, Copy), password/recovery unlock, Sync now, lock,
+   two-click Turn off; verified by `gtk-shell-test` checks 36–43.

@@ -130,3 +130,13 @@ Status: accepted. Date: 2026-10-17.
   tombstones tree and vice versa), tombstone/undelete resolution by vectors,
   corrupt-newest keyring falls back to the previous generation, and a foreign
   `vault_id` is refused.
+
+## Amendment (2026-10-18)
+
+The shell-agnostic session glue moved into `writan-sync::session` +
+`writan-sync::keychain` (Tauri and the GTK shell share it): §6/§10 semantics
+are unchanged. Keychain services: `com.writan.desktop.sync` (account = vault
+id, value = base64 vault key) and `com.writan.desktop.s3` (account =
+`endpoint/bucket`). The shipped local state path is
+`<state-dir>/sync-state.json` — the §6 sketch said `<state-dir>/sync/…`; the
+location (app-data) is as decided, only the file name differs.

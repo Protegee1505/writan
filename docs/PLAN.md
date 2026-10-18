@@ -1,7 +1,7 @@
 # Writan — implementation plan
 
-Status: M0–M3 complete (2026-10-17) · M3.5 in progress — slices 1–7 done,
-slice 8 (sync UI in the GTK shell) and the real-hardware acceptance remain.
+Status: M0–M3 complete (2026-10-17) · M3.5 slices 1–8 done (2026-10-18): the
+parity checklist is green; only the real-hardware acceptance remains.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -14,14 +14,14 @@ Order is a suggestion, not a constraint.
    against the < 100 MB budget — then append the outcome to ADR-0004. This also
    closes M2's deferred IME item. The routine is `docs/REAL-HARDWARE.md`; the
    fixture vault is in `tools/visual/README.md`.
-2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–7 done
+2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–8 done
    (watcher + autosave, sidebar filters + note actions, trash panel, command
    palette + rebindable shortcuts, settings panel with live apply, attachments,
-   the parity sweep: tags, appearance, session restore, look polish). Left:
-   sync UI (slice 8) — `settings.sync`, folder/S3 target, unlock, sync now —
-   the last open parity row.
-3. **Parity checklist** (`docs/PARITY.md`) vs the Tauri shell stays green as
-   each M3.5 slice lands.
+   the parity sweep: tags, appearance, session restore, look polish, and the
+   sync UI: folder/S3 target, recovery code, unlock, sync now, lock, turn off).
+   Left: nothing beyond the real-hardware acceptance (task 1).
+3. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
+   commit as every shell change.
 4. **Android init** (M5 prep, when the toolchain is available):
    `npm --prefix app run tauri -- android init` with JDK 17 + Android SDK/NDK,
    commit `app/src-tauri/gen/android`, then add an `android` job to

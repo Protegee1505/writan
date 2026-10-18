@@ -1,6 +1,5 @@
 mod commands;
 mod state;
-mod sync;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;

@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use adw::prelude::*;
@@ -69,6 +69,18 @@ struct State {
     accent: String,
     /// Recolours libadwaita's accent named colours; reloaded on change.
     accent_provider: gtk::CssProvider,
+    /// `sync` object of `config.json` (ADR-0005 §§6–10).
+    sync_config: writan_sync::SyncConfig,
+    /// The unlocked session (vault key in memory); `None` while locked.
+    sync: Option<writan_sync::SyncSession>,
+    /// The recovery code from the last connect, shown once in Settings.
+    sync_recovery: Option<String>,
+    /// A connect, unlock or pass runs on a worker thread; its result lands
+    /// here and the main-loop poll drains it.
+    sync_jobs: Option<Receiver<SyncMessage>>,
+    sync_busy: bool,
+    /// The Sync rows of the Settings window while it is open.
+    sync_ui: Option<Rc<SyncUi>>,
     config_path: PathBuf,
     data_dir: PathBuf,
 }
@@ -139,9 +151,24 @@ fn build(application: &adw::Application) {
         theme: config::load_theme(&config_path),
         accent: config::load_accent(&config_path),
         accent_provider: gtk::CssProvider::new(),
+        sync_config: config::load_sync(&config_path),
+        sync: None,
+        sync_recovery: None,
+        sync_jobs: None,
+        sync_busy: false,
+        sync_ui: None,
         config_path,
         data_dir: config::state_dir(),
     }));
+
+    // An enabled sync restores its session from the OS keychain at startup;
+    // without one it stays locked and the Settings panel asks for the
+    // password (the Tauri shell's `auto_unlock_sync`).
+    let resumed = {
+        let st = state.borrow();
+        writan_sync::resume(&sync_state_path(&st), &st.sync_config)
+    };
+    state.borrow_mut().sync = resumed;
 
     // Accent recolouring rides on its own provider so it can be reloaded
     // without touching the rest of the app CSS; the persisted theme choice is
@@ -703,6 +730,17 @@ fn build(application: &adw::Application) {
         apply_accels(application, &overrides, "toggle-theme");
     }
 
+    // Sync now (a keymap action, unbound by default). When sync is locked or
+    // not set up the action opens Settings instead, where sync is configured.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let sync_action = gtk::gio::SimpleAction::new("sync-now", None);
+        sync_action.connect_activate(move |_, _| sync_now_or_settings(&state, &ui));
+        application.add_action(&sync_action);
+        apply_accels(application, &overrides, "sync-now");
+    }
+
     // Save when the window closes.
     {
         let state = state.clone();
@@ -719,6 +757,26 @@ fn build(application: &adw::Application) {
         let state = state.clone();
         let ui = ui.clone();
         gtk::glib::timeout_add_local(WATCH_POLL, move || {
+            // A finished connect/unlock/pass lands here first, so the Sync
+            // rows and the note list are updated before the next tick.
+            let outcome = {
+                let st = state.borrow();
+                st.sync_jobs.as_ref().map(|jobs| jobs.try_recv())
+            };
+            match outcome {
+                Some(Ok(message)) => handle_sync_message(&state, &ui, message),
+                Some(Err(TryRecvError::Disconnected)) => {
+                    {
+                        let mut st = state.borrow_mut();
+                        st.sync_jobs = None;
+                        st.sync_busy = false;
+                    }
+                    ui.toast
+                        .add_toast(adw::Toast::new("The sync worker stopped unexpectedly."));
+                    refresh_sync(&state);
+                }
+                _ => {}
+            }
             let batch = {
                 let st = state.borrow();
                 match st.watcher.as_ref() {
@@ -2092,6 +2150,13 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
             hint: keymap::hint("save-note", overrides),
             command: PaletteCommand::SaveNow,
         });
+        if st.sync_config.enabled {
+            items.push(PaletteItem {
+                label: "Sync now".to_string(),
+                hint: keymap::hint("sync-now", overrides),
+                command: PaletteCommand::SyncNow,
+            });
+        }
         if st.current.is_some() {
             // The Tauri item waits on a vault; inserting needs the open editor
             // here, so it waits for a note. Images become `![](…)`.
@@ -2237,6 +2302,7 @@ fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteComm
         PaletteCommand::OpenTrash => open_trash_or_focus(state, ui),
         PaletteCommand::RebuildIndex => rebuild_index(state, ui),
         PaletteCommand::TogglePin => toggle_pin(state, ui),
+        PaletteCommand::SyncNow => sync_now_or_settings(state, ui),
         PaletteCommand::OpenNote(id) => {
             open_note_by_id(state, ui, id);
             ui.editor.grab_focus();
@@ -2553,6 +2619,39 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
         "date format view relative absolute".to_string(),
     );
 
+    // Sync: the Tauri shell's SyncSection, state for state — not set up
+    // (folder or S3), the one-time recovery code, locked (password or
+    // recovery code) and connected (target, ids, last pass, lock, turn off).
+    let sync_group = adw::PreferencesGroup::builder()
+        .title("Sync")
+        .description(
+            "End-to-end encrypted sync through a shared folder or an S3-compatible \
+             bucket. The vault key lives in the OS keychain and this app-data \
+             folder, never in the vault.",
+        )
+        .build();
+    let sync_ui = build_sync_rows(state, ui, &window, &sync_group);
+    state.borrow_mut().sync_ui = Some(sync_ui.clone());
+    refresh_sync(state);
+    track_row(
+        &filterables,
+        &sync_ui.status,
+        &sync_group,
+        "sync folder s3 bucket endpoint unlock recovery code password encryption".to_string(),
+    );
+    {
+        let state = state.clone();
+        window.connect_close_request(move |_| {
+            {
+                let mut st = state.borrow_mut();
+                st.sync_ui = None;
+                // "Shown once": closing Settings drops the recovery code.
+                st.sync_recovery = None;
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    }
+
     // General: the delete confirmation.
     let general_group = adw::PreferencesGroup::builder().title("General").build();
     let confirm = adw::SwitchRow::new();
@@ -2816,6 +2915,7 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     page.add(&appearance_group);
     page.add(&editor_group);
     page.add(&view_group);
+    page.add(&sync_group);
     page.add(&general_group);
     page.add(&shortcuts_group);
     page.add(&advanced_group);
@@ -2957,6 +3057,784 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     filter.grab_focus();
 }
 
+/// The Sync rows of the Settings window, so a worker job that finishes while
+/// it is open can repaint them; `None` when Settings is closed.
+#[derive(Clone)]
+struct SyncUi {
+    status: adw::ActionRow,
+    kind: adw::ComboRow,
+    folder: adw::ActionRow,
+    s3_rows: Vec<adw::ActionRow>,
+    password_row: adw::ActionRow,
+    enable_row: adw::ActionRow,
+    recovery_code: adw::ActionRow,
+    recovery_hint: adw::ActionRow,
+    unlock_row: adw::ActionRow,
+    recovery_unlock_row: adw::ActionRow,
+    target: adw::ActionRow,
+    ids: adw::ActionRow,
+    last: adw::ActionRow,
+    sync_now_row: adw::ActionRow,
+    lock_row: adw::ActionRow,
+    off_row: adw::ActionRow,
+    unlock_password: gtk::Entry,
+    unlock_recovery: gtk::Entry,
+    buttons: Vec<gtk::Button>,
+    entries: Vec<gtk::Entry>,
+}
+
+/// A finished worker job. Connect, unlock and pass run off the main thread
+/// (the S3 transport and Argon2 both block); the poll picks the result up.
+enum SyncMessage {
+    Connected(Box<writan_sync::Connected>),
+    Unlocked(Box<(writan_sync::SyncConfig, writan_sync::SyncSession)>),
+    Passed {
+        session: Box<writan_sync::SyncSession>,
+        report: writan_sync::SyncReport,
+    },
+    Failed {
+        session: Option<Box<writan_sync::SyncSession>>,
+        error: String,
+    },
+}
+
+/// One labelled text field inside a preferences group, for the S3 details and
+/// the two passwords.
+fn field_row(
+    group: &adw::PreferencesGroup,
+    title: &str,
+    placeholder: &str,
+    secret: bool,
+) -> (adw::ActionRow, gtk::Entry) {
+    let row = adw::ActionRow::new();
+    row.set_title(title);
+    let entry = gtk::Entry::builder()
+        .placeholder_text(placeholder)
+        .width_chars(22)
+        .visibility(!secret)
+        .build();
+    if secret {
+        entry.set_input_purpose(gtk::InputPurpose::Password);
+    }
+    row.add_suffix(&entry);
+    row.set_activatable_widget(Some(&entry));
+    group.add(&row);
+    (row, entry)
+}
+
+/// Build the Sync group: every state's rows exist at once and
+/// [`refresh_sync`] shows the ones the current state calls for, which keeps
+/// the group stable while a worker job runs.
+fn build_sync_rows(
+    state: &Rc<RefCell<State>>,
+    ui: &Ui,
+    window: &adw::Window,
+    group: &adw::PreferencesGroup,
+) -> Rc<SyncUi> {
+    let mut buttons: Vec<gtk::Button> = Vec::new();
+    let mut entries: Vec<gtk::Entry> = Vec::new();
+
+    let status = adw::ActionRow::new();
+    status.set_title("Status");
+    group.add(&status);
+
+    // Not set up: target kind, folder or S3 details, password, enable.
+    let kind = adw::ComboRow::new();
+    kind.set_title("Target");
+    kind.set_subtitle("Where the encrypted notes travel through");
+    let kinds = gtk::StringList::new(&["Shared folder", "S3-compatible bucket"]);
+    kind.set_model(Some(&kinds));
+    kind.set_selected(match state.borrow().sync_config.kind {
+        writan_sync::SyncKind::Folder => 0,
+        writan_sync::SyncKind::S3 => 1,
+    });
+    {
+        let state = state.clone();
+        kind.connect_selected_notify(move |row| {
+            let kind = if row.selected() == 1 {
+                writan_sync::SyncKind::S3
+            } else {
+                writan_sync::SyncKind::Folder
+            };
+            if state.borrow().sync_config.kind == kind {
+                return;
+            }
+            state.borrow_mut().sync_config.kind = kind;
+            refresh_sync(&state);
+        });
+    }
+    group.add(&kind);
+
+    let folder = adw::ActionRow::new();
+    folder.set_title("Folder");
+    let choose = gtk::Button::with_label("Choose…");
+    choose.add_css_class("flat");
+    {
+        let state = state.clone();
+        let window = window.clone();
+        choose.connect_clicked(move |_| {
+            let dialog = gtk::FileDialog::builder()
+                .title("Choose sync folder")
+                .modal(true)
+                .build();
+            let state = state.clone();
+            dialog.select_folder(Some(&window), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else {
+                    return;
+                };
+                let Some(path) = file.path() else {
+                    return;
+                };
+                state.borrow_mut().sync_config.target = Some(path);
+                refresh_sync(&state);
+            });
+        });
+    }
+    folder.add_suffix(&choose);
+    buttons.push(choose);
+    group.add(&folder);
+
+    let (endpoint_row, s3_endpoint) = field_row(group, "Endpoint", "http://127.0.0.1:9000", false);
+    let (bucket_row, s3_bucket) = field_row(group, "Bucket", "writan-notes", false);
+    let (region_row, s3_region) = field_row(group, "Region", "us-east-1", false);
+    let (access_row, s3_access) = field_row(group, "Access key", "Access key id", false);
+    let (secret_row, s3_secret) = field_row(group, "Secret key", "Secret access key", true);
+    let s3_rows = vec![endpoint_row, bucket_row, region_row, access_row, secret_row];
+    for entry in [&s3_endpoint, &s3_bucket, &s3_region, &s3_access, &s3_secret] {
+        entries.push(entry.clone());
+    }
+
+    let (password_row, password) = field_row(group, "Sync password", "Sync password", true);
+    password_row.set_subtitle("Unlocks this sync on a new device");
+    entries.push(password.clone());
+
+    let enable_row = adw::ActionRow::new();
+    enable_row.set_title("Enable sync");
+    enable_row.set_subtitle(
+        "Creates an encryption keyring in the target (first device) or joins the existing one",
+    );
+    let enable = gtk::Button::with_label("Enable sync");
+    enable.add_css_class("suggested-action");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let password = password.clone();
+        let s3_endpoint = s3_endpoint.clone();
+        let s3_bucket = s3_bucket.clone();
+        let s3_region = s3_region.clone();
+        let s3_access = s3_access.clone();
+        let s3_secret = s3_secret.clone();
+        enable.connect_clicked(move |_| {
+            if state.borrow().workspace.is_none() {
+                ui.toast
+                    .add_toast(adw::Toast::new("Open a vault before setting up sync."));
+                return;
+            }
+            if password.text().is_empty() {
+                ui.toast
+                    .add_toast(adw::Toast::new("Set a sync password first."));
+                return;
+            }
+            let credential = password.text().to_string();
+            let kind = state.borrow().sync_config.kind;
+            match kind {
+                writan_sync::SyncKind::Folder => {
+                    let target = state.borrow().sync_config.target.clone();
+                    let Some(target) = target else {
+                        ui.toast
+                            .add_toast(adw::Toast::new("Choose a sync folder first."));
+                        return;
+                    };
+                    start_sync_folder(&state, target, credential);
+                }
+                writan_sync::SyncKind::S3 => {
+                    let details = writan_sync::S3Connect {
+                        endpoint: s3_endpoint.text().to_string(),
+                        bucket: s3_bucket.text().to_string(),
+                        region: s3_region.text().to_string(),
+                        access_key: s3_access.text().to_string(),
+                        secret_key: s3_secret.text().to_string(),
+                    };
+                    start_sync_s3(&state, details, credential);
+                }
+            }
+            password.set_text("");
+        });
+    }
+    enable_row.add_suffix(&enable);
+    buttons.push(enable);
+    group.add(&enable_row);
+
+    // The recovery code, shown once after creating a keyring.
+    let recovery_code = adw::ActionRow::new();
+    recovery_code.set_title("Recovery code");
+    let copy = gtk::Button::with_label("Copy");
+    copy.add_css_class("flat");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        copy.connect_clicked(move |_| {
+            let code = state.borrow().sync_recovery.clone();
+            let Some(code) = code else {
+                return;
+            };
+            ui.window.clipboard().set_text(&code);
+            ui.toast.add_toast(adw::Toast::new("Recovery code copied."));
+        });
+    }
+    recovery_code.add_suffix(&copy);
+    buttons.push(copy);
+    group.add(&recovery_code);
+
+    let recovery_hint = adw::ActionRow::new();
+    recovery_hint.set_title("Save this code now");
+    recovery_hint.set_subtitle(
+        "It unlocks sync on a new device without the password and cannot be shown again",
+    );
+    group.add(&recovery_hint);
+
+    // Locked: unlock with the password or with the recovery code.
+    let unlock_row = adw::ActionRow::new();
+    unlock_row.set_title("Unlock with password");
+    let unlock_password = gtk::Entry::builder()
+        .placeholder_text("Password")
+        .width_chars(18)
+        .visibility(false)
+        .build();
+    unlock_password.set_input_purpose(gtk::InputPurpose::Password);
+    let unlock = gtk::Button::with_label("Unlock");
+    unlock.add_css_class("suggested-action");
+    {
+        let state = state.clone();
+        let unlock_password = unlock_password.clone();
+        unlock.connect_clicked(move |_| {
+            start_sync_unlock(
+                &state,
+                writan_sync::KeyringPurpose::Password,
+                unlock_password.text().to_string(),
+            );
+            unlock_password.set_text("");
+        });
+    }
+    unlock_row.add_suffix(&unlock_password);
+    unlock_row.add_suffix(&unlock);
+    buttons.push(unlock);
+    entries.push(unlock_password.clone());
+    group.add(&unlock_row);
+
+    let recovery_unlock_row = adw::ActionRow::new();
+    recovery_unlock_row.set_title("Use recovery code");
+    let unlock_recovery = gtk::Entry::builder()
+        .placeholder_text("Recovery code")
+        .width_chars(18)
+        .build();
+    let unlock_with_code = gtk::Button::with_label("Unlock");
+    unlock_with_code.add_css_class("flat");
+    {
+        let state = state.clone();
+        let unlock_recovery = unlock_recovery.clone();
+        unlock_with_code.connect_clicked(move |_| {
+            start_sync_unlock(
+                &state,
+                writan_sync::KeyringPurpose::Recovery,
+                unlock_recovery.text().to_string(),
+            );
+            unlock_recovery.set_text("");
+        });
+    }
+    recovery_unlock_row.add_suffix(&unlock_recovery);
+    recovery_unlock_row.add_suffix(&unlock_with_code);
+    buttons.push(unlock_with_code);
+    entries.push(unlock_recovery.clone());
+    group.add(&recovery_unlock_row);
+
+    // Connected: target, ids, last pass, sync now, lock, turn off.
+    let target = adw::ActionRow::new();
+    target.set_title("Target");
+    group.add(&target);
+
+    let ids = adw::ActionRow::new();
+    ids.set_title("This device");
+    group.add(&ids);
+
+    let last = adw::ActionRow::new();
+    last.set_title("Last sync");
+    group.add(&last);
+
+    let sync_now_row = adw::ActionRow::new();
+    sync_now_row.set_title("Sync now");
+    sync_now_row.set_subtitle("Pushes local changes and pulls remote ones");
+    let now = gtk::Button::with_label("Sync now");
+    now.add_css_class("suggested-action");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        now.connect_clicked(move |_| start_sync_pass(&state, &ui));
+    }
+    sync_now_row.add_suffix(&now);
+    buttons.push(now);
+    group.add(&sync_now_row);
+
+    let lock_row = adw::ActionRow::new();
+    lock_row.set_title("Lock");
+    lock_row.set_subtitle("Forgets the vault key on this device until you unlock again");
+    let lock = gtk::Button::with_label("Lock");
+    lock.add_css_class("flat");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        lock.connect_clicked(move |_| {
+            let session = state.borrow_mut().sync.take();
+            if let Some(session) = session {
+                writan_sync::keychain::forget_vault_key(session.vault_id);
+            }
+            ui.toast.add_toast(adw::Toast::new("Sync locked."));
+            refresh_sync(&state);
+        });
+    }
+    lock_row.add_suffix(&lock);
+    buttons.push(lock);
+    group.add(&lock_row);
+
+    let off_row = adw::ActionRow::new();
+    off_row.set_title("Turn off sync");
+    off_row.set_subtitle("Removes the keys from this device; the target keeps its encrypted copy");
+    let off = gtk::Button::with_label("Turn off");
+    off.add_css_class("destructive-action");
+    let armed: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let armed = armed.clone();
+        off.connect_clicked(move |button| {
+            if !*armed.borrow() {
+                armed.replace(true);
+                button.set_label("Confirm turn off");
+                let button = button.clone();
+                let armed = armed.clone();
+                gtk::glib::timeout_add_seconds_local(3, move || {
+                    armed.replace(false);
+                    button.set_label("Turn off");
+                    gtk::glib::ControlFlow::Break
+                });
+                return;
+            }
+            armed.replace(false);
+            let session = state.borrow_mut().sync.take();
+            if let Some(session) = session {
+                writan_sync::keychain::forget_vault_key(session.vault_id);
+            }
+            {
+                let mut st = state.borrow_mut();
+                if let Some(s3) = st.sync_config.s3.as_ref() {
+                    writan_sync::keychain::forget_s3_secret(&s3.endpoint, &s3.bucket);
+                }
+                st.sync_config.enabled = false;
+            }
+            let path = state.borrow().config_path.clone();
+            let config = state.borrow().sync_config.clone();
+            if let Err(error) = config::save_sync(&path, &config) {
+                ui.toast.add_toast(adw::Toast::new(&format!(
+                    "Could not save settings: {error}"
+                )));
+            }
+            ui.toast.add_toast(adw::Toast::new(
+                "Sync is off. The target keeps its encrypted copy.",
+            ));
+            refresh_sync(&state);
+        });
+    }
+    off_row.add_suffix(&off);
+    buttons.push(off);
+    group.add(&off_row);
+
+    Rc::new(SyncUi {
+        status,
+        kind,
+        folder,
+        s3_rows,
+        password_row,
+        enable_row,
+        recovery_code,
+        recovery_hint,
+        unlock_row,
+        recovery_unlock_row,
+        target,
+        ids,
+        last,
+        sync_now_row,
+        lock_row,
+        off_row,
+        unlock_password,
+        unlock_recovery,
+        buttons,
+        entries,
+    })
+}
+
+/// Paint the Sync rows from the current state: which rows are relevant, the
+/// status line, the target and ids, the last report, and whether a worker job
+/// is running.
+fn refresh_sync(state: &Rc<RefCell<State>>) {
+    let Some(sync_ui) = state.borrow().sync_ui.clone() else {
+        return;
+    };
+    let (snapshot, busy, recovery) = {
+        let st = state.borrow();
+        (
+            writan_sync::sync_status(&st.sync_config, st.sync.as_ref(), &sync_state_path(&st)),
+            st.sync_busy,
+            st.sync_recovery.clone(),
+        )
+    };
+    let setup = !snapshot.enabled;
+    let unlocked = snapshot.unlocked;
+
+    sync_ui.kind.set_visible(setup);
+    sync_ui
+        .folder
+        .set_visible(setup && snapshot.kind == writan_sync::SyncKind::Folder);
+    for row in &sync_ui.s3_rows {
+        row.set_visible(setup && snapshot.kind == writan_sync::SyncKind::S3);
+    }
+    sync_ui.password_row.set_visible(setup);
+    sync_ui.enable_row.set_visible(setup);
+    let has_recovery = recovery.is_some();
+    sync_ui.recovery_code.set_visible(has_recovery);
+    sync_ui.recovery_hint.set_visible(has_recovery);
+    if let Some(code) = recovery {
+        sync_ui.recovery_code.set_subtitle(&code);
+    }
+    sync_ui.unlock_row.set_visible(!setup && !unlocked);
+    sync_ui.recovery_unlock_row.set_visible(!setup && !unlocked);
+    for row in [
+        &sync_ui.target,
+        &sync_ui.ids,
+        &sync_ui.last,
+        &sync_ui.sync_now_row,
+        &sync_ui.lock_row,
+        &sync_ui.off_row,
+    ] {
+        row.set_visible(!setup && unlocked);
+    }
+
+    let mut status = if setup {
+        "Not set up yet".to_string()
+    } else if !unlocked {
+        "Locked — enter the password or recovery code".to_string()
+    } else {
+        match snapshot.target.as_deref() {
+            Some(target) => format!("Connected to {target}"),
+            None => "Connected".to_string(),
+        }
+    };
+    if busy {
+        status = format!("Working… {status}");
+    }
+    sync_ui.status.set_subtitle(&status);
+
+    if let Some(target) = snapshot.target.as_deref() {
+        sync_ui.target.set_subtitle(target);
+    }
+    let ids = match (snapshot.vault_id.as_deref(), snapshot.device_id.as_deref()) {
+        (Some(vault), Some(device)) => {
+            format!("Vault {} · device {}", short_id(vault), short_id(device))
+        }
+        _ => "Not created yet".to_string(),
+    };
+    sync_ui.ids.set_subtitle(&ids);
+    let last = match (snapshot.last_sync.as_deref(), snapshot.last_report) {
+        (Some(time), Some(report)) => format!("{time} · {}", report.summary()),
+        (Some(time), None) => time.to_string(),
+        _ => "Not synced yet".to_string(),
+    };
+    sync_ui.last.set_subtitle(&last);
+
+    for button in &sync_ui.buttons {
+        button.set_sensitive(!busy);
+    }
+    for entry in &sync_ui.entries {
+        entry.set_sensitive(!busy);
+    }
+    sync_ui.unlock_password.set_sensitive(!busy);
+    sync_ui.unlock_recovery.set_sensitive(!busy);
+}
+
+/// `1234abcd…` — the short ids the Tauri panel shows.
+fn short_id(id: &str) -> String {
+    let short: String = id.chars().take(8).collect();
+    format!("{short}…")
+}
+
+/// The engine's local bookkeeping, shared by both shells (ADR-0005 §6).
+fn sync_state_path(state: &State) -> PathBuf {
+    state.data_dir.join(writan_sync::SYNC_STATE_FILE)
+}
+
+fn current_vault_root(state: &Rc<RefCell<State>>) -> Option<PathBuf> {
+    state
+        .borrow()
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.vault().root().to_path_buf())
+}
+
+/// Claim the one worker slot; the poll drains the receiver.
+fn begin_sync_job(state: &Rc<RefCell<State>>) -> Option<(Sender<SyncMessage>, PathBuf)> {
+    let mut st = state.borrow_mut();
+    if st.sync_busy {
+        return None;
+    }
+    let (sender, receiver) = mpsc::channel();
+    st.sync_busy = true;
+    st.sync_jobs = Some(receiver);
+    let path = sync_state_path(&st);
+    Some((sender, path))
+}
+
+fn start_sync_folder(state: &Rc<RefCell<State>>, target: PathBuf, password: String) {
+    if let Some((sender, state_path)) = begin_sync_job(state) {
+        let vault_path = current_vault_root(state);
+        std::thread::spawn(move || {
+            let message = match writan_sync::connect_folder(
+                &target,
+                &password,
+                vault_path.as_deref(),
+                &state_path,
+            ) {
+                Ok(connected) => SyncMessage::Connected(Box::new(connected)),
+                Err(error) => SyncMessage::Failed {
+                    session: None,
+                    error: error.to_string(),
+                },
+            };
+            let _ = sender.send(message);
+        });
+    }
+    refresh_sync(state);
+}
+
+fn start_sync_s3(state: &Rc<RefCell<State>>, details: writan_sync::S3Connect, password: String) {
+    if let Some((sender, state_path)) = begin_sync_job(state) {
+        let vault_path = current_vault_root(state);
+        std::thread::spawn(move || {
+            let message = match writan_sync::connect_s3(
+                &details,
+                &password,
+                vault_path.as_deref(),
+                &state_path,
+            ) {
+                Ok(connected) => SyncMessage::Connected(Box::new(connected)),
+                Err(error) => SyncMessage::Failed {
+                    session: None,
+                    error: error.to_string(),
+                },
+            };
+            let _ = sender.send(message);
+        });
+    }
+    refresh_sync(state);
+}
+
+fn start_sync_unlock(
+    state: &Rc<RefCell<State>>,
+    purpose: writan_sync::KeyringPurpose,
+    credential: String,
+) {
+    if credential.trim().is_empty() {
+        return;
+    }
+    if let Some((sender, state_path)) = begin_sync_job(state) {
+        let config = state.borrow().sync_config.clone();
+        std::thread::spawn(move || {
+            let message = match writan_sync::unlock(config, &state_path, purpose, &credential) {
+                Ok((config, session)) => SyncMessage::Unlocked(Box::new((config, session))),
+                Err(error) => SyncMessage::Failed {
+                    session: None,
+                    error: error.to_string(),
+                },
+            };
+            let _ = sender.send(message);
+        });
+    }
+    refresh_sync(state);
+}
+
+/// One engine pass on a worker: it opens its own index-free `Vault` (the
+/// SQLite index belongs to the main thread's `Workspace`), and the poll
+/// reconciles the index afterwards.
+fn run_pass_in_background(
+    state_path: &Path,
+    config: &writan_sync::SyncConfig,
+    root: &Path,
+    mut session: writan_sync::SyncSession,
+) -> (
+    writan_sync::SyncSession,
+    Result<writan_sync::SyncReport, String>,
+) {
+    let outcome = (|| {
+        let target = writan_sync::open_target(config).map_err(|error| error.to_string())?;
+        let vault = writan_core::Vault::open(root).map_err(|error| error.to_string())?;
+        let io = writan_sync::FolderVault::new(&vault);
+        writan_sync::run_pass(state_path, &mut session, &io, &target)
+            .map_err(|error| error.to_string())
+    })();
+    (session, outcome)
+}
+
+fn start_sync_pass(state: &Rc<RefCell<State>>, ui: &Ui) {
+    if state.borrow().sync_busy {
+        return;
+    }
+    let (config, root) = {
+        let st = state.borrow();
+        (
+            st.sync_config.clone(),
+            st.workspace
+                .as_ref()
+                .map(|workspace| workspace.vault().root().to_path_buf()),
+        )
+    };
+    if !config.enabled {
+        ui.toast
+            .add_toast(adw::Toast::new("Sync is not set up yet."));
+        return;
+    }
+    if let Err(error) = writan_sync::check_vault(&config, root.as_deref()) {
+        ui.toast.add_toast(adw::Toast::new(&error.to_string()));
+        return;
+    }
+    let Some(root) = root else {
+        ui.toast
+            .add_toast(adw::Toast::new("Open a vault before syncing."));
+        return;
+    };
+    if state.borrow().sync.is_none() {
+        ui.toast
+            .add_toast(adw::Toast::new("Sync is locked; unlock it first."));
+        return;
+    }
+    let session = state.borrow_mut().sync.take();
+    let Some(session) = session else {
+        return;
+    };
+    let Some((sender, state_path)) = begin_sync_job(state) else {
+        state.borrow_mut().sync = Some(session);
+        return;
+    };
+    std::thread::spawn(move || {
+        let (session, outcome) = run_pass_in_background(&state_path, &config, &root, session);
+        let message = match outcome {
+            Ok(report) => SyncMessage::Passed {
+                session: Box::new(session),
+                report,
+            },
+            Err(error) => SyncMessage::Failed {
+                session: Some(Box::new(session)),
+                error,
+            },
+        };
+        let _ = sender.send(message);
+    });
+    refresh_sync(state);
+}
+
+/// The `sync-now` action and the palette item: a pass when unlocked, Settings
+/// otherwise (that is where sync is set up or unlocked).
+fn sync_now_or_settings(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let ready = {
+        let st = state.borrow();
+        st.sync_config.enabled && st.sync.is_some()
+    };
+    if ready {
+        start_sync_pass(state, ui);
+        return;
+    }
+    let enabled = state.borrow().sync_config.enabled;
+    ui.toast.add_toast(adw::Toast::new(if enabled {
+        "Sync is locked; unlock it first."
+    } else {
+        "Sync is not set up yet."
+    }));
+    open_settings_or_focus(state, ui);
+}
+
+/// A worker job finished: install the result, keep the UI honest and let the
+/// watcher/index catch up with whatever the pass changed.
+fn handle_sync_message(state: &Rc<RefCell<State>>, ui: &Ui, message: SyncMessage) {
+    {
+        let mut st = state.borrow_mut();
+        st.sync_busy = false;
+        st.sync_jobs = None;
+    }
+    match message {
+        SyncMessage::Connected(connected) => {
+            let writan_sync::Connected {
+                config,
+                session,
+                recovery_code,
+            } = *connected;
+            let path = state.borrow().config_path.clone();
+            if let Err(error) = config::save_sync(&path, &config) {
+                ui.toast.add_toast(adw::Toast::new(&format!(
+                    "Could not save settings: {error}"
+                )));
+            }
+            let joined = recovery_code.is_none();
+            {
+                let mut st = state.borrow_mut();
+                st.sync_config = config;
+                st.sync = Some(session);
+                if recovery_code.is_some() {
+                    st.sync_recovery = recovery_code;
+                }
+            }
+            ui.toast.add_toast(adw::Toast::new(if joined {
+                "Sync enabled — this device joined the existing keyring."
+            } else {
+                "Sync enabled. Copy the recovery code now — it is shown once."
+            }));
+            refresh_sync(state);
+            start_sync_pass(state, ui);
+        }
+        SyncMessage::Unlocked(pair) => {
+            let (config, session) = *pair;
+            let path = state.borrow().config_path.clone();
+            if let Err(error) = config::save_sync(&path, &config) {
+                ui.toast.add_toast(adw::Toast::new(&format!(
+                    "Could not save settings: {error}"
+                )));
+            }
+            {
+                let mut st = state.borrow_mut();
+                st.sync_config = config;
+                st.sync = Some(session);
+            }
+            ui.toast.add_toast(adw::Toast::new("Sync unlocked."));
+            refresh_sync(state);
+        }
+        SyncMessage::Passed { session, report } => {
+            {
+                let mut st = state.borrow_mut();
+                st.sync = Some(*session);
+                if let Some(workspace) = st.workspace.as_mut() {
+                    let _ = workspace.reconcile();
+                }
+            }
+            refresh(state, ui, false);
+            refresh_sync(state);
+            ui.toast.add_toast(adw::Toast::new(&report.summary()));
+        }
+        SyncMessage::Failed { session, error } => {
+            if let Some(session) = session {
+                state.borrow_mut().sync = Some(*session);
+            }
+            ui.toast.add_toast(adw::Toast::new(&error));
+            refresh_sync(state);
+        }
+    }
+}
+
 /// Repaint every shortcut row from the current overrides: the binding text,
 /// the Change/Cancel button and the Reset link.
 fn refresh_shortcut_rows(
@@ -3041,6 +3919,7 @@ enum PaletteCommand {
     OpenTrash,
     RebuildIndex,
     TogglePin,
+    SyncNow,
     OpenNote(NoteId),
     ChooseFolder,
 }

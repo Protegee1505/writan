@@ -1,13 +1,15 @@
-//! Sync session glue: the vault key in the OS keychain plus the small
-//! bookkeeping the app keeps around [`writan_sync`] (docs/adr/0005).
+//! The vault key in the OS keychain (ADR-0005 §10).
 //!
 //! The keychain is an optional convenience: a stored key lets the app unlock
 //! sync on start without the password. Losing it only means typing the
 //! password (or the recovery code) again — the vault key itself is wrapped in
-//! the keyring file on the sync target (ADR-0005 §10).
+//! the keyring file on the sync target. Every call here is best-effort:
+//! failures are ignored, and a missing entry just leaves sync locked.
+//!
+//! Both shells (Tauri and the GTK app) share these service names and account
+//! formats, so a key remembered by one is found by the other.
 
 use uuid::Uuid;
-use writan_sync::{SyncReport, SyncState};
 
 /// Keychain service name for remembered vault keys; the account is the vault
 /// id.
@@ -15,16 +17,6 @@ const KEYCHAIN_SERVICE: &str = "com.writan.desktop.sync";
 /// Keychain service for the S3 secret key (ADR-0006); the account is
 /// `endpoint/bucket`.
 const S3_SECRET_SERVICE: &str = "com.writan.desktop.s3";
-
-/// An unlocked sync configuration: the vault key plus the engine's local state.
-pub struct SyncSession {
-    pub vault_id: Uuid,
-    pub device: writan_sync::DeviceId,
-    pub vault_key: zeroize::Zeroizing<[u8; 32]>,
-    pub state: SyncState,
-    pub last_sync: Option<String>,
-    pub last_report: Option<SyncReport>,
-}
 
 fn entry(service: &str, account: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(service, account).ok()

@@ -84,3 +84,14 @@ Status: accepted, spike-gated. Date: 2026-10-16.
   remain on the user's laptop.
 - Verdict: the gate is passed on both build and runtime viability — the full
   native shell proceeds as milestone M3.5 after M3 (sync v1 + E2EE).
+
+## Parity outcome (2026-10-18)
+
+`docs/PARITY.md` is green: slice 8 landed sync in the GTK shell (folder and S3
+targets, recovery code shown once, password/recovery unlock, Sync now, lock,
+two-click Turn off) on the shared `writan-sync::session` layer, so both shells
+read the same `config.json` sync object and write the same keychain entries.
+Verified by `scripts/gtk-shell-test.sh` checks 36–43 (56/56 green), including a
+second sandbox "device" that joins the folder keyring with the password and
+adopts notes. The interactive IME + idle-RAM re-measure on real hardware is
+still open (`docs/REAL-HARDWARE.md`).

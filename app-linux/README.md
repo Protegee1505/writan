@@ -20,16 +20,21 @@ On non-Linux targets the crate compiles to a stub; the pure modules
 ## State
 
 - config: `~/.config/com.writan.desktop/config.json` (same shape as the Tauri
-  app: `vault_path` + opaque `settings`; atomic writes — ADR-0003)
-- data: `~/.local/share/com.writan.desktop/` (`index.sqlite`, `trash/`)
+  app: `vault_path` + opaque `settings` + the `sync` object; atomic writes —
+  ADR-0003)
+- data: `~/.local/share/com.writan.desktop/` (`index.sqlite`, `trash/`,
+  `sync-state.json`)
 
-## Spike status (2026-10-16)
+## Status (2026-10-18)
 
-Working: note list with live search, GtkSourceView editor with Markdown
-syntax highlighting, live preview pane (pulldown-cmark → GTK text tags),
-save (Ctrl+S), new note (Ctrl+N), focus search (Ctrl+F), folder picker,
-last-vault persistence, `WRITAN_MEASURE` timings.
+M3.5 slices 1–8 are done and `docs/PARITY.md` is green: watcher + autosave,
+sidebar filters + note actions, trash panel, command palette + rebindable
+shortcuts, settings panel (live apply), attachments (paste, drop, palette
+import), tags, appearance (theme + accent), session restore, inline preview
+images, and the sync UI (folder/S3 target, recovery code, unlock, sync now,
+lock, turn off — on the shared `writan-sync::session` layer).
 
-Not yet (M3.5 work): file watcher, autosave, tag/folder filter chips, trash
-UI, attachments, settings panel, keyboard-shortcut service, inline live
-preview. Measurements live in the ADR.
+Checks: `scripts/gtk-shell-test.sh` (56 checks, Xvfb — no real app data
+touched); `WRITAN_MEASURE=1` prints the cold-start and idle-RSS numbers.
+The real-hardware IME + idle-RAM acceptance is still on the list
+(`docs/REAL-HARDWARE.md`).

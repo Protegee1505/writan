@@ -4,9 +4,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
 use writan_core::Workspace;
-use writan_sync::SyncState;
-
-use crate::sync::SyncSession;
+use writan_sync::{SyncConfig, SyncSession};
 
 /// Persisted app configuration (stored next to the index, not in the vault).
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -15,46 +13,11 @@ pub struct AppConfig {
     /// UI preferences: opaque JSON owned by the frontend settings registry.
     #[serde(default)]
     pub settings: serde_json::Value,
-    /// E2EE sync through a shared folder target (docs/adr/0005).
+    /// E2EE sync through a shared folder or an S3-compatible bucket
+    /// (docs/adr/0005, docs/adr/0006). The shape lives in `writan-sync` so
+    /// both shells read and write the same config.
     #[serde(default)]
     pub sync: SyncConfig,
-}
-
-/// Which kind of target notes sync through.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SyncKind {
-    #[default]
-    Folder,
-    S3,
-}
-
-/// S3 target details kept in `config.json` (ADR-0006). The secret key never
-/// lives here — only in the OS keychain (`crate::sync::recall_s3_secret`).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct S3ConfigFile {
-    pub endpoint: String,
-    pub region: String,
-    pub bucket: String,
-    pub access_key: String,
-}
-
-/// How and where this device syncs; the vault key and bookkeeping live in the
-/// OS keychain and `sync-state.json` (ADR-0005 §§6–10).
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SyncConfig {
-    #[serde(default)]
-    pub kind: SyncKind,
-    /// The shared folder notes sync through (folder targets).
-    pub target: Option<PathBuf>,
-    /// The bucket details (S3 targets); the secret key is in the keychain.
-    #[serde(default)]
-    pub s3: Option<S3ConfigFile>,
-    /// The vault this sync was set up for; opening another vault keeps sync
-    /// locked rather than mixing notes between vaults.
-    pub vault_path: Option<PathBuf>,
-    #[serde(default)]
-    pub enabled: bool,
 }
 
 #[derive(Default)]
@@ -116,21 +79,7 @@ impl AppState {
     /// Restore an enabled sync session from the OS keychain, if possible.
     /// Failing just leaves sync locked; the UI asks for the password.
     fn auto_unlock_sync(&self, config: &AppConfig) -> Option<SyncSession> {
-        if !config.sync.enabled {
-            return None;
-        }
-        let state = SyncState::load(&self.sync_state_path).ok()?;
-        let vault_id = state.vault_id?;
-        let device = state.device?;
-        let key = crate::sync::recall_vault_key(vault_id)?;
-        Some(SyncSession {
-            vault_id,
-            device,
-            vault_key: zeroize::Zeroizing::new(key),
-            state,
-            last_sync: None,
-            last_report: None,
-        })
+        writan_sync::resume(&self.sync_state_path, &config.sync)
     }
 
     pub fn workspace_root(&self) -> Option<PathBuf> {
@@ -272,7 +221,7 @@ mod tests {
         state.load_config();
         let inner = state.inner.lock().unwrap();
         assert!(inner.config.sync.enabled);
-        assert_eq!(inner.config.sync.kind, SyncKind::S3);
+        assert_eq!(inner.config.sync.kind, writan_sync::SyncKind::S3);
         let s3 = inner.config.sync.s3.as_ref().expect("s3 config");
         assert_eq!(s3.bucket, "writan-sim");
         assert!(inner.config.sync.target.is_none());

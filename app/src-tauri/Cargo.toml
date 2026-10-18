@@ -25,10 +25,6 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = "1"
-blake3 = "1.8"
-base64 = "0.22"
-keyring = { version = "3", features = ["windows-native", "linux-native"] }
-zeroize = "1"
 writan-core = { path = "../../crates/writan-core" }
 writan-crypto = { path = "../../crates/writan-crypto" }
 writan-sync = { path = "../../crates/writan-sync" }

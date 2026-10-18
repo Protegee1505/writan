@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-17 (M3.5 slice 6).
+Last updated: 2026-10-18 (M3.5 slice 8).
 
 ## Milestone history
 
@@ -184,11 +184,32 @@ Last updated: 2026-10-17 (M3.5 slice 6).
   OK. The real-hardware routine (IME + RAM) is written down in
   `docs/REAL-HARDWARE.md`.
 
+- **M3.5 slice 8 — sync UI in the GTK shell** (2026-10-18): the last open
+  parity row. The shell-agnostic glue moved out of the Tauri app into
+  `writan-sync::session` + `writan-sync::keychain` (sync config object,
+  keychain services, connect/join, unlock, pass, status), so both shells share
+  one implementation and one `config.json` sync object; the Tauri commands
+  became thin DTO wrappers. The Settings panel gained a `Sync` group with the
+  Tauri wording and states (not set up: folder/S3 target, password, Enable;
+  recovery code shown once with Copy; locked: password or recovery code
+  unlock; connected: target, short vault/device ids, Sync now, Lock, two-click
+  Turn off, last sync + report line `N published · N merged · N adopted · N
+  conflict copies · N deleted · N unchanged`); the pass runs on a worker
+  thread (its own `Vault::open`, results drained by the 200 ms poll, then
+  `Workspace::reconcile()` + refresh) and `sync-now` joined the palette.
+  `scripts/gtk-shell-test.sh` went 48 → 56 checks: keyring creation and first
+  pass, config + `sync-state.json`, clipboard recovery code, palette Sync now,
+  a locked device publishes nothing, password unlock publishes again,
+  two-click Turn off, and a second sandbox "device" that joins the keyring
+  with the password and adopts notes — 56/56 green locally against the release
+  binary. `cargo fmt`/`clippy -D warnings` clean, `cargo test --workspace`
+  green (150 tests, 3 ignored), `svelte-check` 0/0, frontend build OK.
+
 ## Current state
 
-- Branch `main`; M0–M3 complete, M3.5 (native Linux shell) in progress — slices
-  1–7 done, next slice 8 (sync UI in the GTK shell); the real-hardware
-  acceptance (IME + RAM) waits on the user's laptop (`docs/REAL-HARDWARE.md`).
+- Branch `main`; M0–M3 complete, M3.5 (native Linux shell) slices 1–8 done —
+  `docs/PARITY.md` is green; only the real-hardware acceptance (IME + RAM)
+  waits on the user's laptop (`docs/REAL-HARDWARE.md`).
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
@@ -251,7 +272,7 @@ cargo build --release -p writan-linux
 
 # GTK shell headless checks (Xvfb; no real app data touched)
 scripts/gui-shot.sh --bin target/release/writan        # walkthrough screenshots
-scripts/gtk-shell-test.sh --bin target/release/writan  # 48-check shell acceptance run
+scripts/gtk-shell-test.sh --bin target/release/writan  # 56-check shell acceptance run
 ```
 
 ## Environment & gotchas

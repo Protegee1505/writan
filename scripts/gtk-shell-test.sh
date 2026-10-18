@@ -40,6 +40,14 @@
 #  33. theme and accent choices land in config.json; the accent repaints a switch
 #  34. a local image link renders inline in the preview pane
 #  35. the app reopens the last note, and stops doing so when switched off
+#  36. enabling sync creates the folder keyring and publishes the vault
+#  37. the enabled sync lands in config.json and sync-state.json
+#  38. Copy puts the recovery code on the clipboard
+#  39. the palette's Sync now publishes a freshly created note
+#  40. a locked device leaves the target alone
+#  41. unlocking with the password publishes again
+#  42. the two-click Turn off clears enabled in config.json
+#  43. a second device joins the folder keyring and adopts notes
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
@@ -1115,6 +1123,235 @@ if open_note_via_palette delta "Delta — Writan"; then
     bad "the palette did not open Untitled for the fallback check"
   fi
 fi
+
+# --- Sync (slice 8): the folder target, the keyring, the recovery code, lock
+# and unlock, Turn off, and a second device joining the same folder. ---
+sync_dir="$work/sync"
+sync_password="smoke-sync-pass"
+launch_app() { # uses the current $vault / $config_home / $data_home
+  env \
+    WRITAN_VAULT="$vault" \
+    XDG_CONFIG_HOME="$config_home" \
+    XDG_DATA_HOME="$data_home" \
+    GTK_THEME="Adwaita:dark" \
+    GSK_RENDERER=cairo \
+    "$bin" >>"$work/app.log" 2>&1 &
+  app_pid=$!
+  window=""
+  for _ in $(seq 1 100); do
+    window="$(find_window)"
+    [ -n "$window" ] && break
+    sleep 0.2
+  done
+  if [ -n "$window" ]; then
+    xdotool windowmove "$window" 0 0
+    xdotool windowsize "$window" 1000 700
+    sleep 0.6
+    xdotool windowfocus --sync "$window"
+    xdotool windowraise "$window"
+  else
+    bad "the app window never appeared for the sync checks"
+  fi
+}
+count_items() {
+  find "$sync_dir/items" -name '*.enc' 2>/dev/null | wc -l | tr -d ' ' || true
+}
+wait_items() { # wanted count, seconds
+  local want="$1" deadline=$(( $(date +%s) + $2 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ "$(count_items)" -ge "$want" ]; then return 0; fi
+    sleep 0.3
+  done
+  return 1
+}
+run_palette_command() { # search text
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers ctrl+p
+  local palette=""
+  for _ in $(seq 1 25); do
+    palette="$(palette_window || true)"
+    [ -n "$palette" ] && break
+    sleep 0.2
+  done
+  [ -n "$palette" ] || return 1
+  xdotool type --delay 30 -- "$1"
+  sleep 0.6
+  xdotool key --clearmodifiers Return
+  sleep 0.8
+}
+
+# 36. Enabling sync creates the folder keyring and runs the first pass. The
+# target is seeded in config.json so the check only types the password.
+kill "$app_pid" 2>/dev/null || true
+wait "$app_pid" 2>/dev/null || true
+app_pid=""
+mkdir -p "$sync_dir"
+printf '{"vault_path": "%s", "sync": {"kind": "folder", "target": "%s", "enabled": false}}' \
+  "$vault" "$sync_dir" >"$config_home/com.writan.desktop/config.json"
+launch_app
+if open_settings; then
+  filter_settings "sync"
+  xdotool mousemove --sync 480 284
+  xdotool click 1
+  xdotool type --delay 25 -- "$sync_password"
+  shot_of 96-sync-setup "$(settings_window)"
+  xdotool mousemove --sync 523 333
+  xdotool click 1
+  if wait_items 1 15; then
+    if [ -f "$sync_dir/keys/1.json" ]; then
+      ok "enabling sync created the folder keyring and published the vault"
+    else
+      bad "the first pass wrote items but no keys/1.json"
+    fi
+  else
+    bad "enabling sync did not publish anything (items: $(count_items))"
+  fi
+else
+  bad "Ctrl+, did not open Settings for the sync check"
+fi
+shot 97-sync-enabled
+
+# 37. The enabled state and the vault binding reach the app-data dir.
+if wait_config_has '"enabled": true' 5 &&
+  [ -f "$data_home/com.writan.desktop/sync-state.json" ]; then
+  ok "config.json carries enabled: true and sync-state.json exists"
+else
+  bad "config.json or sync-state.json did not record the enabled sync"
+fi
+shot 98-sync-connected
+
+# 38. Copy puts the recovery code on the clipboard (it is shown once).
+xdotool mousemove --sync 548 218
+xdotool click 1
+sleep 0.6
+recovery="$(xclip -selection clipboard -o 2>/dev/null | tr -d '\n' || true)"
+case "$recovery" in
+  ????-????-????-????-????-????-????-????-????-????-????-????-????)
+    ok "Copy put the recovery code on the clipboard" ;;
+  *)
+    bad "no recovery code on the clipboard (got '$recovery')" ;;
+esac
+
+# 39. A freshly created note is published by the palette's Sync now.
+xdotool key --clearmodifiers Escape
+sleep 0.8
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+n
+sleep 1.0
+xdotool type --delay 20 -- "Sync publish test"
+sleep 2.0
+items_before="$(count_items)"
+if run_palette_command "sync now"; then
+  if wait_items $((items_before + 1)) 15; then
+    ok "the palette's Sync now published the new note"
+  else
+    bad "Sync now did not publish the new note (items: $(count_items), wanted $((items_before + 1)))"
+  fi
+else
+  bad "the palette did not open for the Sync now check"
+fi
+shot 99-sync-now
+
+# 40-41. Lock keeps the device from publishing; the password unlocks it again.
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+n
+sleep 1.0
+xdotool type --delay 20 -- "While locked"
+sleep 2.0
+if open_settings; then
+  filter_settings "sync"
+  xdotool mousemove --sync 548 381
+  xdotool click 1
+  sleep 0.8
+  shot_of 100-sync-locked "$(settings_window)"
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+else
+  bad "Settings did not reopen for the lock check"
+fi
+items_before="$(count_items)"
+run_palette_command "sync now" || true
+sleep 2.0
+if [ "$(count_items)" -eq "$items_before" ]; then
+  ok "a locked device changed nothing on Sync now"
+else
+  bad "a locked device published without the key (items: $items_before -> $(count_items))"
+fi
+if open_settings; then
+  filter_settings "sync"
+  xdotool mousemove --sync 413 208
+  xdotool click 1
+  xdotool type --delay 25 -- "$sync_password"
+  xdotool mousemove --sync 539 208
+  xdotool click 1
+  sleep 1.2
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+else
+  bad "Settings did not reopen for the unlock check"
+fi
+if run_palette_command "sync now" && wait_items $((items_before + 1)) 15; then
+  ok "unlocking with the password published again"
+else
+  bad "Sync now after the unlock did not publish (items: $(count_items))"
+fi
+shot 101-sync-unlocked
+
+# 42. Turn off arms once and clears enabled in config.json.
+if open_settings; then
+  filter_settings "sync"
+  xdotool mousemove --sync 500 413
+  xdotool click 1
+  sleep 0.5
+  xdotool mousemove --sync 511 427
+  xdotool click 1
+  if wait_config_has '"enabled": false' 6; then
+    ok "the two-click Turn off cleared enabled in config.json"
+  else
+    bad "Turn off did not reach config.json"
+  fi
+  shot_of 102-sync-turnoff "$(settings_window)"
+else
+  bad "Settings did not reopen for the Turn off check"
+fi
+
+# 43. A second device (its own vault and XDG dirs) joins the same folder with
+# the password: no second keyring appears and the vault adopts device one's
+# notes while publishing its own.
+kill "$app_pid" 2>/dev/null || true
+wait "$app_pid" 2>/dev/null || true
+app_pid=""
+device2="$work/device2"
+vault2="$device2/vault"
+mkdir -p "$device2/config/com.writan.desktop" "$device2/data" "$vault2"
+printf '# Beta\n\ndevice two body.\n' >"$vault2/beta.md"
+printf '{"vault_path": "%s", "sync": {"kind": "folder", "target": "%s", "enabled": false}}' \
+  "$vault2" "$sync_dir" >"$device2/config/com.writan.desktop/config.json"
+vault="$vault2" config_home="$device2/config" data_home="$device2/data"
+launch_app
+items_before="$(count_items)"
+if open_settings; then
+  filter_settings "sync"
+  xdotool mousemove --sync 480 284
+  xdotool click 1
+  xdotool type --delay 25 -- "$sync_password"
+  xdotool mousemove --sync 523 333
+  xdotool click 1
+  if wait_items $((items_before + 1)) 20; then
+    if [ "$(ls "$sync_dir/keys" | wc -l | tr -d ' ')" -eq 1 ] &&
+      ls "$vault2"/delta-*.md >/dev/null 2>&1; then
+      ok "a second device joined the keyring and adopted device one's notes"
+    else
+      bad "the second device published but did not adopt (keys: $(ls "$sync_dir/keys" | tr '\n' ' '))"
+    fi
+  else
+    bad "the second device did not sync (items: $(count_items), wanted $((items_before + 1)))"
+  fi
+  shot_of 103-sync-device-two "$(settings_window)"
+else
+  bad "Settings did not open on the second device"
+fi
+xdotool key --clearmodifiers Escape || true
 
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
