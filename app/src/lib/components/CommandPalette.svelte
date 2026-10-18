@@ -108,6 +108,12 @@
       }
       if (store.note) {
         all.push({
+          id: "duplicate",
+          label: "Duplicate this note",
+          hint: keyHint("duplicate-note") || "Duplicate",
+          run: () => store.duplicateNote(),
+        });
+        all.push({
           id: "pin",
           label: store.note.pinned ? "Unpin this note" : "Pin this note",
           hint: "Pin",

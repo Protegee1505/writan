@@ -42,16 +42,18 @@
   const filtered = $derived.by(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return [];
-    return OPTIONS.filter((spec) =>
-      [spec.label, spec.description ?? "", ...(spec.keywords ?? [])]
-        .join(" ")
-        .toLowerCase()
-        .includes(q),
+    return OPTIONS.filter(
+      (spec) =>
+        !spec.linuxOnly &&
+        [spec.label, spec.description ?? "", ...(spec.keywords ?? [])]
+          .join(" ")
+          .toLowerCase()
+          .includes(q),
     );
   });
 
   function optionsOf(id: SectionId): OptionSpec[] {
-    return OPTIONS.filter((spec) => spec.section === id);
+    return OPTIONS.filter((spec) => spec.section === id && !spec.linuxOnly);
   }
 
   function valueOf(path: string): unknown {

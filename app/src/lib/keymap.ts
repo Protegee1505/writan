@@ -17,6 +17,7 @@ export type ActionId =
   | "toggle-theme"
   | "toggle-trash"
   | "pin-note"
+  | "duplicate-note"
   | "sync-now";
 
 export interface KeyAction {
@@ -37,6 +38,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "toggle-theme", label: "Toggle theme", defaultBinding: null },
   { id: "toggle-trash", label: "Toggle trash panel", defaultBinding: null },
   { id: "pin-note", label: "Pin / unpin note", defaultBinding: null },
+  { id: "duplicate-note", label: "Duplicate note", defaultBinding: null },
   { id: "sync-now", label: "Sync now", defaultBinding: null },
 ];
 

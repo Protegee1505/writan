@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Hit, Summary } from "$lib/api";
+  import { api } from "$lib/api";
   import { fmtDate, highlightParts } from "$lib/format";
   import { settings } from "$lib/settings.svelte";
   import { store } from "$lib/store.svelte";
@@ -9,9 +10,67 @@
   function isSummary(item: Summary | Hit): item is Summary {
     return "updated" in item;
   }
+
+  /** The row's right-click menu: which note it points at and where it is. */
+  let menu = $state<{ id: string; x: number; y: number } | null>(null);
+
+  /** The clipboard is not available everywhere (older WebKitGTK builds). */
+  const canCopy = typeof navigator !== "undefined" && !!navigator.clipboard;
+
+  /**
+   * Open the menu on `item`. The note is selected first — the same thing the
+   * GTK shell's menu does — so every item acts on the note it names (and
+   * `select` flushes a pending edit).
+   */
+  async function openMenu(event: MouseEvent, item: Summary | Hit) {
+    event.preventDefault();
+    await store.select(item.id);
+    menu = { id: item.id, x: event.clientX, y: event.clientY };
+  }
+
+  function closeMenu() {
+    menu = null;
+  }
+
+  /** The note's file path, as the GTK shell's "Copy file path" reports it. */
+  function notePath(id: string): string | null {
+    const item = items.find((entry) => entry.id === id);
+    const root = store.status.vaultPath;
+    if (!item || !root) return null;
+    return `${root}/${item.relPath}`;
+  }
+
+  async function copyNoteText(id: string) {
+    try {
+      const note = store.note?.id === id ? store.note : await api.get(id);
+      await navigator.clipboard.writeText(note?.body ?? "");
+      store.notify("Copied the note text");
+    } catch (e) {
+      store.error = String(e);
+    }
+  }
+
+  async function copyFilePath(path: string) {
+    try {
+      await navigator.clipboard.writeText(path);
+      store.notify("Copied the file path");
+    } catch (e) {
+      store.error = String(e);
+    }
+  }
+
+  function onMenuKey(event: KeyboardEvent) {
+    if (event.key === "Escape" && menu) closeMenu();
+  }
 </script>
 
-<aside class="sidebar" class:compact={settings.value.view.listDensity === "compact"}>
+<svelte:window onkeydown={onMenuKey} />
+
+<aside
+  class="sidebar"
+  class:compact={settings.value.view.listDensity === "compact"}
+  style="width: {settings.value.view.sidebarWidth}px"
+>
   {#if store.tags.length || store.folders.length || store.filtered}
     <div class="filters">
       {#if store.filtered}
@@ -77,6 +136,7 @@
         class="item"
         class:selected={item.id === store.selectedId}
         onclick={() => store.select(item.id)}
+        oncontextmenu={(event) => openMenu(event, item)}
       >
         <span class="titleRow">
           {#if item.pinned}<span class="pin">●</span>{/if}
@@ -116,10 +176,61 @@
   </div>
 </aside>
 
+{#if menu}
+  {@const entry = menu}
+  <div
+    class="menuBackdrop"
+    role="presentation"
+    onclick={closeMenu}
+    oncontextmenu={(event) => {
+      event.preventDefault();
+      closeMenu();
+    }}
+  ></div>
+  <div class="menu" style="left: {entry.x}px; top: {entry.y}px" role="menu">
+    <button class="menuItem" onclick={() => { closeMenu(); void store.duplicateNote(entry.id); }}>
+      Duplicate
+    </button>
+    <button
+      class="menuItem"
+      onclick={() => {
+        closeMenu();
+        window.dispatchEvent(new CustomEvent("writan-rename"));
+      }}
+    >
+      Rename…
+    </button>
+    <button class="menuItem" onclick={() => { closeMenu(); void store.togglePin(); }}>
+      {store.note?.id === entry.id && store.note.pinned ? "Unpin" : "Pin"}
+    </button>
+    {#if canCopy}
+      <button class="menuItem" onclick={() => { closeMenu(); void copyNoteText(entry.id); }}>
+        Copy note text
+      </button>
+      {#if notePath(entry.id)}
+        {@const path = notePath(entry.id)!}
+        <button class="menuItem" onclick={() => { closeMenu(); void copyFilePath(path); }}>
+          Copy file path
+        </button>
+      {/if}
+    {/if}
+    <hr />
+    <button
+      class="menuItem danger"
+      onclick={() => {
+        closeMenu();
+        void store.removeNote();
+      }}
+    >
+      Move to trash
+    </button>
+  </div>
+{/if}
+
 <style>
   .sidebar {
-    width: 290px;
-    min-width: 220px;
+    width: 280px;
+    min-width: 200px;
     max-width: 40vw;
     border-right: 1px solid var(--border);
     display: flex;
@@ -288,5 +399,49 @@
     color: var(--fg-muted);
     font-size: 13px;
     line-height: 1.6;
+  }
+
+  /* The note context menu: a fixed overlay at the pointer, dismissed by any
+     click outside it (the backdrop) or Escape. */
+  .menuBackdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+  }
+
+  .menu {
+    position: fixed;
+    z-index: 81;
+    min-width: 180px;
+    padding: 5px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .menu hr {
+    width: 100%;
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+  }
+
+  .menuItem {
+    text-align: left;
+    padding: 7px 10px;
+    border-radius: calc(var(--radius) - 3px);
+    font-size: 13px;
+  }
+
+  .menuItem:hover {
+    background: var(--bg-hover);
+  }
+
+  .menuItem.danger {
+    color: var(--danger);
   }
 </style>

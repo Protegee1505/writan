@@ -244,6 +244,15 @@ pub fn create_note(state: State<'_, AppState>, title: Option<String>) -> CmdResu
 }
 
 #[tauri::command]
+pub fn duplicate_note(state: State<'_, AppState>, id: String) -> CmdResult<NoteDto> {
+    let id = parse_id(&id)?;
+    with_ws(&state, |workspace| {
+        let note = workspace.duplicate_note(&id).map_err(|e| e.to_string())?;
+        Ok(note_dto(&note))
+    })
+}
+
+#[tauri::command]
 pub fn save_note(
     state: State<'_, AppState>,
     id: String,

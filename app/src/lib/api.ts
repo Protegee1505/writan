@@ -120,6 +120,7 @@ export const api = {
     }),
   get: (id: string) => invoke<Note | null>("get_note", { id }),
   create: (title?: string) => invoke<Note>("create_note", { title }),
+  duplicate: (id: string) => invoke<Note>("duplicate_note", { id }),
   save: (id: string, body: string, tags: string[]) =>
     invoke<Note>("save_note", { id, body, tags }),
   rename: (id: string, title: string) => invoke<Note>("rename_note", { id, title }),

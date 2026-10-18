@@ -258,6 +258,22 @@ class AppStore {
     }
   }
 
+  /** Copy a note (the open one by default) and open the copy. */
+  async duplicateNote(id?: string) {
+    const source = id ?? this.note?.id ?? this.selectedId;
+    if (!source) return;
+    try {
+      await this.flushSave();
+      const copy = await api.duplicate(source);
+      await this.refresh();
+      void this.loadFacets();
+      await this.select(copy.id);
+      this.notify("Duplicated the note");
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
   onBodyChange(body: string) {
     if (!this.note) return;
     this.note.body = body;

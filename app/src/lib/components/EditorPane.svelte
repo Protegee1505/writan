@@ -23,6 +23,7 @@
   let lastId: string | null = null;
   let applying = false;
   let titleDraft = $state("");
+  let titleEl = $state<HTMLInputElement | undefined>();
   let lastTitleId: string | null = null;
   let tagDraft = $state("");
   let deleteArmed = $state(false);
@@ -108,9 +109,16 @@
       insertText((e as CustomEvent<string>).detail);
     };
     window.addEventListener("writan-insert", onInsert);
+    // The note list's "Rename…" item hands focus to the title field.
+    const onRename = () => {
+      titleEl?.focus();
+      titleEl?.select();
+    };
+    window.addEventListener("writan-rename", onRename);
     lastId = store.note?.id ?? null;
     return () => {
       window.removeEventListener("writan-insert", onInsert);
+      window.removeEventListener("writan-rename", onRename);
       view?.destroy();
       view = null;
     };
@@ -256,6 +264,7 @@
   <div class="header">
     <input
       class="titleInput"
+      bind:this={titleEl}
       bind:value={titleDraft}
       onblur={commitTitle}
       onkeydown={(e) => {

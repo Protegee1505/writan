@@ -72,6 +72,10 @@ export interface Settings {
     listDensity: "comfortable" | "compact";
     showWordCount: boolean;
     dateFormat: "relative" | "absolute";
+    /** Sidebar width in px; the GTK shell remembers its divider here. */
+    sidebarWidth: number;
+    /** Editor pane width in px (the GTK shell's second divider). */
+    editorWidth: number;
   };
   search: {
     live: boolean;
@@ -95,7 +99,13 @@ export const DEFAULT_SETTINGS: Settings = {
     livePreview: true,
     autosaveMs: 700,
   },
-  view: { listDensity: "comfortable", showWordCount: true, dateFormat: "relative" },
+  view: {
+    listDensity: "comfortable",
+    showWordCount: true,
+    dateFormat: "relative",
+    sidebarWidth: 280,
+    editorWidth: 520,
+  },
   search: { live: true, debounceMs: 150 },
   general: { confirmDelete: true, reopenLastNote: true },
   shortcuts: {},
@@ -131,6 +141,8 @@ export interface OptionSpec {
   description?: string;
   keywords?: string[];
   control: ControlSpec;
+  /** Honored by the GTK shell only, so the desktop panel hides it. */
+  linuxOnly?: boolean;
 }
 
 export const OPTIONS: OptionSpec[] = [
@@ -251,6 +263,23 @@ export const OPTIONS: OptionSpec[] = [
         { value: "absolute", label: "Absolute (Oct 16, 14:00)" },
       ],
     },
+  },
+  {
+    path: "view.sidebarWidth",
+    section: "view",
+    label: "Sidebar width",
+    description: "Width of the note list, in pixels",
+    keywords: ["layout", "panel", "divider", "resize"],
+    control: { kind: "slider", min: 200, max: 420, step: 10, unit: "px" },
+  },
+  {
+    path: "view.editorWidth",
+    section: "view",
+    label: "Editor pane width",
+    description: "Width of the Markdown editor; the preview takes the rest",
+    keywords: ["layout", "panel", "divider", "resize", "preview"],
+    control: { kind: "slider", min: 320, max: 900, step: 10, unit: "px" },
+    linuxOnly: true,
   },
   {
     path: "search.live",
@@ -505,6 +534,7 @@ export function searchSettings(query: string, limit = 6): OptionSpec[] {
   if (!q) return [];
   const scored: { spec: OptionSpec; score: number }[] = [];
   for (const spec of OPTIONS) {
+    if (spec.linuxOnly) continue;
     const haystack = [spec.label, spec.description ?? "", ...(spec.keywords ?? [])]
       .join(" ")
       .toLowerCase();

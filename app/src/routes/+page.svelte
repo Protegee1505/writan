@@ -58,6 +58,9 @@
     } else if (matchesAction(e, "pin-note")) {
       e.preventDefault();
       void store.togglePin();
+    } else if (matchesAction(e, "duplicate-note") && store.status.vaultPath) {
+      e.preventDefault();
+      void store.duplicateNote();
     } else if (matchesAction(e, "sync-now") && store.status.vaultPath) {
       e.preventDefault();
       void store.syncNow();
