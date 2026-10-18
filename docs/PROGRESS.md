@@ -155,11 +155,40 @@ Last updated: 2026-10-17 (M3.5 slice 6).
   `scripts/gtk-shell-test.sh` grew from 31 to 36 checks (clipboard image paste
   stores + links, a second paste reuses the file, palette attach imports, text
   paste still falls through) — 36/36 green locally against the release binary.
+- **M3.5 slice 7 — parity sweep + GTK polish** (2026-10-18, commit `27ea230`):
+  the last three
+  open parity rows closed. Tags: core gained `Workspace::update_note`/
+  `set_tags`/`sanitize_tags` (Tauri's save path delegates to it too) and the
+  GTK editor header gained tag chips plus an `Add tag…` entry (comma splits,
+  Enter or focus-leaving commits, the chip's × removes). Appearance: a `Theme`
+  combo (follow system / light / dark) drives `adw::StyleManager`, an
+  `Accent color` combo offers the same six presets as
+  `app/src/lib/settings.svelte.ts` (a drift-guard unit test parses the
+  TypeScript table), and a display-wide CSS provider recolours switches,
+  selections and suggested actions with the accent — CSS `@define-color` does
+  not reach libadwaita's accent variables, so it paints the widgets directly;
+  the shipped `toggle-theme` action is registered for the first time. Session
+  restore: every note open writes `settings.session.lastNoteId`, startup
+  reopens it while `general.reopenLastNote` (default true, new switch in the
+  General group) is on, else the first row. Polish: `GTK_THEME`-based dark
+  detection as a fallback, `No notes yet`/`No matching notes` empty states, an
+  editor placeholder while no note is open, and the preview pane renders local
+  images inline (texture cache, 460 px cap; http(s)/data links stay text).
+  Tauri gained `empty_trash` (command, store action, panel button). The
+  `scripts/gtk-shell-test.sh` fixture grew a note with an image link;
+  checks went 36 → 48 (tag chip add and remove, theme and accent persistence,
+  a pixel check that the accent repaints a live switch, an inline-image pixel
+  check, restart-reopens-last-note and the reopen-off fallback) — 48/48 green
+  locally against the release binary with `cargo fmt`/`clippy` clean,
+  `cargo test --workspace` green, `svelte-check` 0/0 and the frontend build
+  OK. The real-hardware routine (IME + RAM) is written down in
+  `docs/REAL-HARDWARE.md`.
 
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) in progress — slices
-  1–6 done, next slice 7 (parity sweep + GTK polish).
+  1–7 done, next slice 8 (sync UI in the GTK shell); the real-hardware
+  acceptance (IME + RAM) waits on the user's laptop (`docs/REAL-HARDWARE.md`).
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
@@ -192,7 +221,7 @@ Last updated: 2026-10-17 (M3.5 slice 6).
   the idle-RAM re-measure against the < 100 MB budget (headless
   software-rendered measure is ≈131 MB) need the user's Linux laptop. The app
   has not run on Linux interactively yet — the spike runs headless in CI.
-  Append the outcome to ADR-0004.
+  The routine is in `docs/REAL-HARDWARE.md`; append the outcome to ADR-0004.
 - **Android untouched** (parked for M5): no `tauri android init` yet — needs
   JDK 17 + Android SDK/NDK.
 
@@ -222,7 +251,7 @@ cargo build --release -p writan-linux
 
 # GTK shell headless checks (Xvfb; no real app data touched)
 scripts/gui-shot.sh --bin target/release/writan        # walkthrough screenshots
-scripts/gtk-shell-test.sh --bin target/release/writan  # autosave + watcher smoke test
+scripts/gtk-shell-test.sh --bin target/release/writan  # 48-check shell acceptance run
 ```
 
 ## Environment & gotchas
