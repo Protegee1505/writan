@@ -114,6 +114,7 @@ export const api = {
   trash: () => invoke<TrashEntry[]>("list_trash"),
   restore: (id: string) => invoke<Note>("restore_note", { id }),
   purge: (id: string) => invoke<void>("purge_note", { id }),
+  emptyTrash: () => invoke<number>("empty_trash"),
   setPinned: (id: string, pinned: boolean) => invoke<Note>("set_pinned", { id, pinned }),
   rebuild: () => invoke<ReconcileStats>("rebuild_index"),
   listTags: () => invoke<CountEntry[]>("list_tags"),

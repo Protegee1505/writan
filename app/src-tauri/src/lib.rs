@@ -38,6 +38,7 @@ pub fn run() {
             commands::list_trash,
             commands::restore_note,
             commands::purge_note,
+            commands::empty_trash,
             commands::set_pinned,
             commands::rebuild_index,
             commands::list_tags,

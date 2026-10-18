@@ -124,6 +124,43 @@ fn pin_and_filter() {
 }
 
 #[test]
+fn set_tags_sanitizes_and_reaches_file_and_index() {
+    let (_v, _s, mut ws) = workspace();
+    let note = ws.create_note("Tagged", &[]).expect("create");
+    let updated = ws
+        .set_tags(
+            &note.meta.id,
+            vec![
+                " #dev ".to_string(),
+                "dev".to_string(),
+                String::new(),
+                "ops".to_string(),
+                "#".to_string(),
+            ],
+        )
+        .expect("set_tags");
+    assert_eq!(updated.meta.tags, vec!["dev", "ops"]);
+    // The file is the source of truth: frontmatter carries the cleaned tags.
+    let text = fs::read_to_string(ws.vault().abs_path(&note.rel_path)).expect("read");
+    assert!(text.contains("- dev"), "{text}");
+    assert!(text.contains("- ops"), "{text}");
+    // A body-only update keeps the tags.
+    let edited = ws
+        .update_note(&note.meta.id, Some("fresh words"), None)
+        .expect("update body");
+    assert_eq!(edited.body.trim(), "fresh words");
+    assert_eq!(edited.meta.tags, vec!["dev", "ops"]);
+    let hits = ws
+        .search(&SearchQuery {
+            tags: vec!["ops".to_string()],
+            ..Default::default()
+        })
+        .expect("search");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, note.meta.id);
+}
+
+#[test]
 fn rename_note_moves_file_and_updates_index() {
     let (_v, _s, mut ws) = workspace();
     let mut note = ws.create_note("Old Name", &[]).expect("create");

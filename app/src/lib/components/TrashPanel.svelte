@@ -16,7 +16,15 @@
   <div class="panel">
     <header>
       <span>Trash</span>
-      <button class="close" onclick={() => (store.trashOpen = false)} title="Close">✕</button>
+      <div class="head-actions">
+        <button
+          class="quiet"
+          onclick={() => store.emptyTrash()}
+          disabled={store.trash.length === 0}
+          title="Delete every trashed note forever">Empty Trash</button
+        >
+        <button class="close" onclick={() => (store.trashOpen = false)} title="Close">✕</button>
+      </div>
     </header>
 
     <div class="entries">
@@ -76,6 +84,28 @@
     padding: 4px 8px;
     border-radius: 8px;
     color: var(--fg-muted);
+  }
+
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .quiet {
+    padding: 4px 10px;
+    border-radius: 8px;
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+
+  .quiet:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+
+  .quiet:disabled {
+    opacity: 0.5;
   }
 
   .close:hover {

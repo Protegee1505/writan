@@ -1,13 +1,37 @@
 //! Preview pane: `spans::parse_blocks` output mapped onto a read-only
-//! `GtkTextView` with registered text tags.
+//! `GtkTextView` with registered text tags. Local images render inline as
+//! anchored `GtkPicture` widgets (the Tauri shell's inline preview does not
+//! do this — see docs/PARITY.md).
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gtk::prelude::*;
 
 use crate::spans::{Block, Run, parse_blocks};
 
+/// Widest an inline image is drawn; taller images scale down proportionally.
+const MAX_IMAGE_WIDTH: f64 = 460.0;
+/// Decoded textures are kept for quick re-renders; beyond this the cache is
+/// dropped wholesale (re-rendering rebuilds only what is on screen).
+const CACHE_LIMIT: usize = 32;
+
+#[derive(Default)]
+struct PreviewState {
+    /// Folder of the open note; relative image sources resolve against it.
+    base: Option<PathBuf>,
+    link_color: String,
+    /// Decoded textures keyed by path with (mtime_ns, len), so an edited
+    /// attachment is picked up without re-decoding on every keystroke.
+    cache: HashMap<PathBuf, (u64, u64, gtk::gdk::Texture)>,
+}
+
 #[derive(Clone)]
 pub struct Preview {
     pub view: gtk::TextView,
+    state: Rc<RefCell<PreviewState>>,
 }
 
 impl Preview {
@@ -22,11 +46,34 @@ impl Preview {
             .right_margin(24)
             .build();
         add_tags(&view.buffer());
-        Self { view }
+        Self {
+            view,
+            state: Rc::new(RefCell::new(PreviewState::default())),
+        }
+    }
+
+    /// Point relative image sources at `base` (the open note's folder).
+    pub fn set_base(&self, base: Option<PathBuf>) {
+        self.state.borrow_mut().base = base;
+    }
+
+    /// Recolour links to the current accent (light or dark variant).
+    pub fn set_link_color(&self, color: &str) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.link_color == color {
+                return;
+            }
+            state.link_color = color.to_string();
+        }
+        if let Some(tag) = self.view.buffer().tag_table().lookup("link") {
+            tag.set_foreground(Some(color));
+        }
     }
 
     /// Re-render the whole document; the spike renders plain text with tags
-    /// instead of loading widgets, which keeps it fast and simple.
+    /// instead of loading widgets, which keeps it fast and simple. Images are
+    /// the exception: they become child widgets at a text anchor.
     pub fn render(&self, markdown: &str) {
         let buffer = self.view.buffer();
         buffer.set_text("");
@@ -39,20 +86,20 @@ impl Preview {
                         2 => "h2",
                         _ => "h3",
                     };
-                    insert_runs(&buffer, &mut end, &runs, &[tag]);
+                    self.insert_runs(&buffer, &mut end, &runs, &[tag]);
                     buffer.insert(&mut end, "\n");
                 }
                 Block::Paragraph(runs) => {
-                    insert_runs(&buffer, &mut end, &runs, &[]);
+                    self.insert_runs(&buffer, &mut end, &runs, &[]);
                     buffer.insert(&mut end, "\n");
                 }
                 Block::Quote(runs) => {
-                    insert_runs(&buffer, &mut end, &runs, &["quote"]);
+                    self.insert_runs(&buffer, &mut end, &runs, &["quote"]);
                     buffer.insert(&mut end, "\n");
                 }
                 Block::Item(runs) => {
                     buffer.insert_with_tags_by_name(&mut end, "•  ", &["item"]);
-                    insert_runs(&buffer, &mut end, &runs, &["item"]);
+                    self.insert_runs(&buffer, &mut end, &runs, &["item"]);
                     buffer.insert(&mut end, "\n");
                 }
                 Block::Code(code) => {
@@ -70,24 +117,113 @@ impl Preview {
             }
         }
     }
-}
 
-fn insert_runs(buffer: &gtk::TextBuffer, end: &mut gtk::TextIter, runs: &[Run], extra: &[&str]) {
-    for run in runs {
-        let mut tags: Vec<&str> = extra.to_vec();
-        if run.bold {
-            tags.push("bold");
+    fn insert_runs(
+        &self,
+        buffer: &gtk::TextBuffer,
+        end: &mut gtk::TextIter,
+        runs: &[Run],
+        extra: &[&str],
+    ) {
+        for run in runs {
+            if let Some(src) = run.image.clone()
+                && self.insert_image(buffer, end, &src)
+            {
+                continue;
+            }
+            let mut tags: Vec<&str> = extra.to_vec();
+            if run.bold {
+                tags.push("bold");
+            }
+            if run.italic {
+                tags.push("italic");
+            }
+            if run.code {
+                tags.push("inline-code");
+            }
+            if run.link.is_some() {
+                tags.push("link");
+            }
+            buffer.insert_with_tags_by_name(end, &run.text, &tags);
         }
-        if run.italic {
-            tags.push("italic");
+    }
+
+    /// Draw `src` inline when it is a local file we can decode; return false
+    /// so the caller falls back to the alt text (remote URLs, missing files,
+    /// undecodable data).
+    fn insert_image(&self, buffer: &gtk::TextBuffer, end: &mut gtk::TextIter, src: &str) -> bool {
+        if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("data:") {
+            return false;
         }
-        if run.code {
-            tags.push("inline-code");
-        }
-        if run.link.is_some() {
-            tags.push("link");
-        }
-        buffer.insert_with_tags_by_name(end, &run.text, &tags);
+        let path = {
+            let state = self.state.borrow();
+            let Some(base) = state.base.as_ref() else {
+                return false;
+            };
+            let src = Path::new(src);
+            if src.is_absolute() {
+                src.to_path_buf()
+            } else {
+                base.join(src)
+            }
+        };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return false;
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_nanos() as u64)
+            .unwrap_or(0);
+        let size = meta.len();
+        let cached = {
+            let state = self.state.borrow();
+            state
+                .cache
+                .get(&path)
+                .filter(|(cached_mtime, cached_size, _)| {
+                    *cached_mtime == mtime && *cached_size == size
+                })
+                .map(|(_, _, texture)| texture.clone())
+        };
+        let texture = match cached {
+            Some(texture) => texture,
+            None => {
+                let Ok(bytes) = std::fs::read(&path) else {
+                    return false;
+                };
+                let Ok(texture) = gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(&bytes))
+                else {
+                    return false;
+                };
+                let mut state = self.state.borrow_mut();
+                if state.cache.len() >= CACHE_LIMIT {
+                    state.cache.clear();
+                }
+                state
+                    .cache
+                    .insert(path.clone(), (mtime, size, texture.clone()));
+                texture
+            }
+        };
+        let width = f64::from(texture.width());
+        let height = f64::from(texture.height());
+        let (width, height) = if width > MAX_IMAGE_WIDTH {
+            (MAX_IMAGE_WIDTH, height * MAX_IMAGE_WIDTH / width)
+        } else {
+            (width, height)
+        };
+        let picture = gtk::Picture::builder()
+            .paintable(&texture)
+            .can_shrink(true)
+            .halign(gtk::Align::Start)
+            .width_request(width.max(1.0) as i32)
+            .height_request(height.max(1.0) as i32)
+            .build();
+        let anchor = buffer.create_child_anchor(end);
+        self.view.add_child_at_anchor(&picture, &anchor);
+        true
     }
 }
 

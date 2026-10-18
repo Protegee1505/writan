@@ -14,6 +14,7 @@ use sourceview5::prelude::*;
 
 use writan_core::{Note, NoteId, SearchQuery, TrashEntry, VaultEvent, VaultWatcher, Workspace};
 
+use crate::appearance;
 use crate::config;
 use crate::keymap;
 use crate::preview::Preview;
@@ -57,6 +58,17 @@ struct State {
     programmatic: bool,
     /// Shortcut overrides from `settings.shortcuts` (keymap.rs).
     overrides: keymap::ShortcutOverrides,
+    /// `settings.session.lastNoteId`, restored at startup and updated on
+    /// every note switch.
+    last_note_id: Option<NoteId>,
+    /// `settings.general.reopenLastNote`.
+    reopen_last_note: bool,
+    /// `settings.appearance.theme`: system, light or dark.
+    theme: String,
+    /// `settings.appearance.accent`: an `appearance::ACCENTS` id.
+    accent: String,
+    /// Recolours libadwaita's accent named colours; reloaded on change.
+    accent_provider: gtk::CssProvider,
     config_path: PathBuf,
     data_dir: PathBuf,
 }
@@ -68,12 +80,17 @@ struct Ui {
     toast: adw::ToastOverlay,
     stack: gtk::Stack,
     list: gtk::ListBox,
+    list_empty: gtk::Label,
     search: gtk::SearchEntry,
     status: gtk::Label,
     title_entry: gtk::Entry,
     words: gtk::Label,
     pin_button: gtk::ToggleButton,
     delete_button: gtk::Button,
+    tag_row: gtk::Box,
+    tag_chips: gtk::FlowBox,
+    tag_entry: gtk::Entry,
+    editor_placeholder: gtk::Label,
     facets: gtk::Box,
     active_filters: gtk::Box,
     folders_flow: gtk::FlowBox,
@@ -117,9 +134,26 @@ fn build(application: &adw::Application) {
         date_format: config::load_date_format(&config_path),
         programmatic: false,
         overrides: overrides.clone(),
+        last_note_id: config::load_last_note(&config_path).and_then(|id| id.parse().ok()),
+        reopen_last_note: config::load_reopen_last_note(&config_path),
+        theme: config::load_theme(&config_path),
+        accent: config::load_accent(&config_path),
+        accent_provider: gtk::CssProvider::new(),
         config_path,
         data_dir: config::state_dir(),
     }));
+
+    // Accent recolouring rides on its own provider so it can be reloaded
+    // without touching the rest of the app CSS; the persisted theme choice is
+    // applied before the window exists, so it opens in the right scheme.
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &state.borrow().accent_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+    appearance::apply_theme(&adw::StyleManager::default(), &state.borrow().theme);
 
     let window = adw::ApplicationWindow::builder()
         .application(application)
@@ -178,10 +212,22 @@ fn build(application: &adw::Application) {
         .build();
     list.add_css_class("navigation-sidebar");
     let sidebar_scroll = gtk::ScrolledWindow::builder()
-        .child(&list)
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
+
+    // Empty state under the list, like the Tauri sidebar's placeholder.
+    let list_empty = gtk::Label::builder()
+        .label("No notes yet")
+        .css_classes(["dim-label"])
+        .margin_top(18)
+        .margin_bottom(18)
+        .can_target(false)
+        .build();
+    let sidebar_body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    sidebar_body.append(&list);
+    sidebar_body.append(&list_empty);
+    sidebar_scroll.set_child(Some(&sidebar_body));
 
     // Facets, like the Tauri sidebar: active filters first, then folders and
     // the most used tags, all click-to-toggle.
@@ -209,12 +255,9 @@ fn build(application: &adw::Application) {
         buffer.set_language(Some(&language));
     }
 
-    // Editor theme follows the system light/dark preference.
-    {
-        apply_style_scheme(&buffer);
-        let buffer = buffer.clone();
-        adw::StyleManager::default().connect_dark_notify(move |_| apply_style_scheme(&buffer));
-    }
+    // Editor theme follows the system light/dark preference (re-applied on
+    // dark-notify once the full Ui exists, see below).
+    apply_style_scheme(&buffer);
     let editor = sourceview5::View::with_buffer(&buffer);
     editor.set_monospace(true);
     editor.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -258,9 +301,47 @@ fn build(application: &adw::Application) {
     editor_header.append(&pin_button);
     editor_header.append(&delete_button);
 
+    // Tags row, like the Tauri editor: an "Add tag…" entry (Enter or comma
+    // commits) followed by removable chips. Hidden until a note is open.
+    let tag_entry = gtk::Entry::builder()
+        .placeholder_text("Add tag…")
+        .width_chars(10)
+        .valign(gtk::Align::Center)
+        .tooltip_text("Type a tag and press Enter; a comma separates several")
+        .build();
+    let tag_chips = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .max_children_per_line(16)
+        .column_spacing(4)
+        .row_spacing(2)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .build();
+    let tag_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    tag_row.set_margin_start(18);
+    tag_row.set_margin_end(18);
+    tag_row.set_margin_top(2);
+    tag_row.set_margin_bottom(4);
+    tag_row.append(&tag_entry);
+    tag_row.append(&tag_chips);
+    tag_row.set_visible(false);
+
+    // "No note open" placeholder over the editor.
+    let editor_placeholder = gtk::Label::builder()
+        .label("Select a note, or create one with the + button")
+        .css_classes(["dim-label"])
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .can_target(false)
+        .build();
+    let editor_overlay = gtk::Overlay::new();
+    editor_overlay.set_child(Some(&editor_scroll));
+    editor_overlay.add_overlay(&editor_placeholder);
+
     let editor_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
     editor_pane.append(&editor_header);
-    editor_pane.append(&editor_scroll);
+    editor_pane.append(&tag_row);
+    editor_pane.append(&editor_overlay);
 
     // Preview pane.
     let preview = Preview::new();
@@ -325,12 +406,17 @@ fn build(application: &adw::Application) {
         toast: toast.clone(),
         stack: stack.clone(),
         list: list.clone(),
+        list_empty: list_empty.clone(),
         search: search.clone(),
         status: status.clone(),
         title_entry: title_entry.clone(),
         words: words.clone(),
         pin_button: pin_button.clone(),
         delete_button: delete_button.clone(),
+        tag_row: tag_row.clone(),
+        tag_chips: tag_chips.clone(),
+        tag_entry: tag_entry.clone(),
+        editor_placeholder: editor_placeholder.clone(),
         facets: facets.clone(),
         active_filters: active_filters.clone(),
         folders_flow: folders_flow.clone(),
@@ -338,6 +424,21 @@ fn build(application: &adw::Application) {
         editor: editor.clone(),
         preview: preview.clone(),
     };
+
+    // Keep the editor scheme, accent colours and preview links in step with
+    // the effective light/dark preference (system change, GTK_THEME or the
+    // Theme row in Settings).
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Ok(buffer) = ui.editor.buffer().downcast::<sourceview5::Buffer>() {
+                apply_style_scheme(&buffer);
+            }
+            apply_accent(&state, &ui);
+        });
+    }
+    apply_accent(&state, &ui);
 
     // Selection loads the note; a programmatic re-selection of the open note
     // is ignored so typing is never interrupted.
@@ -409,6 +510,33 @@ fn build(application: &adw::Application) {
         let state = state.clone();
         let ui = ui.clone();
         settings_button.connect_clicked(move |_| open_settings_or_focus(&state, &ui));
+    }
+
+    // Tags: Enter or a comma commits the entry, leaving it commits too.
+    {
+        let state_for_enter = state.clone();
+        let ui_for_enter = ui.clone();
+        tag_entry.connect_activate(move |_| commit_tag_entry(&state_for_enter, &ui_for_enter));
+
+        let state_for_focus = state.clone();
+        let ui_for_focus = ui.clone();
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_leave(move |_| commit_tag_entry(&state_for_focus, &ui_for_focus));
+        tag_entry.add_controller(focus);
+
+        let state_for_comma = state.clone();
+        let ui_for_comma = ui.clone();
+        let comma = gtk::EventControllerKey::new();
+        comma.set_propagation_phase(gtk::PropagationPhase::Capture);
+        comma.connect_key_pressed(move |_, key, _, _| {
+            let name = key.name().map(|name| name.to_string()).unwrap_or_default();
+            if name == "comma" {
+                commit_tag_entry(&state_for_comma, &ui_for_comma);
+                return gtk::glib::Propagation::Stop;
+            }
+            gtk::glib::Propagation::Proceed
+        });
+        tag_entry.add_controller(comma);
     }
 
     // Editor → preview, dirty state, debounced autosave.
@@ -564,6 +692,17 @@ fn build(application: &adw::Application) {
         apply_accels(application, &overrides, "open-settings");
     }
 
+    // Theme toggle (a keymap action, unbound by default): flip light/dark and
+    // persist it, like the Tauri shell's `toggleTheme`.
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let theme_action = gtk::gio::SimpleAction::new("toggle-theme", None);
+        theme_action.connect_activate(move |_, _| toggle_theme(&state, &ui));
+        application.add_action(&theme_action);
+        apply_accels(application, &overrides, "toggle-theme");
+    }
+
     // Save when the window closes.
     {
         let state = state.clone();
@@ -604,7 +743,8 @@ fn build(application: &adw::Application) {
         && open_vault(&state, &path).is_ok()
     {
         stack.set_visible_child_name("content");
-        refresh(&state, &ui, true);
+        refresh(&state, &ui, false);
+        open_initial_note(&state, &ui);
     }
 
     // Spike measurement hooks: WRITAN_MEASURE=1 prints timings and exits.
@@ -688,6 +828,57 @@ fn warn_reserved_overrides(overrides: &keymap::ShortcutOverrides) {
             );
         }
     }
+}
+
+/// Show the note the last session ended on when `general.reopenLastNote` is
+/// on and it still exists; otherwise the first row (the Tauri startup path).
+fn open_initial_note(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let (reopen, last) = {
+        let st = state.borrow();
+        (st.reopen_last_note, st.last_note_id)
+    };
+    let restored = reopen
+        .then_some(last)
+        .flatten()
+        .filter(|id| state.borrow().rows.contains(id));
+    let id = restored.or_else(|| state.borrow().rows.first().copied());
+    if let Some(id) = id {
+        open_note_by_id(state, ui, id);
+    }
+}
+
+/// Flip between light and dark and persist the explicit choice, like the
+/// Tauri shell's `toggleTheme` (never back to "system").
+fn toggle_theme(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let manager = adw::StyleManager::default();
+    let theme = if appearance::effective_dark(&manager) {
+        "light"
+    } else {
+        "dark"
+    };
+    state.borrow_mut().theme = theme.to_string();
+    persist_setting(
+        state,
+        ui,
+        "appearance",
+        "theme",
+        serde_json::Value::from(theme),
+    );
+    appearance::apply_theme(&manager, theme);
+    apply_accent(state, ui);
+}
+
+/// Reapply accent colours for the current scheme: libadwaita's named colours
+/// (buttons, selections) and the preview's links.
+fn apply_accent(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let dark = appearance::effective_dark(&adw::StyleManager::default());
+    let (accent, provider) = {
+        let st = state.borrow();
+        (st.accent.clone(), st.accent_provider.clone())
+    };
+    provider.load_from_data(&appearance::accent_css(&accent, dark));
+    ui.preview
+        .set_link_color(appearance::accent_color(&accent, dark));
 }
 
 /// Create a note and open it (the Tauri shell's New note action, and the
@@ -996,6 +1187,16 @@ fn refresh(state: &Rc<RefCell<State>>, ui: &Ui, fallback: bool) {
         ui.list.remove(&child);
     }
     let entries = visible_entries(state, &ui.search.text());
+    let searching = {
+        let st = state.borrow();
+        !ui.search.text().is_empty() || st.tag_filter.is_some() || st.folder_filter.is_some()
+    };
+    ui.list_empty.set_label(if searching {
+        "No matching notes"
+    } else {
+        "No notes yet"
+    });
+    ui.list_empty.set_visible(entries.is_empty());
     let mut rows = Vec::with_capacity(entries.len());
     for (id, title, subtitle, pinned) in &entries {
         let row = gtk::ListBoxRow::new();
@@ -1248,6 +1449,108 @@ fn commit_title(state: &Rc<RefCell<State>>, ui: &Ui) {
     }
 }
 
+/// Commit the tag entry: comma-separated names, deduped by the core's
+/// `sanitize_tags` inside `Workspace::set_tags`.
+fn commit_tag_entry(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let text = ui.tag_entry.text().to_string();
+    if text.trim().is_empty() {
+        return;
+    }
+    ui.tag_entry.set_text("");
+    let mut merged: Vec<String> = state
+        .borrow()
+        .current
+        .as_ref()
+        .map(|note| note.meta.tags.clone())
+        .unwrap_or_default();
+    merged.extend(
+        text.split(',')
+            .map(|part| part.trim().to_string())
+            .filter(|tag| !tag.is_empty()),
+    );
+    apply_tags(state, ui, merged);
+}
+
+/// A chip for one tag; clicking it drops the tag from the note.
+fn tag_chip(state: &Rc<RefCell<State>>, ui: &Ui, tag: &str) -> gtk::Button {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    content.append(&gtk::Label::new(Some(&format!("#{tag}"))));
+    content.append(
+        &gtk::Label::builder()
+            .label("×")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    let button = gtk::Button::builder()
+        .child(&content)
+        .tooltip_text(format!("Remove tag {tag}"))
+        .css_classes(["flat", "pill", "caption"])
+        .valign(gtk::Align::Center)
+        .build();
+    let state = state.clone();
+    let ui = ui.clone();
+    let tag = tag.to_string();
+    button.connect_clicked(move |_| {
+        let remaining: Vec<String> = state
+            .borrow()
+            .current
+            .as_ref()
+            .map(|note| {
+                note.meta
+                    .tags
+                    .iter()
+                    .filter(|existing| existing.as_str() != tag)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        apply_tags(&state, &ui, remaining);
+    });
+    button
+}
+
+/// Rebuild the chips row (the entry keeps its text and focus).
+fn fill_tags(state: &Rc<RefCell<State>>, ui: &Ui, tags: &[String]) {
+    while let Some(child) = ui.tag_chips.first_child() {
+        ui.tag_chips.remove(&child);
+    }
+    for tag in tags {
+        ui.tag_chips.append(&tag_chip(state, ui, tag));
+    }
+}
+
+/// Write the tag list through `Workspace::set_tags`, then repaint chips, list
+/// and facets from what the core stored.
+fn apply_tags(state: &Rc<RefCell<State>>, ui: &Ui, tags: Vec<String>) {
+    let id = state.borrow().current.as_ref().map(|note| note.meta.id);
+    let Some(id) = id else {
+        return;
+    };
+    let outcome = {
+        let mut st = state.borrow_mut();
+        match st.workspace.as_mut() {
+            Some(workspace) => workspace
+                .set_tags(&id, tags)
+                .map(|note| note.meta.tags.clone())
+                .map_err(|error| error.to_string()),
+            None => return,
+        }
+    };
+    match outcome {
+        Ok(tags) => {
+            if let Some(note) = state.borrow_mut().current.as_mut() {
+                note.meta.tags = tags.clone();
+            }
+            fill_tags(state, ui, &tags);
+            refresh(state, ui, false);
+        }
+        Err(error) => {
+            ui.toast
+                .add_toast(adw::Toast::new(&format!("Could not save tags: {error}")));
+        }
+    }
+}
+
 /// Pin / unpin the open note; pinned notes sort first, like the Tauri shell.
 fn pin_toggled(state: &Rc<RefCell<State>>, ui: &Ui) {
     if state.borrow().programmatic {
@@ -1365,6 +1668,10 @@ fn move_to_trash(state: &Rc<RefCell<State>>, ui: &Ui) {
             ui.preview.render("");
             ui.title_entry.set_text("");
             ui.words.set_text("");
+            ui.tag_entry.set_text("");
+            fill_tags(state, ui, &[]);
+            ui.tag_row.set_visible(false);
+            ui.editor_placeholder.set_visible(true);
             disarm_delete(state, ui);
             ui.window.set_title(Some("Writan"));
             set_status(state, ui, "");
@@ -1996,6 +2303,24 @@ fn track_row<W: IsA<gtk::Widget>>(
 /// The GTK settings panel: the subset of the Tauri registry this shell
 /// honors. Every change is written to `config.json` immediately and applied
 /// live, so there is no Save button — same as the Tauri panel.
+/// The Theme row's index for a stored theme id.
+fn theme_index(theme: &str) -> u32 {
+    match theme {
+        "light" => 1,
+        "dark" => 2,
+        _ => 0,
+    }
+}
+
+/// The theme id for a Theme row index.
+fn theme_at_index(index: u32) -> &'static str {
+    match index {
+        1 => "light",
+        2 => "dark",
+        _ => "system",
+    }
+}
+
 fn open_settings_or_focus(state: &Rc<RefCell<State>>, ui: &Ui) {
     let Some(application) = ui.window.application() else {
         return;
@@ -2037,6 +2362,87 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
     let page = adw::PreferencesPage::new();
     page.set_vexpand(true);
     let filterables: Rc<RefCell<Vec<Filterable>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // Appearance: theme (system / light / dark) and the accent colour, the
+    // Tauri registry's `appearance.theme` and `appearance.accent`.
+    let appearance_group = adw::PreferencesGroup::builder().title("Appearance").build();
+    let theme_row = adw::ComboRow::new();
+    theme_row.set_title("Theme");
+    theme_row.set_subtitle("Follow the system setting, or pick light or dark");
+    let themes = gtk::StringList::new(&["Follow system", "Light", "Dark"]);
+    theme_row.set_model(Some(&themes));
+    theme_row.set_selected(theme_index(&state.borrow().theme));
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        theme_row.connect_selected_notify(move |row| {
+            let theme = theme_at_index(row.selected());
+            if state.borrow().theme == theme {
+                return;
+            }
+            state.borrow_mut().theme = theme.to_string();
+            persist_setting(
+                &state,
+                &ui,
+                "appearance",
+                "theme",
+                serde_json::Value::from(theme),
+            );
+            appearance::apply_theme(&adw::StyleManager::default(), theme);
+            apply_accent(&state, &ui);
+        });
+    }
+    appearance_group.add(&theme_row);
+    track_row(
+        &filterables,
+        &theme_row,
+        &appearance_group,
+        "theme appearance follow system system preference dark light".to_string(),
+    );
+
+    let accent_row = adw::ComboRow::new();
+    accent_row.set_title("Accent color");
+    accent_row.set_subtitle("Buttons, selections and preview links");
+    let labels: Vec<&str> = appearance::ACCENTS
+        .iter()
+        .map(|accent| accent.label)
+        .collect();
+    let accents = gtk::StringList::new(&labels);
+    accent_row.set_model(Some(&accents));
+    let selected = appearance::ACCENTS
+        .iter()
+        .position(|accent| accent.id == state.borrow().accent)
+        .unwrap_or(0);
+    accent_row.set_selected(selected as u32);
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        accent_row.connect_selected_notify(move |row| {
+            let Some(accent) = appearance::ACCENTS.get(row.selected() as usize) else {
+                return;
+            };
+            if state.borrow().accent == accent.id {
+                return;
+            }
+            let id = accent.id.to_string();
+            state.borrow_mut().accent = id.clone();
+            persist_setting(
+                &state,
+                &ui,
+                "appearance",
+                "accent",
+                serde_json::Value::from(id),
+            );
+            apply_accent(&state, &ui);
+        });
+    }
+    appearance_group.add(&accent_row);
+    track_row(
+        &filterables,
+        &accent_row,
+        &appearance_group,
+        "accent color colour appearance theme preview links buttons selections".to_string(),
+    );
 
     // Editor: the autosave delay (the Tauri registry's 200–2000 ms slider).
     let editor_group = adw::PreferencesGroup::builder().title("Editor").build();
@@ -2177,6 +2583,36 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
         &confirm,
         &general_group,
         "confirm before deleting general trash".to_string(),
+    );
+
+    let reopen = adw::SwitchRow::new();
+    reopen.set_title("Reopen last note");
+    reopen.set_subtitle("Opens the note you had open when Writan starts");
+    reopen.set_active(state.borrow().reopen_last_note);
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        reopen.connect_active_notify(move |row| {
+            let active = row.is_active();
+            if state.borrow().reopen_last_note == active {
+                return;
+            }
+            state.borrow_mut().reopen_last_note = active;
+            persist_setting(
+                &state,
+                &ui,
+                "general",
+                "reopenLastNote",
+                serde_json::Value::Bool(active),
+            );
+        });
+    }
+    general_group.add(&reopen);
+    track_row(
+        &filterables,
+        &reopen,
+        &general_group,
+        "reopen last note general session startup".to_string(),
     );
 
     // Shortcuts: one row per keymap action, rebindable in place.
@@ -2352,10 +2788,15 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
                 st.confirm_delete = true;
                 st.show_word_count = true;
                 st.date_format = crate::dates::DateFormat::Relative;
+                st.theme = "system".to_string();
+                st.accent = appearance::ACCENTS[0].id.to_string();
+                st.reopen_last_note = true;
                 st.overrides.clear();
             }
             let overrides = state.borrow().overrides.clone();
             apply_all_accels(&application, &overrides);
+            appearance::apply_theme(&adw::StyleManager::default(), "system");
+            apply_accent(&state, &ui);
             update_words(&state, &ui, &buffer_text(&ui.editor));
             window.close();
             ui.toast.add_toast(adw::Toast::new(
@@ -2372,6 +2813,7 @@ fn open_settings(state: &Rc<RefCell<State>>, ui: &Ui, application: &gtk::Applica
         "reset all settings advanced defaults".to_string(),
     );
 
+    page.add(&appearance_group);
     page.add(&editor_group);
     page.add(&view_group);
     page.add(&general_group);
@@ -2712,6 +3154,21 @@ fn fill_editor(state: &Rc<RefCell<State>>, ui: &Ui, note: Note) {
     let title = note.meta.title.clone();
     let body = note.body.clone();
     let pinned = note.meta.pinned;
+    let id = note.meta.id;
+    let tags = note.meta.tags.clone();
+    // Relative image links in the preview resolve against the note's folder.
+    let base = state.borrow().workspace.as_ref().and_then(|workspace| {
+        let root = workspace.vault().root().to_path_buf();
+        workspace
+            .note_path(&id)
+            .ok()
+            .flatten()
+            .map(|rel| match rel.rsplit_once('/') {
+                Some((dir, _)) => root.join(dir),
+                None => root,
+            })
+    });
+    ui.preview.set_base(base);
     {
         let mut st = state.borrow_mut();
         st.loading = true;
@@ -2721,6 +3178,10 @@ fn fill_editor(state: &Rc<RefCell<State>>, ui: &Ui, note: Note) {
     ui.preview.render(&body);
     ui.title_entry.set_text(&title);
     ui.pin_button.set_active(pinned);
+    ui.tag_entry.set_text("");
+    fill_tags(state, ui, &tags);
+    ui.tag_row.set_visible(true);
+    ui.editor_placeholder.set_visible(false);
     update_words(state, ui, &body);
     disarm_delete(state, ui);
     {
@@ -2729,6 +3190,12 @@ fn fill_editor(state: &Rc<RefCell<State>>, ui: &Ui, note: Note) {
         st.programmatic = false;
         st.dirty = false;
         st.current = Some(note);
+    }
+    // Remember where the session ended, for `general.reopenLastNote`.
+    {
+        let mut st = state.borrow_mut();
+        st.last_note_id = Some(id);
+        let _ = config::save_last_note(&st.config_path, &id.to_string());
     }
     ui.window.set_title(Some(&format!("{title} — Writan")));
     set_status(state, ui, "");
@@ -2845,13 +3312,14 @@ fn load_css() {
     );
 }
 
-/// Keep the editor's syntax scheme in step with the system preference.
+/// Keep the editor's syntax scheme in step with the effective light/dark
+/// preference (the GTK theme name is only a fallback — see `appearance`).
 ///
 /// GtkSourceView only picks its dark scheme when the GTK theme is literally
 /// named `Adwaita-dark`; under GNOME's dark mode the name stays `Adwaita` and
 /// the editor would render light inside a dark window.
 fn apply_style_scheme(buffer: &sourceview5::Buffer) {
-    let id = if adw::StyleManager::default().is_dark() {
+    let id = if appearance::effective_dark(&adw::StyleManager::default()) {
         "Adwaita-dark"
     } else {
         "Adwaita"

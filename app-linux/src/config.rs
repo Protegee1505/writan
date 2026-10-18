@@ -72,10 +72,58 @@ fn setting_bool(object: &serde_json::Map<String, Value>, section: &str, key: &st
     object.get("settings")?.get(section)?.get(key)?.as_bool()
 }
 
+/// Read a string from `settings.<section>.<key>`; anything missing or malformed
+/// yields `None`, so the caller applies the registry's default.
+fn setting_str<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    section: &str,
+    key: &str,
+) -> Option<&'a str> {
+    object.get("settings")?.get(section)?.get(key)?.as_str()
+}
+
 /// `settings.general.confirmDelete` — the Tauri registry defaults it to true,
 /// so the trash button arms before deleting.
 pub fn load_confirm_delete(path: &Path) -> bool {
     setting_bool(&load_object(path), "general", "confirmDelete").unwrap_or(true)
+}
+
+/// `settings.general.reopenLastNote` — default true in the Tauri registry, so
+/// an untouched `config.json` reopens the last note.
+pub fn load_reopen_last_note(path: &Path) -> bool {
+    setting_bool(&load_object(path), "general", "reopenLastNote").unwrap_or(true)
+}
+
+/// `settings.appearance.theme` — `system` (the registry's default), `light`
+/// or `dark`; anything else reads as `system`.
+pub fn load_theme(path: &Path) -> String {
+    let object = load_object(path);
+    match setting_str(&object, "appearance", "theme") {
+        Some(theme @ ("light" | "dark")) => theme.to_string(),
+        _ => "system".to_string(),
+    }
+}
+
+/// `settings.appearance.accent` — a preset id; unknown ids fall back to the
+/// first preset in `appearance::ACCENTS`.
+pub fn load_accent(path: &Path) -> String {
+    let object = load_object(path);
+    match setting_str(&object, "appearance", "accent") {
+        Some(id) => id.to_string(),
+        None => "indigo".to_string(),
+    }
+}
+
+/// `settings.session.lastNoteId` — the note to reopen at startup, if the
+/// Tauri shell (or an earlier run) left one.
+pub fn load_last_note(path: &Path) -> Option<String> {
+    let object = load_object(path);
+    object
+        .get("settings")?
+        .get("session")?
+        .get("lastNoteId")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// `settings.view.showWordCount` — default true in the Tauri registry.
@@ -174,6 +222,12 @@ pub fn remove_shortcut(path: &Path, id: &str) -> std::io::Result<()> {
     remove_setting(path, "shortcuts", id)
 }
 
+/// Persist `settings.session.lastNoteId` (the same key the Tauri shell's
+/// settings store writes), preserving every other key.
+pub fn save_last_note(path: &Path, id: &str) -> std::io::Result<()> {
+    set_setting(path, "session", "lastNoteId", Value::String(id.to_string()))
+}
+
 /// Remove the whole `settings` object: every shell's preferences return to
 /// their defaults, while notes and the vault path stay untouched (the Tauri
 /// panel's "Reset all settings").
@@ -248,6 +302,41 @@ mod tests {
             "missing key falls back to default"
         );
         assert!(load_show_word_count(&file), "malformed value falls back");
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn appearance_and_session_read_the_tauri_shapes() {
+        let file = temp_file();
+        assert_eq!(load_theme(&file), "system");
+        assert_eq!(load_accent(&file), "indigo");
+        assert!(load_reopen_last_note(&file));
+        assert_eq!(load_last_note(&file), None);
+
+        std::fs::write(
+            &file,
+            r#"{"vault_path":"/notes","settings":{"appearance":{"theme":"dark","accent":"violet"},"general":{"reopenLastNote":false},"session":{"lastNoteId":"abc-123"}}}"#,
+        )
+        .expect("write");
+        assert_eq!(load_theme(&file), "dark");
+        assert_eq!(load_accent(&file), "violet");
+        assert!(!load_reopen_last_note(&file));
+        assert_eq!(load_last_note(&file), Some("abc-123".to_string()));
+
+        // Malformed values fall back to the registry defaults.
+        std::fs::write(
+            &file,
+            r#"{"settings":{"appearance":{"theme":"neon"},"session":{"lastNoteId":7}}}"#,
+        )
+        .expect("write");
+        assert_eq!(load_theme(&file), "system");
+        assert_eq!(load_last_note(&file), None);
+
+        // The GTK shell writes the same session key, preserving neighbours.
+        std::fs::write(&file, r#"{"vault_path":"/notes"}"#).expect("write");
+        save_last_note(&file, "dead-beef").expect("save");
+        assert_eq!(load_last_note(&file), Some("dead-beef".to_string()));
+        assert_eq!(load_vault_path(&file), Some(PathBuf::from("/notes")));
         std::fs::remove_file(&file).ok();
     }
 

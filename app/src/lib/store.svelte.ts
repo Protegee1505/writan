@@ -393,6 +393,17 @@ class AppStore {
     }
   }
 
+  async emptyTrash() {
+    try {
+      const removed = await api.emptyTrash();
+      await this.loadTrash();
+      if (removed > 0)
+        this.notify(`Removed ${removed} ${removed === 1 ? "note" : "notes"} from the trash`);
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
   async onExternalChange(rels: string[]) {
     await this.refresh();
     void this.loadFacets();

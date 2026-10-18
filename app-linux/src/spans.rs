@@ -12,6 +12,8 @@ pub struct Run {
     pub italic: bool,
     pub code: bool,
     pub link: Option<String>,
+    /// Image source (`![alt](src)`); `text` holds the alt text.
+    pub image: Option<String>,
 }
 
 /// One rendered block of the preview.
@@ -43,6 +45,7 @@ pub fn parse_blocks(markdown: &str) -> Vec<Block> {
     let mut bold = 0u32;
     let mut italic = 0u32;
     let mut link: Option<String> = None;
+    let mut image: Option<String> = None;
 
     let options = Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
     for event in Parser::new_ext(markdown, options) {
@@ -90,6 +93,8 @@ pub fn parse_blocks(markdown: &str) -> Vec<Block> {
             Event::End(TagEnd::Emphasis) => italic = italic.saturating_sub(1),
             Event::Start(Tag::Link { dest_url, .. }) => link = Some(dest_url.to_string()),
             Event::End(TagEnd::Link) => link = None,
+            Event::Start(Tag::Image { dest_url, .. }) => image = Some(dest_url.to_string()),
+            Event::End(TagEnd::Image) => image = None,
             Event::Rule => {
                 flush(&mut current, &mut blocks);
                 blocks.push(Block::Rule);
@@ -105,6 +110,7 @@ pub fn parse_blocks(markdown: &str) -> Vec<Block> {
                         italic > 0,
                         false,
                         link.clone(),
+                        image.clone(),
                     );
                 }
             }
@@ -115,12 +121,21 @@ pub fn parse_blocks(markdown: &str) -> Vec<Block> {
                 italic > 0,
                 true,
                 link.clone(),
+                image.clone(),
             ),
             Event::SoftBreak => {
                 if let Some(buffer) = code.as_mut() {
                     buffer.push('\n');
                 } else {
-                    push_run(&mut current, " ", bold > 0, italic > 0, false, link.clone());
+                    push_run(
+                        &mut current,
+                        " ",
+                        bold > 0,
+                        italic > 0,
+                        false,
+                        link.clone(),
+                        image.clone(),
+                    );
                 }
             }
             Event::HardBreak => {
@@ -134,6 +149,7 @@ pub fn parse_blocks(markdown: &str) -> Vec<Block> {
                         italic > 0,
                         false,
                         link.clone(),
+                        image.clone(),
                     );
                 }
             }
@@ -166,6 +182,7 @@ fn push_run(
     italic: bool,
     code: bool,
     link: Option<String>,
+    image: Option<String>,
 ) {
     let Some((_, runs)) = current else {
         return;
@@ -175,6 +192,7 @@ fn push_run(
         && last.italic == italic
         && last.code == code
         && last.link == link
+        && last.image == image
     {
         last.text.push_str(text);
         return;
@@ -185,6 +203,7 @@ fn push_run(
         italic,
         code,
         link,
+        image,
     });
 }
 
@@ -239,6 +258,19 @@ mod tests {
     fn soft_break_becomes_space() {
         let blocks = parse_blocks("a\nb");
         assert_eq!(first_runs(&blocks), &[plain("a b")]);
+    }
+
+    #[test]
+    fn image_run_carries_source_and_alt_text() {
+        let blocks = parse_blocks("![shot](attachments/shot.png)");
+        assert_eq!(
+            first_runs(&blocks),
+            &[Run {
+                text: "shot".to_string(),
+                image: Some("attachments/shot.png".to_string()),
+                ..Run::default()
+            }]
+        );
     }
 
     #[test]

@@ -36,6 +36,10 @@
 #  29. pasting the same image again reuses the file
 #  30. the palette's 'Attach file…' imports a picked file
 #  31. pasted text still lands in the editor
+#  32. the tag row adds a tag to the file and its chip removes it again
+#  33. theme and accent choices land in config.json; the accent repaints a switch
+#  34. a local image link renders inline in the preview pane
+#  35. the app reopens the last note, and stops doing so when switched off
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
@@ -105,6 +109,21 @@ updated: 2026-10-01T09:00:00Z
 alpha body line.
 
 Second paragraph.
+EOF
+# A note whose body starts with a local image link, for the inline preview.
+mkdir -p "$vault/attachments"
+convert -size 120x60 xc:tomato "$vault/attachments/shot.png"
+cat >"$vault/shot.md" <<'EOF'
+---
+id: 55555555-5555-4555-8555-555555555555
+title: Shot
+created: 2026-10-01T09:30:00Z
+updated: 2026-10-01T09:30:00Z
+---
+
+![shot](attachments/shot.png)
+
+An inline image.
 EOF
 printf '{"vault_path": "%s"}' "$vault" >"$config_home/com.writan.desktop/config.json"
 
@@ -602,9 +621,17 @@ shot 95-new-note
 # writes settings.shortcuts, Escape closes it, the new combo opens the
 # palette while the old one is dead, Reset drops the override, and the Show
 # word count switch reaches config.json. The panel is parked at 0,0 (620x560)
-# so the coordinates below are stable.
+# and rows are reached by typing a filter (triple-click clears the entry),
+# so a row added to the panel only moves the filtered coordinates.
 config_file="$config_home/com.writan.desktop/config.json"
 config_has() { grep -q "$1" "$config_file" 2>/dev/null; }
+wait_config_has() { # substring
+  for _ in $(seq 1 25); do
+    config_has "$1" && return 0
+    sleep 0.2
+  done
+  return 1
+}
 open_settings() {
   xdotool windowfocus --sync "$window"
   xdotool key --clearmodifiers ctrl+comma
@@ -697,7 +724,12 @@ fi
 
 # 25-26. Reset drops the override and the default Ctrl+P comes back.
 if open_settings; then
-  xdotool mousemove --sync 462 368
+  xdotool mousemove --sync 300 76
+  xdotool click --repeat 3 --delay 60 1
+  sleep 0.2
+  xdotool type --delay 25 -- "command"
+  sleep 0.8
+  xdotool mousemove --sync 462 168
   xdotool click 1
   reset=""
   for _ in $(seq 1 25); do
@@ -731,7 +763,12 @@ fi
 
 # 27. Show word count off reaches config.json.
 if open_settings; then
-  xdotool mousemove --sync 560 192
+  xdotool mousemove --sync 300 76
+  xdotool click --repeat 3 --delay 60 1
+  sleep 0.2
+  xdotool type --delay 25 -- "word count"
+  sleep 0.8
+  xdotool mousemove --sync 544 137
   xdotool click 1
   words_off=""
   for _ in $(seq 1 25); do
@@ -859,6 +896,225 @@ else
   bad "pasted text did not reach the open note"
 fi
 shot_of 103-text-paste "$window"
+
+# 32-35 need a couple of small helpers.
+open_note_via_palette() { # search text, expected title substring
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers ctrl+p
+  local palette="" found=""
+  for _ in $(seq 1 25); do
+    palette="$(palette_window || true)"
+    [ -n "$palette" ] && break
+    sleep 0.2
+  done
+  [ -n "$palette" ] || return 1
+  xdotool type --delay 30 -- "$1"
+  sleep 0.6
+  xdotool key --clearmodifiers Return
+  sleep 0.6
+  case "$(xdotool getwindowname "$window")" in *"$2"*) found=1 ;; esac
+  [ -n "$found" ]
+}
+restart_app() {
+  kill "$app_pid" 2>/dev/null || true
+  wait "$app_pid" 2>/dev/null || true
+  app_pid=""
+  env \
+    WRITAN_VAULT="$vault" \
+    XDG_CONFIG_HOME="$config_home" \
+    XDG_DATA_HOME="$data_home" \
+    GTK_THEME="Adwaita:dark" \
+    GSK_RENDERER=cairo \
+    "$bin" >>"$work/app.log" 2>&1 &
+  app_pid=$!
+  window=""
+  for _ in $(seq 1 100); do
+    window="$(find_window)"
+    [ -n "$window" ] && break
+    sleep 0.2
+  done
+  if [ -n "$window" ]; then
+    xdotool windowmove "$window" 0 0
+    xdotool windowsize "$window" 1000 700
+    sleep 0.6
+    xdotool windowfocus --sync "$window"
+    xdotool windowraise "$window"
+  else
+    bad "the app window never reappeared after the restart"
+  fi
+}
+filter_settings() { # filter text
+  xdotool mousemove --sync 300 76
+  xdotool click --repeat 3 --delay 60 1
+  sleep 0.2
+  xdotool type --delay 25 -- "$1"
+  sleep 0.9
+}
+
+# 32. The tag row: a chip removes that tag, a typed tag reaches the file.
+if open_note_via_palette delta "Delta — Writan"; then
+  # Delta starts with the fixture's 'smoke' tag: its chip removes that one.
+  xdotool mousemove --sync 520 120
+  xdotool click 1
+  smoke_gone=""
+  for _ in $(seq 1 25); do
+    if ! grep -q "smoke" "$vault/delta.md" 2>/dev/null; then smoke_gone=1; break; fi
+    sleep 0.2
+  done
+  if [ -n "$smoke_gone" ]; then
+    ok "clicking a tag chip removed that tag from the note file"
+  else
+    bad "the tag chip did not remove the tag"
+  fi
+  xdotool mousemove --sync 387 117
+  xdotool click 1
+  sleep 0.4
+  xdotool type --delay 30 -- "review-check"
+  xdotool key --clearmodifiers Return
+  tagged=""
+  for _ in $(seq 1 25); do
+    if grep -q "review-check" "$vault/delta.md" 2>/dev/null; then tagged=1; break; fi
+    sleep 0.2
+  done
+  if [ -n "$tagged" ]; then
+    ok "a tag typed in the editor header reached the note file"
+  else
+    bad "the typed tag did not reach the note file"
+  fi
+  shot_of 104-tag-added "$window"
+  sleep 0.6
+  # The typed tag is the only chip left, so it sits where the first one did.
+  xdotool mousemove --sync 520 120
+  xdotool click 1
+  chip_gone=""
+  for _ in $(seq 1 25); do
+    if ! grep -q "review-check" "$vault/delta.md" 2>/dev/null; then chip_gone=1; break; fi
+    sleep 0.2
+  done
+  if [ -n "$chip_gone" ]; then
+    ok "clicking the chip of the typed tag removed it from the file"
+  else
+    bad "the typed tag's chip did not remove it"
+  fi
+else
+  bad "the palette did not open Delta for the tag check"
+fi
+
+# 33. Appearance: the theme and accent choices persist, and the accent
+# repaints libadwaita's switches live (teal: 95,215,198).
+pick_appearance() { # filter text, popover item y
+  filter_settings "$1"
+  xdotool mousemove --sync 100 135
+  xdotool click 1
+  sleep 0.8
+  xdotool mousemove --sync 570 "$2"
+  xdotool click 1
+  sleep 0.8
+}
+if open_settings; then
+  pick_appearance "follow system" 214   # Dark
+  if wait_config_has '"theme": "dark"'; then
+    ok "picking 'Dark' in Appearance wrote theme: dark to config.json"
+  else
+    bad "the theme choice did not reach config.json"
+  fi
+  pick_appearance "follow system" 192   # Light
+  if wait_config_has '"theme": "light"'; then
+    ok "picking 'Light' wrote theme: light"
+  else
+    bad "the second theme choice did not reach config.json"
+  fi
+  pick_appearance "follow system" 170   # Follow system
+  if wait_config_has '"theme": "system"'; then
+    ok "picking 'Follow system' restored the default theme"
+  else
+    bad "'Follow system' did not reach config.json"
+  fi
+  pick_appearance "preview links" 214   # Teal
+  if wait_config_has '"accent": "teal"'; then
+    ok "picking 'Teal' wrote accent: teal to config.json"
+  else
+    bad "the accent choice did not reach config.json"
+  fi
+  filter_settings "word count"
+  shot_of 106-accent-teal "$settings"
+  px="$(convert "$out/106-accent-teal.png" -crop 10x10+539+132 +repage -resize 1x1 \
+    -format '%[fx:int(255*r)],%[fx:int(255*g)],%[fx:int(255*b)]' info: 2>/dev/null || echo 0,0,0)"
+  pxr="${px%%,*}"; pxgb="${px#*,}"
+  pxg="${pxgb%%,*}"; pxb="${pxgb#*,}"
+  if [ "${pxg:-0}" -ge 150 ] && [ "${pxb:-0}" -ge 140 ] && [ "${pxr:-255}" -le 130 ]; then
+    ok "the teal accent repainted the Show word count switch ($px)"
+  else
+    bad "the switch did not take the accent colour ($px)"
+  fi
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+else
+  bad "Ctrl+, did not open Settings for the appearance check"
+fi
+
+# 34. A local image link renders inline in the preview pane.
+if open_note_via_palette shot "Shot — Writan"; then
+  sleep 0.8
+  shot_of 107-preview-image "$window"
+  share="$(convert "$out/107-preview-image.png" -crop 100x40+840+80 +repage -fuzz 30% \
+    -fill white -opaque '#FF6347' -fill black +opaque white \
+    -format '%[fx:mean*100]' info: 2>/dev/null || echo 0)"
+  if [ "${share%%.*}" -ge 20 ]; then
+    ok "the preview pane painted the note's local image inline (${share}% tomato)"
+  else
+    bad "no inline image in the preview pane (${share}% tomato)"
+  fi
+else
+  bad "the palette did not open the Shot note"
+fi
+
+# 35. Session restore: a restart reopens the last note, and stops doing so
+# when 'Reopen last note' is switched off (it falls back to the first row).
+if open_note_via_palette delta "Delta — Writan"; then
+  sleep 0.5
+  restart_app
+  if wait_title "Delta — Writan" 12; then
+    ok "a restart reopened the note that was open (session restore)"
+  else
+    bad "session restore did not reopen Delta (title: '$(xdotool getwindowname "$window")')"
+  fi
+else
+  bad "the palette did not open Delta for the session check"
+fi
+if open_settings; then
+  filter_settings "reopen"
+  xdotool mousemove --sync 544 137
+  xdotool click 1
+  if wait_config_has '"reopenLastNote": false'; then
+    ok "'Reopen last note' off wrote reopenLastNote: false to config.json"
+  else
+    bad "the reopen switch did not reach config.json"
+  fi
+  xdotool key --clearmodifiers Escape
+  sleep 0.8
+else
+  bad "Ctrl+, did not open Settings for the reopen switch"
+fi
+# Pin Delta so it is the first row, then make Untitled the last note: the
+# restart must ignore the last note and open the first row instead.
+if open_note_via_palette delta "Delta — Writan"; then
+  sleep 0.6
+  xdotool mousemove --sync 723 77
+  xdotool click 1
+  sleep 1.0
+  if open_note_via_palette untitled "Untitled — Writan"; then
+    sleep 0.5
+    restart_app
+    if wait_title "Delta — Writan" 12; then
+      ok "with 'Reopen last note' off the app opened the first row instead"
+    else
+      bad "the switch off did not fall back to the first row (title: '$(xdotool getwindowname "$window")')"
+    fi
+  else
+    bad "the palette did not open Untitled for the fallback check"
+  fi
+fi
 
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

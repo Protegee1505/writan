@@ -255,15 +255,9 @@ pub fn save_note(
 ) -> CmdResult<NoteDto> {
     let id = parse_id(&id)?;
     with_ws(&state, |workspace| {
-        let mut note = workspace
-            .get_note(&id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "note not found".to_string())?;
-        note.body = body;
-        if let Some(tags) = tags {
-            note.meta.tags = tags;
-        }
-        workspace.save_note(&mut note).map_err(|e| e.to_string())?;
+        let note = workspace
+            .update_note(&id, Some(&body), tags)
+            .map_err(|e| e.to_string())?;
         Ok(note_dto(&note))
     })
 }
@@ -333,6 +327,14 @@ pub fn purge_note(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     let id = parse_id(&id)?;
     with_ws(&state, |workspace| {
         workspace.trash().purge(&id).map_err(|e| e.to_string())
+    })
+}
+
+/// Delete every trashed note forever; returns how many were removed.
+#[tauri::command]
+pub fn empty_trash(state: State<'_, AppState>) -> CmdResult<usize> {
+    with_ws(&state, |workspace| {
+        workspace.trash().empty().map_err(|e| e.to_string())
     })
 }
 

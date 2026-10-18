@@ -265,6 +265,33 @@ impl Workspace {
         Ok(note)
     }
 
+    /// Apply a partial edit (body and/or tags) as one write; tags are
+    /// sanitized with [`sanitize_tags`]. Both shells edit notes through this.
+    pub fn update_note(
+        &mut self,
+        id: &NoteId,
+        body: Option<&str>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note, WorkspaceError> {
+        let Some(row) = self.index.get(id)? else {
+            return Err(WorkspaceError::NotFound(*id));
+        };
+        let mut note = self.vault.read(&row.rel_path)?;
+        if let Some(body) = body {
+            note.body = body.to_string();
+        }
+        if let Some(tags) = tags {
+            note.meta.tags = sanitize_tags(tags);
+        }
+        self.save_note(&mut note)?;
+        Ok(note)
+    }
+
+    /// Replace a note's tags (sanitized) and save it.
+    pub fn set_tags(&mut self, id: &NoteId, tags: Vec<String>) -> Result<Note, WorkspaceError> {
+        self.update_note(id, None, Some(tags))
+    }
+
     pub fn get_note(&self, id: &NoteId) -> Result<Option<Note>, WorkspaceError> {
         let Some(row) = self.index.get(id)? else {
             return Ok(None);
@@ -275,6 +302,12 @@ impl Workspace {
             Err(VaultError::Io { .. }) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// The note's path inside the vault, relative to its root (the index
+    /// knows it before the file is read).
+    pub fn note_path(&self, id: &NoteId) -> Result<Option<String>, WorkspaceError> {
+        Ok(self.index.get(id)?.map(|row| row.rel_path))
     }
 
     pub fn list(&self, limit: usize) -> Result<Vec<IndexedNote>, WorkspaceError> {
@@ -308,6 +341,21 @@ impl Workspace {
         self.index.clear()?;
         self.reconcile()
     }
+}
+
+/// Trim tags, drop blanks and a leading `#`, and remove duplicates while
+/// preserving order — the one place both shells clean tags.
+pub fn sanitize_tags(tags: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut clean: Vec<String> = Vec::new();
+    for tag in tags {
+        let tag = tag.trim().trim_start_matches('#').trim().to_string();
+        if tag.is_empty() || !seen.insert(tag.clone()) {
+            continue;
+        }
+        clean.push(tag);
+    }
+    clean
 }
 
 /// Give a file a Writan identity by writing frontmatter with a fresh id.

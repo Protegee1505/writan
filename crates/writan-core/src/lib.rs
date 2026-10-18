@@ -17,7 +17,7 @@ pub use index::{Index, IndexError, IndexedNote, SearchHit, SearchQuery};
 pub use trash::{Trash, TrashEntry, TrashError};
 pub use vault::{FileStat, Note, ParsedFile, Vault, VaultError};
 pub use watch::{VaultEvent, VaultWatcher, WatchError};
-pub use workspace::{ReconcileStats, Workspace, WorkspaceError};
+pub use workspace::{ReconcileStats, Workspace, WorkspaceError, sanitize_tags};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

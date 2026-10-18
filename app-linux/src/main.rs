@@ -8,6 +8,8 @@
 #![forbid(unsafe_code)]
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod appearance;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod config;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod dates;
