@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-18 (M3.5 slice 8).
+Last updated: 2026-10-18 (M4 chunks A–C and E).
 
 ## Milestone history
 
@@ -206,11 +206,42 @@ Last updated: 2026-10-18 (M3.5 slice 8).
   binary. `cargo fmt`/`clippy -D warnings` clean, `cargo test --workspace`
   green (150 tests, 3 ignored), `svelte-check` 0/0, frontend build OK.
 
+- **M4 chunk A — noteserver accounts, tokens, storage** (2026-10-18, commit
+  `57a0c57`, CI run `39094790760` green): new `crates/writan-server`: email +
+  password accounts (Argon2id via `writan-crypto`, unknown emails pay the same
+  derivation, 5 failures → 60 s lockout doubling to 15 min), device tokens
+  (32 random bytes shown once, SHA-256 at rest), SQLite store (WAL, schema
+  version in `meta`, one connection behind a mutex), `serve` /
+  `reset-password` / `--version` CLI; 18 unit + 10 API + 3 CLI tests.
+- **M4 chunk B — vaults, blob API, change feed** (2026-10-18, commit `23c543e`,
+  CI run `39095140181` green): idempotent `PUT /api/v1/vaults/{id}` (one vault
+  per account; foreign or unknown → 404), create-only blob PUT with
+  `SyncTarget::write` semantics (identical → 204, different → 409; path rules,
+  size and quota limits → 400/413/507) and `GET …/changes?since=` with
+  per-vault monotonic seqs; 5 API tests + db/util unit tests.
+- **M4 chunk C — SSE change stream** (2026-10-18, commit `fc20fa2`, CI run
+  `39095480794` green): `GET …/events` replays the backlog from
+  `Last-Event-ID`/`since` and follows live writes over a broadcast channel; a
+  lagged reader self-heals by re-reading the REST feed; a test against the real
+  binary covers replay, live delivery, resume, 401 and a bad cursor.
+- **M4 chunk E — server sync target + connect flow** (2026-10-18, commit
+  `61173d3`, CI run `39096935170` green): `writan-sync::server` speaks ADR-0007
+  as a `SyncTarget` over `ureq` (create-only PUT with 204/409 mapping, lazy
+  vault discovery, cross-vault writes refused), `SyncKind::Server` +
+  `connect_server` (register or join, keyring exchange, token in the OS keychain
+  `com.writan.desktop.server`, vault id assigned by the account, the vault key
+  never reaches the server), and `serve_blocking` so a test runs the real server
+  in-process. The live round-trip test converges two devices through the server;
+  the shells compile with `Server` in the kind list (the setup UI is chunk F).
+
 ## Current state
 
 - Branch `main`; M0–M3 complete, M3.5 (native Linux shell) slices 1–8 done —
   `docs/PARITY.md` is green; only the real-hardware acceptance (IME + RAM)
-  waits on the user's laptop (`docs/REAL-HARDWARE.md`).
+  waits on the user's laptop (`docs/REAL-HARDWARE.md`). M4 noteserver in
+  progress (`crates/writan-server`, ADR-0007): accounts + blob API + change
+  feed/SSE + the server sync target landed (chunks A/B/C/E); pairing, QR
+  display, shell wiring and the Docker image follow.
   Verification after M3: `cargo fmt`/`clippy` clean,
   `cargo test --workspace` 73 tests green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

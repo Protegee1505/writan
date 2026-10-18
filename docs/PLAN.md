@@ -1,7 +1,10 @@
 # Writan — implementation plan
 
 Status: M0–M3 complete (2026-10-17) · M3.5 slices 1–8 done (2026-10-18): the
-parity checklist is green; only the real-hardware acceptance remains.
+parity checklist is green; only the real-hardware acceptance remains. M4
+noteserver in progress: accounts, blob API, change feed + SSE and the server
+sync target shipped (chunks A/B/C/E); pairing, QR display, shell wiring and the
+Docker image left.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -9,20 +12,24 @@ rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
 Order is a suggestion, not a constraint.
 
-1. **GTK4 acceptance on real Linux hardware** (the user's laptop): interactive
+1. **M4 noteserver** (`crates/writan-server`, ADR-0007; chunks A/B/C/E shipped
+   2026-10-18): left: pairing API + redemption (D), QR display in both shells
+   (H), server sync-settings wiring + PARITY rows (F), Docker image +
+   `docs/SERVER.md` deploy doc + GHCR push on `v*` (G).
+2. **GTK4 acceptance on real Linux hardware** (the user's laptop): interactive
    smoke, IME (ibus + fcitx5, CJK composition), and the idle-RAM re-measure
    against the < 100 MB budget — then append the outcome to ADR-0004. This also
    closes M2's deferred IME item. The routine is `docs/REAL-HARDWARE.md`; the
    fixture vault is in `tools/visual/README.md`.
-2. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–8 done
+3. **M3.5 full native shell** (`app-linux/`, ADR-0004): slices 1–8 done
    (watcher + autosave, sidebar filters + note actions, trash panel, command
    palette + rebindable shortcuts, settings panel with live apply, attachments,
    the parity sweep: tags, appearance, session restore, look polish, and the
    sync UI: folder/S3 target, recovery code, unlock, sync now, lock, turn off).
-   Left: nothing beyond the real-hardware acceptance (task 1).
-3. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
+   Left: nothing beyond the real-hardware acceptance (task 2).
+4. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
    commit as every shell change.
-4. **Android init** (M5 prep, when the toolchain is available):
+5. **Android init** (M5 prep, when the toolchain is available):
    `npm --prefix app run tauri -- android init` with JDK 17 + Android SDK/NDK,
    commit `app/src-tauri/gen/android`, then add an `android` job to
    `artifacts.yml` (debug APK upload).
