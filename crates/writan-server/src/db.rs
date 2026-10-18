@@ -382,6 +382,62 @@ pub fn delete_device(
     Ok(deleted > 0)
 }
 
+/// Remember a fresh pairing code (only its hash) and answer with the instant
+/// it stops working, in unix seconds (ADR-0007 §4). Expired and used rows are
+/// pruned on the way so the table stays small.
+pub fn create_pairing(
+    conn: &Connection,
+    account_id: Uuid,
+    code_hash: &[u8; 32],
+    ttl_secs: u64,
+    now: i64,
+) -> Result<i64, ApiError> {
+    conn.execute(
+        "DELETE FROM pairings WHERE expires_at <= ?1 OR used_at IS NOT NULL",
+        params![now],
+    )?;
+    let expires_at = now.saturating_add(ttl_secs as i64);
+    conn.execute(
+        "INSERT INTO pairings (code_hash, account_id, created_at, expires_at, used_at)
+         VALUES (?1, ?2, ?3, ?4, NULL)",
+        params![code_hash.to_vec(), account_id.to_string(), now, expires_at],
+    )?;
+    Ok(expires_at)
+}
+
+/// Trade a pairing code for its account and register the joining device — one
+/// transaction, single use, expiry checked (ADR-0007 §4). `None` when the
+/// code is unknown, already used or expired.
+pub fn redeem_pairing(
+    conn: &mut Connection,
+    code_hash: &[u8; 32],
+    device_id: Uuid,
+    device_name: &str,
+    token_hash: &[u8; 32],
+    now: i64,
+) -> Result<Option<Account>, ApiError> {
+    let tx = conn.transaction()?;
+    let account = tx
+        .query_row(
+            "SELECT a.id, a.email, a.created_at, a.failed_logins, a.locked_until
+             FROM pairings p JOIN accounts a ON a.id = p.account_id
+             WHERE p.code_hash = ?1 AND p.used_at IS NULL AND p.expires_at > ?2",
+            params![code_hash.to_vec(), now],
+            account_from_row,
+        )
+        .optional()?;
+    let Some(account) = account else {
+        return Ok(None);
+    };
+    tx.execute(
+        "UPDATE pairings SET used_at = ?2 WHERE code_hash = ?1",
+        params![code_hash.to_vec(), now],
+    )?;
+    upsert_device(&tx, account.id, device_id, device_name, token_hash, now)?;
+    tx.commit()?;
+    Ok(Some(account))
+}
+
 /// Create a vault owned by the account; `false` when the id already exists
 /// (the caller then checks the owner, ADR-0007 §5).
 pub fn create_vault(
@@ -762,6 +818,67 @@ mod tests {
         assert_eq!(list_devices(&conn, account.id).expect("devices").len(), 1);
         assert!(delete_device(&conn, account.id, device_id).expect("delete"));
         assert!(!delete_device(&conn, account.id, device_id).expect("again"));
+    }
+
+    #[test]
+    fn pairing_codes_are_single_use_and_expire() {
+        let mut conn = memory_db();
+        let account = create_account(&conn, "ada@example.com", &SALT, &HASH, 100).expect("create");
+        let code_hash = [3u8; 32];
+        let expires = create_pairing(&conn, account.id, &code_hash, 600, 1_000).expect("mint");
+        assert_eq!(expires, 1_600);
+        let device_id = Uuid::new_v4();
+        let token_hash = [4u8; 32];
+        let redeemed = redeem_pairing(
+            &mut conn,
+            &code_hash,
+            device_id,
+            "phone",
+            &token_hash,
+            1_100,
+        )
+        .expect("redeem")
+        .expect("fresh code");
+        assert_eq!(redeemed.id, account.id);
+        assert!(
+            device_by_token(&conn, &token_hash)
+                .expect("by token")
+                .is_some()
+        );
+        assert!(
+            redeem_pairing(
+                &mut conn,
+                &code_hash,
+                Uuid::new_v4(),
+                "other",
+                &[5u8; 32],
+                1_200
+            )
+            .expect("second redeem")
+            .is_none(),
+            "a code works once"
+        );
+        let stale = [6u8; 32];
+        create_pairing(&conn, account.id, &stale, 10, 2_000).expect("mint");
+        assert!(
+            redeem_pairing(&mut conn, &stale, Uuid::new_v4(), "late", &[7u8; 32], 2_011)
+                .expect("late redeem")
+                .is_none(),
+            "an expired code is refused"
+        );
+        assert!(
+            redeem_pairing(
+                &mut conn,
+                &[8u8; 32],
+                Uuid::new_v4(),
+                "nobody",
+                &[9u8; 32],
+                2_000
+            )
+            .expect("unknown redeem")
+            .is_none(),
+            "an unknown code is refused"
+        );
     }
 
     #[test]

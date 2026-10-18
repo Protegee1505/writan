@@ -5,12 +5,14 @@
 //! needs), [`ServerHttpTransport`] is the live `ureq` implementation carrying
 //! the device token, and [`ServerTarget`] maps the replies onto the engine's
 //! create-only rules (ADR-0005 §12). Around them, [`login`], [`logout`],
-//! [`discover_vault`] and [`ensure_vault`] are the account calls a shell needs
-//! to set sync up.
+//! [`discover_vault`], [`ensure_vault`] and the pairing trio
+//! ([`create_pairing`], [`redeem_pairing`], [`pair_payload`]) are the account
+//! calls a shell needs to set sync up.
 
 use std::io;
 use std::sync::OnceLock;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::target::{SyncTarget, TargetError};
@@ -148,6 +150,79 @@ pub fn ensure_vault(base_url: &str, token: &str, vault_id: Uuid) -> Result<(), S
     ensure_at(&Api::new(base_url, token), vault_id)
 }
 
+/// A fresh pairing code and the instant it stops working, RFC 3339
+/// (ADR-0007 §4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pairing {
+    pub code: String,
+    pub expires_at: String,
+}
+
+/// Mint a single-use pairing code for this account
+/// (`POST /api/v1/pairings`); render it as a QR with [`pair_payload`].
+pub fn create_pairing(base_url: &str, token: &str) -> Result<Pairing, ServerError> {
+    create_pairing_at(&Api::new(base_url, token))
+}
+
+/// Trade a pairing code for this device's own token
+/// (`POST /api/v1/pairings/redeem`). Blob access only — the vault key never
+/// travels, and the device still needs the sync password (ADR-0007 §4).
+pub fn redeem_pairing(
+    base_url: &str,
+    code: &str,
+    device_id: Uuid,
+    device_name: &str,
+) -> Result<String, ServerError> {
+    redeem_pairing_at(&Api::new(base_url, ""), code, device_id, device_name)
+}
+
+/// The format marker of a pairing QR payload (ADR-0007 §4).
+pub const PAIRING_FORMAT: &str = "writan-pair/1";
+
+/// What a pairing QR carries: compact JSON, versioned by `format`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairPayload {
+    pub format: String,
+    pub url: String,
+    pub code: String,
+    pub email: String,
+}
+
+/// The QR text for a fresh pairing code.
+pub fn pair_payload(url: &str, code: &str, email: &str) -> String {
+    serde_json::json!({
+        "format": PAIRING_FORMAT,
+        "url": url.trim().trim_end_matches('/'),
+        "code": code,
+        "email": email.trim().to_lowercase(),
+    })
+    .to_string()
+}
+
+/// Read a scanned pairing QR; anything that is not a usable `writan-pair/1`
+/// payload is refused with the reason (ADR-0007 §4).
+pub fn parse_pair_payload(text: &str) -> Result<PairPayload, ServerError> {
+    let payload: PairPayload = serde_json::from_str(text)
+        .map_err(|_| ServerError::Refused("this is not a writan pairing code".to_string()))?;
+    if payload.format != PAIRING_FORMAT {
+        return Err(ServerError::Refused(format!(
+            "this pairing code was made by another version (format `{}`)",
+            payload.format
+        )));
+    }
+    if !(payload.url.starts_with("http://") || payload.url.starts_with("https://")) {
+        return Err(ServerError::Refused(
+            "this pairing code carries no server address".to_string(),
+        ));
+    }
+    if payload.code.trim().is_empty() {
+        return Err(ServerError::Refused(
+            "this pairing code carries no code".to_string(),
+        ));
+    }
+    Ok(payload)
+}
+
 fn credentials_body(details: &ServerLogin) -> serde_json::Value {
     serde_json::json!({
         "email": details.email,
@@ -178,12 +253,63 @@ fn login_at(api: &Api, details: &ServerLogin) -> Result<String, ServerError> {
     }
 }
 
+/// The JSON of an answer, when it is one.
+fn json_body(body: &[u8]) -> Option<serde_json::Value> {
+    serde_json::from_slice(body).ok()
+}
+
 /// The token out of a `Session` answer.
 fn token_from(body: &[u8]) -> Result<String, ServerError> {
-    serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
+    json_body(body)
         .and_then(|answer| answer.get("token")?.as_str().map(str::to_string))
         .ok_or_else(|| ServerError::Transport("the server's answer carried no token".to_string()))
+}
+
+fn create_pairing_at(api: &Api) -> Result<Pairing, ServerError> {
+    let (status, body) = api.post("/api/v1/pairings", &serde_json::json!({}))?;
+    if !(200..300).contains(&status) {
+        return Err(refuse(status, &body));
+    }
+    let answer = json_body(&body).ok_or_else(|| {
+        ServerError::Transport("the server's pairing answer was not JSON".to_string())
+    })?;
+    let code = answer
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if code.is_empty() {
+        return Err(ServerError::Transport(
+            "the server's pairing answer carried no code".to_string(),
+        ));
+    }
+    let expires_at = answer
+        .get("expiresAt")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(Pairing { code, expires_at })
+}
+
+fn redeem_pairing_at(
+    api: &Api,
+    code: &str,
+    device_id: Uuid,
+    device_name: &str,
+) -> Result<String, ServerError> {
+    let body = serde_json::json!({
+        "code": code,
+        "deviceId": device_id,
+        "deviceName": device_name,
+    });
+    let (status, body) = api.post("/api/v1/pairings/redeem", &body)?;
+    match status {
+        200 | 201 => token_from(&body),
+        401 => Err(ServerError::Refused(
+            "this pairing code is not valid any more".to_string(),
+        )),
+        _ => Err(refuse(status, &body)),
+    }
 }
 
 fn logout_at(api: &Api) -> Result<(), ServerError> {
@@ -526,5 +652,22 @@ mod tests {
         assert_eq!(encode_path("items/2a/9b/0007.enc"), "items/2a/9b/0007.enc");
         assert_eq!(encode_path("odd name+1.enc"), "odd%20name%2B1.enc");
         assert_eq!(encode_path("keys/1.json"), "keys/1.json");
+    }
+
+    #[test]
+    fn pairing_payloads_roundtrip_and_refuse_foreign_shapes() {
+        let text = pair_payload("https://notes.example.com/", "abc123", " Ada@Example.COM ");
+        let payload = parse_pair_payload(&text).expect("roundtrip");
+        assert_eq!(payload.format, "writan-pair/1");
+        assert_eq!(payload.url, "https://notes.example.com");
+        assert_eq!(payload.code, "abc123");
+        assert_eq!(payload.email, "ada@example.com");
+        assert!(parse_pair_payload("not json at all").is_err());
+        let older = r#"{"format":"writan-pair/0","url":"https://x","code":"c","email":"a@b"}"#;
+        assert!(parse_pair_payload(older).is_err());
+        let no_url = r#"{"format":"writan-pair/1","url":"ftp://x","code":"c","email":"a@b"}"#;
+        assert!(parse_pair_payload(no_url).is_err());
+        let no_code = r#"{"format":"writan-pair/1","url":"https://x","code":" ","email":"a@b"}"#;
+        assert!(parse_pair_payload(no_code).is_err());
     }
 }

@@ -7,8 +7,8 @@
 //! binary adds `serve` and an admin `reset-password` command.
 //!
 //! Milestone M4 lands in chunks (ADR-0007 §12): accounts, device sessions,
-//! vaults, the blob API, the change feed and its SSE stream are in; pairing
-//! follows.
+//! vaults, the blob API, the change feed and its SSE stream, and pairing are
+//! in; the Docker image and deploy doc follow.
 
 #![forbid(unsafe_code)]
 

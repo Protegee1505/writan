@@ -1,5 +1,6 @@
-//! The HTTP surface (ADR-0007 §§2–7). Chunks A–C: health, accounts,
-//! sessions, vaults, the blob API, the change feed and its SSE stream.
+//! The HTTP surface (ADR-0007 §§2–7). Chunks A–E: health, accounts,
+//! sessions, vaults, the blob API, the change feed and its SSE stream, and
+//! pairing.
 //!
 //! Handlers take the single writer connection behind a mutex — cheap at one
 //! user per instance (ADR-0007 §8); a connection pool is a later change with
@@ -102,6 +103,8 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/v1/vaults/{vault_id}/changes", get(changes))
         .route("/api/v1/vaults/{vault_id}/events", get(events))
+        .route("/api/v1/pairings", post(create_pairing))
+        .route("/api/v1/pairings/redeem", post(redeem_pairing))
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(state)
 }
@@ -129,6 +132,21 @@ struct Session {
     email: String,
     device_id: Uuid,
     token: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairingInfo {
+    code: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RedeemRequest {
+    code: String,
+    device_id: Uuid,
+    device_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -271,6 +289,60 @@ async fn login(
     Ok(Json(session(
         &material.account.email,
         material.account.id,
+        request.device_id,
+        token,
+    )))
+}
+
+/// `POST /api/v1/pairings` — mint a single-use code another device can trade
+/// for its own token (ADR-0007 §4). The code lives ten minutes by default
+/// (`WRITAN_PAIRING_TTL_SECS`) and is stored hashed.
+async fn create_pairing(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<PairingInfo>, ApiError> {
+    let conn = state.conn();
+    let (account, _) = require_auth(&conn, &headers)?;
+    let code = auth::generate_token();
+    let expires_at = db::create_pairing(
+        &conn,
+        account.id,
+        &auth::hash_token(&code),
+        state.config.pairing_ttl_secs,
+        now_unix(),
+    )?;
+    Ok(Json(PairingInfo {
+        code,
+        expires_at: rfc3339(expires_at),
+    }))
+}
+
+/// `POST /api/v1/pairings/redeem` — the joining device trades a code for its
+/// own token; no account password is involved (ADR-0007 §4). Blob access
+/// only: the vault key never travels.
+async fn redeem_pairing(
+    State(state): State<AppState>,
+    Json(request): Json<RedeemRequest>,
+) -> Result<Json<Session>, ApiError> {
+    let code = request.code.trim();
+    if code.is_empty() {
+        return Err(ApiError::BadRequest("enter the pairing code".to_string()));
+    }
+    let device_name = clean_device_name(&request.device_name);
+    let token = auth::generate_token();
+    let mut conn = state.conn();
+    let account = db::redeem_pairing(
+        &mut conn,
+        &auth::hash_token(code),
+        request.device_id,
+        &device_name,
+        &auth::hash_token(&token),
+        now_unix(),
+    )?
+    .ok_or(ApiError::Unauthorized)?;
+    Ok(Json(session(
+        &account.email,
+        account.id,
         request.device_id,
         token,
     )))

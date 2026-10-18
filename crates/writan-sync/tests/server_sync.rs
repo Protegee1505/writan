@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use writan_core::vault::{Note, Vault};
 use writan_sync::server::{ServerHttpTransport, ServerLogin, ServerTarget};
 use writan_sync::{
-    Connected, FolderVault, ServerConnect, ServerConnection, SessionError, SyncKind, SyncReport,
-    SyncSession, SyncTarget, connect_server, run_pass,
+    Connected, FolderVault, ServerConnect, ServerConnection, ServerPairing, SessionError, SyncKind,
+    SyncReport, SyncSession, SyncTarget, connect_server, create_pairing, join_with_code,
+    pair_payload, parse_pair_payload, run_pass,
 };
 
 const EMAIL: &str = "ada@example.com";
@@ -224,4 +225,75 @@ fn joining_needs_the_right_passwords() {
     // still fails, and nothing is created for the half-joined device.
     let wrong_sync = connect(&url, &b, "phone", false, "wrong secret", ACCOUNT_PASSWORD);
     assert!(wrong_sync.is_err(), "a wrong sync password must not join");
+}
+
+#[test]
+fn joining_by_pairing_code_skips_the_account_password() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let url = spawn_server(&root.path().join("data"));
+    let a = End::new(root.path(), "a");
+    let b = End::new(root.path(), "b");
+
+    // A registers, publishes a note, and mints a pairing code.
+    let mut a_connected =
+        connect(&url, &a, "laptop", true, SYNC_PASSWORD, ACCOUNT_PASSWORD).expect("connect a");
+    let vault_id = a_connected.session.vault_id;
+    let a_token = token(&url, &a_connected, "laptop");
+    let target_a = target(&url, &a_token, Some(vault_id));
+    a.vault.create("Alpha", &[]).expect("create");
+    a.edit("Alpha", "from a\n", "2026-03-01T10:00:00Z");
+    assert_eq!(a.sync(&mut a_connected.session, &target_a).published, 1);
+
+    // The QR payload carries everything the joining device needs.
+    let pairing = create_pairing(&url, &a_token).expect("pairing");
+    let payload = pair_payload(&url, &pairing.code, EMAIL);
+    let parsed = parse_pair_payload(&payload).expect("payload");
+    let details = |device_name: &str| ServerPairing {
+        url: parsed.url.clone(),
+        code: parsed.code.clone(),
+        email: parsed.email.clone(),
+        device_name: device_name.to_string(),
+    };
+
+    // B joins with the code alone — no account password — and adopts A's
+    // note. (The test signs B in again below only because it has no OS
+    // keychain to recall the paired token from.)
+    let mut b_connected = join_with_code(
+        &details("phone"),
+        SYNC_PASSWORD,
+        Some(&b.root),
+        &b.state_path,
+    )
+    .expect("join by code");
+    assert_eq!(b_connected.session.vault_id, vault_id);
+    assert!(b_connected.recovery_code.is_none(), "the keyring exists");
+    let target_b = target(&url, &token(&url, &b_connected, "phone"), None);
+    assert_eq!(b.sync(&mut b_connected.session, &target_b).adopted, 1);
+    assert_eq!(b.body_of("Alpha").as_deref(), Some("from a\n"));
+
+    // The code is single use: a third device trades it in vain.
+    let c = End::new(root.path(), "c");
+    let consumed = join_with_code(
+        &details("tablet"),
+        SYNC_PASSWORD,
+        Some(&c.root),
+        &c.state_path,
+    );
+    assert!(consumed.is_err(), "a used code must not join again");
+
+    // And a code grants access, not the key: with a fresh code, the wrong
+    // sync password still refuses the join.
+    let fresh = create_pairing(&url, &a_token).expect("pairing");
+    let parsed = parse_pair_payload(&pair_payload(&url, &fresh.code, EMAIL)).expect("payload");
+    let details = ServerPairing {
+        url: parsed.url.clone(),
+        code: parsed.code.clone(),
+        email: parsed.email.clone(),
+        device_name: "tablet".to_string(),
+    };
+    let wrong_key = join_with_code(&details, "wrong secret", Some(&c.root), &c.state_path);
+    assert!(
+        wrong_key.is_err(),
+        "the vault key never travels with a code"
+    );
 }

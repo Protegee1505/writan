@@ -140,6 +140,8 @@ pub enum SessionError {
     EmailFirst,
     #[error("enter the account password first")]
     AccountPasswordFirst,
+    #[error("enter the pairing code first")]
+    PairingCodeFirst,
     #[error("this device has no server token — sign in again")]
     MissingServerToken,
     #[error("could not reach the server: {0}")]
@@ -446,6 +448,95 @@ pub fn connect_server(
     } else {
         crate::server::login(&login)?
     };
+    keychain::remember_server_token(&url, &email, &token);
+    let vault_id = match crate::server::discover_vault(&url, &token)? {
+        Some(existing) => existing,
+        None => {
+            let fresh = Uuid::new_v4();
+            crate::server::ensure_vault(&url, &token, fresh)?;
+            fresh
+        }
+    };
+    let target = ServerTarget::new(ServerHttpTransport::new(ServerConnection {
+        base_url: url.clone(),
+        token,
+        vault_id: Some(vault_id),
+    }));
+    let generations = keyring_generations(&target).map_err(SessionError::ServerKeyring)?;
+    let (keyring_vault, vault_key, recovery_code) =
+        create_or_join(&generations, &target, sync_password, Some(vault_id))?;
+    if keyring_vault != vault_id {
+        return Err(SessionError::DifferentVault);
+    }
+    keychain::remember_vault_key(vault_id, &vault_key);
+    let vault_path = vault_path.ok_or(SessionError::NoVaultOpen)?.to_path_buf();
+    let config = SyncConfig {
+        kind: SyncKind::Server,
+        target: None,
+        s3: None,
+        server: Some(ServerConfigFile { url, email }),
+        vault_path: Some(vault_path),
+        enabled: true,
+    };
+    let session = bind_session(state_path, vault_id, vault_key)?;
+    Ok(Connected {
+        config,
+        session,
+        recovery_code,
+    })
+}
+
+/// The raw pairing details a scanning device has: whatever the QR carried
+/// plus the name this device will show as (ADR-0007 §4).
+#[derive(Debug, Clone, Default)]
+pub struct ServerPairing {
+    /// Servers root from the QR, e.g. `https://notes.example.com`.
+    pub url: String,
+    /// The single-use pairing code.
+    pub code: String,
+    /// The account the code belongs to; the QR carries it.
+    pub email: String,
+    pub device_name: String,
+}
+
+/// Join an account with a pairing code instead of its password: redeem the
+/// code for this device's token, discover the account's vault, then run the
+/// same keyring exchange as [`connect_server`]. The code grants blob access
+/// only — the vault key never travels, so the sync password (or recovery
+/// code) is still needed (ADR-0007 §4).
+pub fn join_with_code(
+    details: &ServerPairing,
+    sync_password: &str,
+    vault_path: Option<&Path>,
+    state_path: &Path,
+) -> Result<Connected, SessionError> {
+    let url = details.url.trim().trim_end_matches('/').to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(SessionError::ServerUrlFirst);
+    }
+    let code = details.code.trim();
+    if code.is_empty() {
+        return Err(SessionError::PairingCodeFirst);
+    }
+    let email = details.email.trim().to_lowercase();
+    if email.is_empty() || !email.contains('@') {
+        return Err(SessionError::EmailFirst);
+    }
+    if sync_password.is_empty() {
+        return Err(SessionError::PasswordFirst);
+    }
+    let device_name = if details.device_name.trim().is_empty() {
+        "paired device"
+    } else {
+        details.device_name.trim()
+    };
+    // The same device id rule as connect_server: the state file remembers it
+    // before the first call, so the engine and the server agree (ADR-0007 §3).
+    let mut state = SyncState::load(state_path).unwrap_or_default();
+    let device = state.device.unwrap_or_else(Uuid::new_v4);
+    state.device = Some(device);
+    state.save(state_path)?;
+    let token = crate::server::redeem_pairing(&url, code, device, device_name)?;
     keychain::remember_server_token(&url, &email, &token);
     let vault_id = match crate::server::discover_vault(&url, &token)? {
         Some(existing) => existing,

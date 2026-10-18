@@ -45,14 +45,15 @@ pub use keys::{
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 pub use s3::{ListPage, S3Config, S3HttpTransport, S3Target, S3Transport};
 pub use server::{
-    PutStatus, ServerConnection, ServerError, ServerHttpTransport, ServerLogin, ServerTarget,
-    ServerTransport,
+    PAIRING_FORMAT, PairPayload, Pairing, PutStatus, ServerConnection, ServerError,
+    ServerHttpTransport, ServerLogin, ServerTarget, ServerTransport, create_pairing, pair_payload,
+    parse_pair_payload, redeem_pairing,
 };
 pub use session::{
     AnyTarget, Connected, S3ConfigFile, S3Connect, SYNC_STATE_FILE, ServerConfigFile,
-    ServerConnect, SessionError, SyncConfig, SyncKind, SyncSession, SyncStatus, check_vault,
-    connect_folder, connect_s3, connect_server, open_target, resume, run_pass,
-    status as sync_status, unlock,
+    ServerConnect, ServerPairing, SessionError, SyncConfig, SyncKind, SyncSession, SyncStatus,
+    check_vault, connect_folder, connect_s3, connect_server, join_with_code, open_target, resume,
+    run_pass, status as sync_status, unlock,
 };
 pub use target::{FolderTarget, SyncTarget, TargetError};
 
