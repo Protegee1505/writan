@@ -15,6 +15,9 @@ use uuid::Uuid;
 
 use crate::keychain;
 use crate::keys::KeyringError;
+use crate::server::{
+    ServerConnection, ServerError, ServerHttpTransport, ServerLogin, ServerTarget,
+};
 use crate::{
     FolderTarget, KeyringPurpose, S3Config, S3HttpTransport, S3Target, SyncReport, SyncState,
     SyncTarget, TargetError, bootstrap_keyring, generate_recovery_code, keyring_generations,
@@ -33,6 +36,7 @@ pub enum SyncKind {
     #[default]
     Folder,
     S3,
+    Server,
 }
 
 impl SyncKind {
@@ -41,6 +45,7 @@ impl SyncKind {
         match self {
             Self::Folder => "folder",
             Self::S3 => "s3",
+            Self::Server => "server",
         }
     }
 }
@@ -55,6 +60,15 @@ pub struct S3ConfigFile {
     pub access_key: String,
 }
 
+/// Noteserver details kept in `config.json` (ADR-0007 §11). The device token
+/// never lives here — only in the OS keychain
+/// ([`keychain::recall_server_token`]).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ServerConfigFile {
+    pub url: String,
+    pub email: String,
+}
+
 /// How and where this device syncs; the vault key and bookkeeping live in the
 /// OS keychain and `sync-state.json` (ADR-0005 §§6–10).
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -66,6 +80,10 @@ pub struct SyncConfig {
     /// The bucket details (S3 targets); the secret key is in the keychain.
     #[serde(default)]
     pub s3: Option<S3ConfigFile>,
+    /// The address and account of the noteserver (server targets); the
+    /// device token is in the keychain.
+    #[serde(default)]
+    pub server: Option<ServerConfigFile>,
     /// The vault this sync was set up for; opening another vault keeps sync
     /// locked rather than mixing notes between vaults.
     pub vault_path: Option<PathBuf>,
@@ -89,7 +107,8 @@ pub struct SyncStatus {
     pub enabled: bool,
     pub unlocked: bool,
     pub kind: SyncKind,
-    /// Display string: the folder path, or `s3://<bucket>`.
+    /// Display string: the folder path, `s3://<bucket>`, or the server
+    /// address.
     pub target: Option<String>,
     pub vault_id: Option<String>,
     pub device_id: Option<String>,
@@ -115,6 +134,20 @@ pub enum SessionError {
     AccessKeyFirst,
     #[error("the S3 secret key is not on this device — connect sync again")]
     MissingS3Secret,
+    #[error("enter the server address first (it looks like https://notes.example.com)")]
+    ServerUrlFirst,
+    #[error("enter the account email first")]
+    EmailFirst,
+    #[error("enter the account password first")]
+    AccountPasswordFirst,
+    #[error("this device has no server token — sign in again")]
+    MissingServerToken,
+    #[error("could not reach the server: {0}")]
+    ReachServer(ServerError),
+    #[error("could not read the keyring from the server: {0}")]
+    ServerKeyring(KeyringError),
+    #[error("{0}")]
+    Server(#[from] ServerError),
     #[error("failed to create the keyring: {0}")]
     CreateKeyring(KeyringError),
     #[error("could not unlock the existing keyring: {0}")]
@@ -145,11 +178,12 @@ pub enum SessionError {
     Engine(#[from] crate::EngineError),
 }
 
-/// The configured target for one engine pass: the shared folder, or the
-/// S3-compatible bucket (ADR-0006).
+/// The configured target for one engine pass: the shared folder, the
+/// S3-compatible bucket (ADR-0006), or a writan-server (ADR-0007).
 pub enum AnyTarget {
     Folder(FolderTarget),
     S3(S3Target<S3HttpTransport>),
+    Server(ServerTarget<ServerHttpTransport>),
 }
 
 impl SyncTarget for AnyTarget {
@@ -157,6 +191,7 @@ impl SyncTarget for AnyTarget {
         match self {
             Self::Folder(target) => target.list(),
             Self::S3(target) => target.list(),
+            Self::Server(target) => target.list(),
         }
     }
 
@@ -164,6 +199,7 @@ impl SyncTarget for AnyTarget {
         match self {
             Self::Folder(target) => target.read(path),
             Self::S3(target) => target.read(path),
+            Self::Server(target) => target.read(path),
         }
     }
 
@@ -171,13 +207,18 @@ impl SyncTarget for AnyTarget {
         match self {
             Self::Folder(target) => target.write(path, bytes),
             Self::S3(target) => target.write(path, bytes),
+            Self::Server(target) => target.write(path, bytes),
         }
     }
 }
 
-/// Open the configured target; S3 targets pull the secret key from the OS
-/// keychain, so a config restored without one fails with [`SessionError::MissingS3Secret`].
-pub fn open_target(config: &SyncConfig) -> Result<AnyTarget, SessionError> {
+/// Open the configured target. `vault_id` is the vault the caller's session
+/// is bound to: folder and S3 targets ignore it, a noteserver target checks
+/// it against the account (ADR-0007 §5). A noteserver target reads its device
+/// token from the OS keychain, so a config restored without one fails with
+/// [`SessionError::MissingServerToken`]; S3 targets pull the secret key from
+/// there too and fail with [`SessionError::MissingS3Secret`].
+pub fn open_target(config: &SyncConfig, vault_id: Option<Uuid>) -> Result<AnyTarget, SessionError> {
     match config.kind {
         SyncKind::Folder => {
             let path = config.target.as_ref().ok_or(SessionError::NotConfigured)?;
@@ -196,6 +237,19 @@ pub fn open_target(config: &SyncConfig) -> Result<AnyTarget, SessionError> {
                 secret_key: secret,
             };
             Ok(AnyTarget::S3(S3Target::new(S3HttpTransport::new(cfg))))
+        }
+        SyncKind::Server => {
+            let server = config.server.as_ref().ok_or(SessionError::NotConfigured)?;
+            let token = keychain::recall_server_token(&server.url, &server.email)
+                .ok_or(SessionError::MissingServerToken)?;
+            let connection = ServerConnection {
+                base_url: server.url.clone(),
+                token,
+                vault_id,
+            };
+            Ok(AnyTarget::Server(ServerTarget::new(
+                ServerHttpTransport::new(connection),
+            )))
         }
     }
 }
@@ -238,13 +292,15 @@ pub fn connect_folder(
     }
     let folder = FolderTarget::open(target)?;
     let generations = keyring_generations(&folder)?;
-    let (vault_id, vault_key, recovery_code) = create_or_join(&generations, &folder, password)?;
+    let (vault_id, vault_key, recovery_code) =
+        create_or_join(&generations, &folder, password, None)?;
     keychain::remember_vault_key(vault_id, &vault_key);
     let vault_path = vault_path.ok_or(SessionError::NoVaultOpen)?.to_path_buf();
     let config = SyncConfig {
         kind: SyncKind::Folder,
         target: Some(target.to_path_buf()),
         s3: None,
+        server: None,
         vault_path: Some(vault_path),
         enabled: true,
     };
@@ -305,7 +361,8 @@ pub fn connect_s3(
     };
     let target = S3Target::new(S3HttpTransport::new(cfg));
     let generations = keyring_generations(&target).map_err(SessionError::ReachBucket)?;
-    let (vault_id, vault_key, recovery_code) = create_or_join(&generations, &target, password)?;
+    let (vault_id, vault_key, recovery_code) =
+        create_or_join(&generations, &target, password, None)?;
     keychain::remember_vault_key(vault_id, &vault_key);
     keychain::remember_s3_secret(&endpoint, &bucket, &secret_key);
     let vault_path = vault_path.ok_or(SessionError::NoVaultOpen)?.to_path_buf();
@@ -318,6 +375,104 @@ pub fn connect_s3(
             bucket,
             access_key,
         }),
+        server: None,
+        vault_path: Some(vault_path),
+        enabled: true,
+    };
+    let session = bind_session(state_path, vault_id, vault_key)?;
+    Ok(Connected {
+        config,
+        session,
+        recovery_code,
+    })
+}
+
+/// The raw noteserver connection details as typed by the user; trimmed and
+/// validated here (ADR-0007 §§2–3, 5).
+#[derive(Debug, Clone, Default)]
+pub struct ServerConnect {
+    /// The server root, e.g. `https://notes.example.com`.
+    pub url: String,
+    pub email: String,
+    /// The *account* password (ADR-0007 §2) — not the sync password.
+    pub account_password: String,
+    pub device_name: String,
+    /// Register the account when the server does not know the email yet.
+    pub create_account: bool,
+}
+
+/// Connect this vault to a writan-server (ADR-0007). Signs in — or registers,
+/// with `create_account` — this device, makes sure the account has a vault
+/// (creating a fresh one on the first device), then runs the same keyring
+/// flow as the other targets: create fresh (returning the recovery code once)
+/// or unlock the existing keyring. The device token goes to the OS keychain,
+/// never to `config.json`.
+pub fn connect_server(
+    details: &ServerConnect,
+    sync_password: &str,
+    vault_path: Option<&Path>,
+    state_path: &Path,
+) -> Result<Connected, SessionError> {
+    let url = details.url.trim().trim_end_matches('/').to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(SessionError::ServerUrlFirst);
+    }
+    let email = details.email.trim().to_lowercase();
+    if email.is_empty() || !email.contains('@') {
+        return Err(SessionError::EmailFirst);
+    }
+    if details.account_password.is_empty() {
+        return Err(SessionError::AccountPasswordFirst);
+    }
+    if sync_password.is_empty() {
+        return Err(SessionError::PasswordFirst);
+    }
+    // The server sees this device's sync id, so signing in here keeps the
+    // identity the engine uses (ADR-0007 §3); the state file remembers it
+    // before the first call so a later bind_session reuses the same uuid.
+    let mut state = SyncState::load(state_path).unwrap_or_default();
+    let device = state.device.unwrap_or_else(Uuid::new_v4);
+    state.device = Some(device);
+    state.save(state_path)?;
+    let login = ServerLogin {
+        url: url.clone(),
+        email: email.clone(),
+        password: details.account_password.clone(),
+        device_id: device,
+        device_name: details.device_name.trim().to_string(),
+    };
+    let token = if details.create_account {
+        crate::server::register(&login)?
+    } else {
+        crate::server::login(&login)?
+    };
+    keychain::remember_server_token(&url, &email, &token);
+    let vault_id = match crate::server::discover_vault(&url, &token)? {
+        Some(existing) => existing,
+        None => {
+            let fresh = Uuid::new_v4();
+            crate::server::ensure_vault(&url, &token, fresh)?;
+            fresh
+        }
+    };
+    let target = ServerTarget::new(ServerHttpTransport::new(ServerConnection {
+        base_url: url.clone(),
+        token,
+        vault_id: Some(vault_id),
+    }));
+    let generations = keyring_generations(&target).map_err(SessionError::ServerKeyring)?;
+    let (keyring_vault, vault_key, recovery_code) =
+        create_or_join(&generations, &target, sync_password, Some(vault_id))?;
+    if keyring_vault != vault_id {
+        return Err(SessionError::DifferentVault);
+    }
+    keychain::remember_vault_key(vault_id, &vault_key);
+    let vault_path = vault_path.ok_or(SessionError::NoVaultOpen)?.to_path_buf();
+    let config = SyncConfig {
+        kind: SyncKind::Server,
+        target: None,
+        s3: None,
+        server: Some(ServerConfigFile { url, email }),
         vault_path: Some(vault_path),
         enabled: true,
     };
@@ -340,7 +495,7 @@ pub fn unlock(
     if credential.is_empty() {
         return Err(SessionError::NoCredential);
     }
-    let target = open_target(&config)?;
+    let target = open_target(&config, None)?;
     let generations = keyring_generations(&target)?;
     if generations.is_empty() {
         return Err(SessionError::NoKeyring);
@@ -407,6 +562,7 @@ pub fn status(config: &SyncConfig, session: Option<&SyncSession>, state_path: &P
             .as_ref()
             .map(|path| path.display().to_string()),
         SyncKind::S3 => config.s3.as_ref().map(|s3| format!("s3://{}", s3.bucket)),
+        SyncKind::Server => config.server.as_ref().map(|server| server.url.clone()),
     };
     let mut status = SyncStatus {
         enabled: config.enabled,
@@ -433,9 +589,12 @@ fn create_or_join(
     generations: &[(u32, Vec<u8>)],
     target: &impl SyncTarget,
     password: &str,
+    wanted: Option<Uuid>,
 ) -> Result<(Uuid, [u8; 32], Option<String>), SessionError> {
     if generations.is_empty() {
-        let vault_id = Uuid::new_v4();
+        // A writan-server vault id is assigned by the account (ADR-0007 §5);
+        // folder and bucket targets let the fresh keyring pick its own.
+        let vault_id = wanted.unwrap_or_else(Uuid::new_v4);
         let code = generate_recovery_code();
         let (_file, key) = bootstrap_keyring(target, vault_id, password, &code)
             .map_err(SessionError::CreateKeyring)?;
@@ -490,5 +649,100 @@ impl SyncReport {
             line.push_str(&format!(" · {} unreadable", self.unreadable));
         }
         line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server_config() -> SyncConfig {
+        SyncConfig {
+            kind: SyncKind::Server,
+            target: None,
+            s3: None,
+            server: Some(ServerConfigFile {
+                url: "https://notes.example.com".to_string(),
+                email: "ada@example.com".to_string(),
+            }),
+            vault_path: None,
+            enabled: true,
+        }
+    }
+
+    fn missing_state() -> PathBuf {
+        PathBuf::from("/nonexistent/writan-test/sync-state.json")
+    }
+
+    #[test]
+    fn server_config_roundtrips_and_older_configs_load() {
+        let config = server_config();
+        let json = serde_json::to_string(&config).expect("serialize");
+        assert!(json.contains("\"kind\":\"server\""), "{json}");
+        let back: SyncConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(back.kind, SyncKind::Server));
+        assert_eq!(
+            back.server.expect("server details").url,
+            "https://notes.example.com"
+        );
+
+        // A config written before server sync existed still loads.
+        let older: SyncConfig =
+            serde_json::from_str(r#"{"kind":"s3","enabled":true}"#).expect("older config");
+        assert!(older.server.is_none());
+        assert!(matches!(older.kind, SyncKind::S3));
+    }
+
+    #[test]
+    fn server_status_shows_the_address() {
+        let status = status(&server_config(), None, &missing_state());
+        assert!(matches!(status.kind, SyncKind::Server));
+        assert_eq!(status.target.as_deref(), Some("https://notes.example.com"));
+        assert!(status.enabled);
+        assert!(!status.unlocked);
+    }
+
+    #[test]
+    fn server_connect_checks_its_inputs_before_any_call() {
+        let base = ServerConnect {
+            url: "https://notes.example.com".to_string(),
+            email: "ada@example.com".to_string(),
+            account_password: "hunter2-plus".to_string(),
+            device_name: "laptop".to_string(),
+            create_account: true,
+        };
+        let no_scheme = ServerConnect {
+            url: "notes.example.com".to_string(),
+            ..base.clone()
+        };
+        assert!(matches!(
+            connect_server(&no_scheme, "sync-password", None, &missing_state()),
+            Err(SessionError::ServerUrlFirst)
+        ));
+        let bad_email = ServerConnect {
+            email: "not-an-email".to_string(),
+            ..base.clone()
+        };
+        assert!(matches!(
+            connect_server(&bad_email, "sync-password", None, &missing_state()),
+            Err(SessionError::EmailFirst)
+        ));
+        let no_account_password = ServerConnect {
+            account_password: String::new(),
+            ..base.clone()
+        };
+        assert!(matches!(
+            connect_server(
+                &no_account_password,
+                "sync-password",
+                None,
+                &missing_state()
+            ),
+            Err(SessionError::AccountPasswordFirst)
+        ));
+        assert!(matches!(
+            connect_server(&base, "", None, &missing_state()),
+            Err(SessionError::PasswordFirst)
+        ));
     }
 }

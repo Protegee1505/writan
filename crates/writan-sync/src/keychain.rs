@@ -17,6 +17,9 @@ const KEYCHAIN_SERVICE: &str = "com.writan.desktop.sync";
 /// Keychain service for the S3 secret key (ADR-0006); the account is
 /// `endpoint/bucket`.
 const S3_SECRET_SERVICE: &str = "com.writan.desktop.s3";
+/// Keychain service for the noteserver device token (ADR-0007 §11); the
+/// account is `<url>/<email>`.
+const SERVER_TOKEN_SERVICE: &str = "com.writan.desktop.server";
 
 fn entry(service: &str, account: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(service, account).ok()
@@ -76,4 +79,31 @@ pub fn recall_s3_secret(endpoint: &str, bucket: &str) -> Option<String> {
 
 fn s3_account(endpoint: &str, bucket: &str) -> String {
     format!("{endpoint}/{bucket}")
+}
+
+/// Remember a noteserver device token (ADR-0007 §11). Best-effort like the
+/// rest: losing it only means signing in again.
+pub fn remember_server_token(url: &str, email: &str, token: &str) {
+    if let Some(entry) = entry(SERVER_TOKEN_SERVICE, &server_account(url, email)) {
+        let _ = entry.set_password(token);
+    }
+}
+
+/// Drop the stored device token (the server keeps its own copy until the
+/// device is signed out there).
+pub fn forget_server_token(url: &str, email: &str) {
+    if let Some(entry) = entry(SERVER_TOKEN_SERVICE, &server_account(url, email)) {
+        let _ = entry.delete_credential();
+    }
+}
+
+/// The device token remembered for this server account, if any.
+pub fn recall_server_token(url: &str, email: &str) -> Option<String> {
+    entry(SERVER_TOKEN_SERVICE, &server_account(url, email))?
+        .get_password()
+        .ok()
+}
+
+fn server_account(url: &str, email: &str) -> String {
+    format!("{url}/{email}")
 }

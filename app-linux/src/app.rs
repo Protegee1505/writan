@@ -3142,19 +3142,20 @@ fn build_sync_rows(
     let kind = adw::ComboRow::new();
     kind.set_title("Target");
     kind.set_subtitle("Where the encrypted notes travel through");
-    let kinds = gtk::StringList::new(&["Shared folder", "S3-compatible bucket"]);
+    let kinds = gtk::StringList::new(&["Shared folder", "S3-compatible bucket", "Writan server"]);
     kind.set_model(Some(&kinds));
     kind.set_selected(match state.borrow().sync_config.kind {
         writan_sync::SyncKind::Folder => 0,
         writan_sync::SyncKind::S3 => 1,
+        writan_sync::SyncKind::Server => 2,
     });
     {
         let state = state.clone();
         kind.connect_selected_notify(move |row| {
-            let kind = if row.selected() == 1 {
-                writan_sync::SyncKind::S3
-            } else {
-                writan_sync::SyncKind::Folder
+            let kind = match row.selected() {
+                2 => writan_sync::SyncKind::Server,
+                1 => writan_sync::SyncKind::S3,
+                _ => writan_sync::SyncKind::Folder,
             };
             if state.borrow().sync_config.kind == kind {
                 return;
@@ -3256,6 +3257,11 @@ fn build_sync_rows(
                         secret_key: s3_secret.text().to_string(),
                     };
                     start_sync_s3(&state, details, credential);
+                }
+                writan_sync::SyncKind::Server => {
+                    ui.toast.add_toast(adw::Toast::new(
+                        "Setting up a writan-server from here is not wired up yet.",
+                    ));
                 }
             }
             password.set_text("");
@@ -3673,7 +3679,8 @@ fn run_pass_in_background(
     Result<writan_sync::SyncReport, String>,
 ) {
     let outcome = (|| {
-        let target = writan_sync::open_target(config).map_err(|error| error.to_string())?;
+        let target = writan_sync::open_target(config, Some(session.vault_id))
+            .map_err(|error| error.to_string())?;
         let vault = writan_core::Vault::open(root).map_err(|error| error.to_string())?;
         let io = writan_sync::FolderVault::new(&vault);
         writan_sync::run_pass(state_path, &mut session, &io, &target)

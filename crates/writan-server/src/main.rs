@@ -4,7 +4,7 @@
 use std::process::ExitCode;
 
 use writan_server::config::ServerConfig;
-use writan_server::routes::{AppState, app};
+use writan_server::routes::AppState;
 use writan_server::{auth, db};
 
 const USAGE: &str = "\
@@ -79,23 +79,17 @@ fn serve() -> Result<(), String> {
         .map_err(|error| format!("cannot create {}: {error}", config.data_dir.display()))?;
     let conn = db::open(&database_path(&config)).map_err(reason)?;
     let state = AppState::new(conn, config.clone());
-    let runtime = tokio::runtime::Runtime::new().map_err(|error| format!("tokio: {error}"))?;
-    runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
-            .await
-            .map_err(|error| format!("cannot bind port {}: {error}", config.port))?;
-        let address = listener
-            .local_addr()
-            .map_err(|error| format!("cannot read the local address: {error}"))?;
-        eprintln!(
-            "writan-server {} listening on http://{address} (data: {})",
-            env!("CARGO_PKG_VERSION"),
-            config.data_dir.display()
-        );
-        axum::serve(listener, app(state))
-            .await
-            .map_err(|error| format!("server: {error}"))
-    })
+    let listener = std::net::TcpListener::bind(("0.0.0.0", config.port))
+        .map_err(|error| format!("cannot bind port {}: {error}", config.port))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("cannot read the local address: {error}"))?;
+    eprintln!(
+        "writan-server {} listening on http://{address} (data: {})",
+        env!("CARGO_PKG_VERSION"),
+        config.data_dir.display()
+    );
+    writan_server::serve_blocking(listener, state).map_err(|error| format!("server: {error}"))
 }
 
 /// Replace an account's password and revoke its devices (ADR-0007 §2).

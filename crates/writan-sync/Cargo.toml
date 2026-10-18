@@ -26,3 +26,5 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# The live-server round trip (tests/server_sync.rs) spawns the real binary.
+writan-server = { workspace = true }

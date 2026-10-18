@@ -21,6 +21,7 @@ repository = "https://github.com/Protegee1505/writan"
 # internal crates
 writan-core = { path = "crates/writan-core" }
 writan-crypto = { path = "crates/writan-crypto" }
+writan-server = { path = "crates/writan-server" }
 writan-sync = { path = "crates/writan-sync" }
 
 # external

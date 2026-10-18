@@ -11,7 +11,7 @@
 //! is [`merge`]'s bounded diff3 with a last-writer-wins window (ADR-0001), and
 //! [`keys`] holds the keyring generations and recovery codes (ADR-0005 §7–10).
 //! [`s3`] is the bucket target speaking the same create-only protocol
-//! (ADR-0006).
+//! (ADR-0006); [`server`] speaks it against a writan-server (ADR-0007).
 
 #![forbid(unsafe_code)]
 
@@ -21,6 +21,7 @@ pub mod keychain;
 pub mod keys;
 pub mod merge;
 pub mod s3;
+pub mod server;
 pub mod session;
 pub mod target;
 
@@ -43,10 +44,15 @@ pub use keys::{
 };
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 pub use s3::{ListPage, S3Config, S3HttpTransport, S3Target, S3Transport};
+pub use server::{
+    PutStatus, ServerConnection, ServerError, ServerHttpTransport, ServerLogin, ServerTarget,
+    ServerTransport,
+};
 pub use session::{
-    AnyTarget, Connected, S3ConfigFile, S3Connect, SYNC_STATE_FILE, SessionError, SyncConfig,
-    SyncKind, SyncSession, SyncStatus, check_vault, connect_folder, connect_s3, open_target,
-    resume, run_pass, status as sync_status, unlock,
+    AnyTarget, Connected, S3ConfigFile, S3Connect, SYNC_STATE_FILE, ServerConfigFile,
+    ServerConnect, SessionError, SyncConfig, SyncKind, SyncSession, SyncStatus, check_vault,
+    connect_folder, connect_s3, connect_server, open_target, resume, run_pass,
+    status as sync_status, unlock,
 };
 pub use target::{FolderTarget, SyncTarget, TargetError};
 

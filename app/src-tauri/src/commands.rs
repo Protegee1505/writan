@@ -523,7 +523,11 @@ fn run_sync_locked(state: &AppState, inner: &mut Inner) -> CmdResult<SyncReportD
     if !inner.config.sync.enabled {
         return Err("sync is disabled".to_string());
     }
-    let target = open_target(&inner.config.sync).map_err(|e| e.to_string())?;
+    let target = open_target(
+        &inner.config.sync,
+        inner.sync.as_ref().map(|session| session.vault_id),
+    )
+    .map_err(|e| e.to_string())?;
     let current_vault = inner
         .workspace
         .as_ref()

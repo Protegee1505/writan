@@ -6079,6 +6079,7 @@ dependencies = [
  "uuid",
  "writan-core",
  "writan-crypto",
+ "writan-server",
  "zeroize",
 ]
 

@@ -454,6 +454,7 @@ mod tests {
                 access_key: "key".to_string(),
             }),
             vault_path: Some(PathBuf::from("/notes")),
+            server: None,
             enabled: true,
         };
         std::fs::write(
