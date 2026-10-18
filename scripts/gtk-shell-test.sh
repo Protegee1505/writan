@@ -20,7 +20,7 @@
 #  13. Empty Trash clears the remaining entries
 #  14. Ctrl+P opens the command palette
 #  15. typing 'delta' and Enter in it opens the note
-#  16. Escape closes it
+#  16. Escape and a click outside dismiss it, with the window unmoved
 #  17. a settings.shortcuts override leaves Ctrl+P dead
 #  18. the rebound Ctrl+Shift+P opens the palette
 #  19. the Ctrl+K alias still opens it
@@ -48,6 +48,9 @@
 #  41. unlocking with the password publishes again
 #  42. the two-click Turn off clears enabled in config.json
 #  43. a second device joins the folder keyring and adopts notes
+#  44. a note row's right-click menu duplicates the note
+#  45. the palette finds a setting and opens the Settings panel on it
+#  46. a dragged divider is remembered, and the pane floor holds
 # Real app data is untouched: XDG dirs point into a temp directory, which is
 # kept only when a check fails (or with --keep). Screenshots land in --out.
 #
@@ -102,6 +105,9 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# An unguarded command that fails aborts the script under `set -e`; without
+# this trap the log would simply stop mid-check with no line to look at.
+trap 'printf "gtk-shell-test: aborted at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 # One pinned note, so startup always lands on it (list order: pinned, updated).
 cat >"$vault/alpha.md" <<'EOF'
@@ -138,10 +144,20 @@ printf '{"vault_path": "%s"}' "$vault" >"$config_home/com.writan.desktop/config.
 Xvfb "$display" -screen 0 1280x800x24 -nolisten tcp >"$work/xvfb.log" 2>&1 &
 xvfb_pid=$!
 export DISPLAY="$display"
-for _ in $(seq 1 50); do
-  xdotool getdisplaygeometry >/dev/null 2>&1 && break
-  sleep 0.1
+# A cold xkbcomp cache can keep Xvfb busy for a few seconds: wait for the
+# display rather than for a fixed time, and say so when it never answers.
+display_ready=""
+for _ in $(seq 1 100); do
+  if xdotool getdisplaygeometry >/dev/null 2>&1; then
+    display_ready=1
+    break
+  fi
+  sleep 0.2
 done
+if [ -z "$display_ready" ]; then
+  echo "gtk-shell-test: Xvfb $display did not come up (see $work/xvfb.log)" >&2
+  exit 1
+fi
 
 env \
   WRITAN_VAULT="$vault" \
@@ -186,8 +202,72 @@ xdotool windowraise "$window"
 shot() { import -window "$window" "$out/$1.png" 2>/dev/null || true; }
 shot_of() { import -window "$2" "$out/$1.png" 2>/dev/null || true; }
 trash_window() { xdotool search --onlyvisible --name '^Trash$' 2>/dev/null | head -1; }
-palette_window() { xdotool search --onlyvisible --name '^Command palette$' 2>/dev/null | head -1; }
 settings_window() { xdotool search --onlyvisible --name '^Settings$' 2>/dev/null | head -1; }
+
+close_settings() { # close the Settings panel if one is up: it holds the clicks
+  local settings
+  for _ in $(seq 1 3); do
+    settings="$(settings_window || true)"
+    [ -n "$settings" ] || return 0
+    xdotool windowfocus --sync "$settings" 2>/dev/null || true
+    xdotool key --clearmodifiers Escape
+    sleep 0.5
+  done
+  [ -z "$(settings_window || true)" ]
+}
+
+# The command palette is a layer inside the main window, not a window of its
+# own: nothing to search for and nothing a window manager can move or resize.
+# What it does is observable — while it is up it takes the keyboard, and Escape
+# or a click outside dismisses it. These helpers type a throwaway marker and
+# watch where it lands: the palette's entry leaves no trace, the editor writes
+# it into the note on disk.
+open_note_file() { # the file behind the note title in the window title
+  local title
+  title="$(xdotool getwindowname "$window" | sed 's/ — Writan$//')"
+  grep -l "^title: ${title}$" "$vault"/*.md 2>/dev/null | head -1
+}
+
+frontmatter() { # the YAML block of a note: where its tags live
+  sed -n '2,/^---$/p' "$1" 2>/dev/null
+}
+
+editor_gets_typing() { # marker -> 0 once the note on disk carries it
+  local marker="$1" file=""
+  xdotool windowfocus --sync "$window"
+  xdotool type --delay 25 -- "$marker"
+  for _ in $(seq 1 12); do
+    file="$(open_note_file)"
+    if [ -n "$file" ] && grep -q -- "$marker" "$file"; then
+      xdotool key --clearmodifiers ctrl+z # leave the note as it was
+      sleep 1.0
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+palette_open() { # 0 when Ctrl+P opens the palette; leaves it closed again
+  local marker="palette-probe-$$-$RANDOM" file=""
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers ctrl+p
+  sleep 0.8
+  xdotool type --delay 25 -- "$marker"
+  sleep 0.4
+  xdotool key --clearmodifiers Escape
+  sleep 0.4
+  for _ in $(seq 1 8); do
+    file="$(open_note_file)"
+    if [ -n "$file" ] && grep -q -- "$marker" "$file"; then
+      xdotool key --clearmodifiers ctrl+z # the editor got it: no palette
+      sleep 1.0
+      return 1
+    fi
+    sleep 0.25
+  done
+  return 0
+}
 
 wait_title() { # substring, seconds
   local want="$1" deadline=$(( $(date +%s) + $2 ))
@@ -196,6 +276,36 @@ wait_title() { # substring, seconds
     sleep 0.2
   done
   return 1
+}
+
+# One palette round trip: open it with `key`, type `text`, press Enter and see
+# which note the window ends up on. Without the palette the text would land in
+# the editor and Enter would only add a line, so the title proves both.
+open_note_with() { # key binding, search text, expected title substring
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers "$1"
+  sleep 0.8
+  xdotool type --delay 30 -- "$2"
+  sleep 0.6
+  xdotool key --clearmodifiers Return
+  sleep 0.8
+  case "$(xdotool getwindowname "$window")" in *"$3"*) return 0 ;; esac
+  xdotool key --clearmodifiers Escape
+  return 1
+}
+
+open_note_via_palette() { # search text, expected title substring
+  open_note_with ctrl+p "$1" "$2"
+}
+
+run_palette_command() { # search text: open the palette, filter, press Enter
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers ctrl+p
+  sleep 0.8
+  xdotool type --delay 30 -- "$1"
+  sleep 0.6
+  xdotool key --clearmodifiers Return
+  sleep 0.8
 }
 
 if wait_title "Alpha — Writan" 15; then
@@ -487,8 +597,11 @@ else
   bad "the trash panel did not reopen for the empty check"
 fi
 
-# 14-16. Command palette: Ctrl+P opens it, typing filters, Enter opens the
-# note, Escape closes the panel.
+# 14-16. Command palette (a layer inside the main window, not a window of its
+# own): Ctrl+P opens it, typing
+# 'delta' filters and Enter opens that note, Escape and a click outside both
+# dismiss it with the keyboard back on the editor, and neither moves or
+# resizes the window.
 cat >"$vault/delta.md" <<'EOF'
 ---
 id: dddddddd-dddd-4ddd-8ddd-dddddddddddd
@@ -501,53 +614,47 @@ updated: 2026-10-03T09:00:00Z
 delta body line.
 EOF
 sleep 2.5
-xdotool windowfocus --sync "$window"
-xdotool key --clearmodifiers ctrl+p
-palette=""
-for _ in $(seq 1 25); do
-  palette="$(palette_window || true)"
-  [ -n "$palette" ] && break
-  sleep 0.2
-done
-if [ -n "$palette" ]; then
+if palette_open; then
   ok "Ctrl+P opened the command palette"
 else
-  bad "Ctrl+P did not open a window titled 'Command palette'"
+  bad "Ctrl+P did not open the command palette"
 fi
 shot 90-palette
-[ -n "$palette" ] && shot_of 91-palette-window "$palette"
 
-if [ -n "$palette" ]; then
-  xdotool windowfocus --sync "$palette"
-  xdotool type --delay 25 -- "delta"
-  sleep 1.0
-  shot_of 92-palette-filtered "$palette"
-  xdotool key --clearmodifiers Return
-  sleep 1.0
-  if [ -z "$(palette_window || true)" ] && wait_title "Delta — Writan" 5; then
-    ok "typing 'delta' and Enter opened the note from the palette"
-  else
-    bad "the palette did not open Delta (title: '$(xdotool getwindowname "$window")')"
-  fi
+if open_note_via_palette delta "Delta — Writan"; then
+  ok "typing 'delta' and Enter opened the note from the palette"
 else
-  bad "skipping the palette filter check: no palette window"
+  bad "the palette did not open Delta (title: '$(xdotool getwindowname "$window")')"
 fi
 shot 93-delta-open
 
 xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+p
-sleep 1.0
-if [ -n "$(palette_window || true)" ]; then
-  xdotool key --clearmodifiers Escape
-  sleep 0.8
-  if [ -z "$(palette_window || true)" ]; then
-    ok "Escape closed the command palette"
-  else
-    bad "Escape did not close the palette"
-  fi
+sleep 0.8
+xdotool key --clearmodifiers Escape
+if editor_gets_typing "escape-dismiss-marker"; then
+  ok "Escape dismissed the palette and the editor had the keyboard again"
 else
-  bad "the palette did not reopen for the Escape check"
+  bad "the palette kept the keyboard after Escape"
 fi
+
+geometry_before="$(xdotool getwindowgeometry --shell "$window" | tr '\n' ' ')"
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+p
+sleep 0.8
+# Well below the palette (which sits at the top, at most ~430 px tall): the
+# click lands in the editor pane, so the palette must autohide and the click
+# must both dismiss it and put the keyboard back in the editor.
+xdotool mousemove --sync 520 620
+xdotool click 1
+sleep 0.3
+geometry_after="$(xdotool getwindowgeometry --shell "$window" | tr '\n' ' ')"
+if editor_gets_typing "click-dismiss-marker" && [ "$geometry_before" = "$geometry_after" ]; then
+  ok "clicking outside dismissed the palette and left the window where it was"
+else
+  bad "a click outside the palette dismissed nothing or moved the window"
+fi
+shot 94-palette-dismissed
 
 # 17-20. settings.shortcuts: restart with command-palette rebound to
 # Ctrl+Shift+P. Ctrl+P must be dead, the new binding and the Ctrl+K alias
@@ -581,37 +688,30 @@ else
   bad "the app window never reappeared after the restart"
 fi
 
+# Ctrl+P is dead: with the palette up, Enter would run its first item ("New
+# note") and change the window title; with it dead, Enter only adds a line to
+# the editor.
+before_title="$(xdotool getwindowname "$window")"
+xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+p
 sleep 1.0
-if [ -z "$(palette_window || true)" ]; then
+xdotool key --clearmodifiers Return
+sleep 1.2
+if [ "$(xdotool getwindowname "$window")" = "$before_title" ]; then
   ok "the override left Ctrl+P dead"
 else
   bad "Ctrl+P still opened the palette after the rebind"
 fi
 shot 94-rebound
 
-xdotool key --clearmodifiers ctrl+shift+p
-palette=""
-for _ in $(seq 1 25); do
-  palette="$(palette_window || true)"
-  [ -n "$palette" ] && break
-  sleep 0.2
-done
-if [ -n "$palette" ]; then
+if open_note_with ctrl+shift+p shot "Shot — Writan"; then
   ok "Ctrl+Shift+P opened the palette (the rebind is live)"
-  xdotool key --clearmodifiers Escape
-  sleep 0.8
 else
   bad "the rebound Ctrl+Shift+P did not open the palette"
 fi
 
-xdotool windowfocus --sync "$window"
-xdotool key --clearmodifiers ctrl+k
-sleep 1.0
-if [ -n "$(palette_window || true)" ]; then
+if open_note_with ctrl+k delta "Delta — Writan"; then
   ok "the Ctrl+K alias still opens the palette"
-  xdotool key --clearmodifiers Escape
-  sleep 0.8
 else
   bad "the Ctrl+K alias did not open the palette after the rebind"
 fi
@@ -706,28 +806,21 @@ if [ -n "$settings" ]; then
 fi
 
 # 24. The replaced Ctrl+Shift+P must be dead; the new combo opens the palette.
+before_title="$(xdotool getwindowname "$window")"
 xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+shift+p
 sleep 1.0
-if [ -n "$(palette_window || true)" ]; then
-  bad "the replaced Ctrl+Shift+P still opened the palette"
-  xdotool key --clearmodifiers Escape
-  sleep 0.6
+xdotool key --clearmodifiers Return
+sleep 1.2
+if [ "$(xdotool getwindowname "$window")" = "$before_title" ]; then
+  ok "the replaced Ctrl+Shift+P stayed dead"
 else
-  xdotool key --clearmodifiers ctrl+alt+p
-  palette=""
-  for _ in $(seq 1 25); do
-    palette="$(palette_window || true)"
-    [ -n "$palette" ] && break
-    sleep 0.2
-  done
-  if [ -n "$palette" ]; then
-    ok "the binding recorded in the panel opens the palette (the old one is dead)"
-    xdotool key --clearmodifiers Escape
-    sleep 0.8
-  else
-    bad "the new binding from the Settings panel did not open the palette"
-  fi
+  bad "the replaced Ctrl+Shift+P still opened the palette"
+fi
+if open_note_with ctrl+alt+p shot "Shot — Writan"; then
+  ok "the binding recorded in the panel opens the palette (the old one is dead)"
+else
+  bad "the new binding from the Settings panel did not open the palette"
 fi
 
 # 25-26. Reset drops the override and the default Ctrl+P comes back.
@@ -752,18 +845,8 @@ if open_settings; then
   shot_of 99-reset-default "$settings"
   xdotool key --clearmodifiers Escape
   sleep 0.8
-  xdotool windowfocus --sync "$window"
-  xdotool key --clearmodifiers ctrl+p
-  palette=""
-  for _ in $(seq 1 25); do
-    palette="$(palette_window || true)"
-    [ -n "$palette" ] && break
-    sleep 0.2
-  done
-  if [ -n "$palette" ]; then
+  if open_note_with ctrl+p shot "Shot — Writan"; then
     ok "the default Ctrl+P opens the palette again after Reset"
-    xdotool key --clearmodifiers Escape
-    sleep 0.8
   else
     bad "Ctrl+P did not open the palette after Reset"
   fi
@@ -839,14 +922,11 @@ fi
 
 # 30. The palette's "Attach file…" imports a picked file through the dialog.
 convert -size 120x60 xc:seagreen "$out/green.png"
-xdotool key --clearmodifiers ctrl+p
-palette=""
-for _ in $(seq 1 25); do
-  palette="$(palette_window || true)"
-  [ -n "$palette" ] && break
-  sleep 0.2
-done
-if [ -n "$palette" ]; then
+if palette_open; then
+  # The probe closed the palette again: reopen it for the attach flow.
+  xdotool windowfocus --sync "$window"
+  xdotool key --clearmodifiers ctrl+p
+  sleep 0.8
   xdotool type --delay 30 -- "attach"
   sleep 0.5
   xdotool key --clearmodifiers Return
@@ -905,24 +985,7 @@ else
 fi
 shot_of 103-text-paste "$window"
 
-# 32-35 need a couple of small helpers.
-open_note_via_palette() { # search text, expected title substring
-  xdotool windowfocus --sync "$window"
-  xdotool key --clearmodifiers ctrl+p
-  local palette="" found=""
-  for _ in $(seq 1 25); do
-    palette="$(palette_window || true)"
-    [ -n "$palette" ] && break
-    sleep 0.2
-  done
-  [ -n "$palette" ] || return 1
-  xdotool type --delay 30 -- "$1"
-  sleep 0.6
-  xdotool key --clearmodifiers Return
-  sleep 0.6
-  case "$(xdotool getwindowname "$window")" in *"$2"*) found=1 ;; esac
-  [ -n "$found" ]
-}
+# 32-35 need a couple of small helpers (the palette ones live at the top).
 restart_app() {
   kill "$app_pid" 2>/dev/null || true
   wait "$app_pid" 2>/dev/null || true
@@ -962,26 +1025,33 @@ filter_settings() { # filter text
 # 32. The tag row: a chip removes that tag, a typed tag reaches the file.
 if open_note_via_palette delta "Delta — Writan"; then
   # Delta starts with the fixture's 'smoke' tag: its chip removes that one.
-  xdotool mousemove --sync 520 120
-  xdotool click 1
+  # The chip is small (that is the point of the minimal tag row), so a few
+  # pixels either side of its centre are tried before the check fails.
   smoke_gone=""
-  for _ in $(seq 1 25); do
-    if ! grep -q "smoke" "$vault/delta.md" 2>/dev/null; then smoke_gone=1; break; fi
-    sleep 0.2
+  for x in 505 520 492; do
+    xdotool mousemove --sync "$x" 111
+    xdotool click 1
+    for _ in $(seq 1 8); do
+      if ! frontmatter "$vault/delta.md" | grep -q "smoke"; then smoke_gone=1; break; fi
+      sleep 0.2
+    done
+    [ -n "$smoke_gone" ] && break
   done
   if [ -n "$smoke_gone" ]; then
     ok "clicking a tag chip removed that tag from the note file"
   else
     bad "the tag chip did not remove the tag"
   fi
-  xdotool mousemove --sync 387 117
+  # The entry's centre line is y=110; one pixel lower is the editor body, so
+  # the typed tag must land in the frontmatter (a tag), not merely in the file.
+  xdotool mousemove --sync 387 110
   xdotool click 1
-  sleep 0.4
+  sleep 0.5
   xdotool type --delay 30 -- "review-check"
   xdotool key --clearmodifiers Return
   tagged=""
   for _ in $(seq 1 25); do
-    if grep -q "review-check" "$vault/delta.md" 2>/dev/null; then tagged=1; break; fi
+    if frontmatter "$vault/delta.md" | grep -q "review-check"; then tagged=1; break; fi
     sleep 0.2
   done
   if [ -n "$tagged" ]; then
@@ -992,12 +1062,15 @@ if open_note_via_palette delta "Delta — Writan"; then
   shot_of 104-tag-added "$window"
   sleep 0.6
   # The typed tag is the only chip left, so it sits where the first one did.
-  xdotool mousemove --sync 520 120
-  xdotool click 1
   chip_gone=""
-  for _ in $(seq 1 25); do
-    if ! grep -q "review-check" "$vault/delta.md" 2>/dev/null; then chip_gone=1; break; fi
-    sleep 0.2
+  for x in 505 520 492; do
+    xdotool mousemove --sync "$x" 111
+    xdotool click 1
+    for _ in $(seq 1 8); do
+      if ! frontmatter "$vault/delta.md" | grep -q "review-check"; then chip_gone=1; break; fi
+      sleep 0.2
+    done
+    [ -n "$chip_gone" ] && break
   done
   if [ -n "$chip_gone" ]; then
     ok "clicking the chip of the typed tag removed it from the file"
@@ -1164,21 +1237,6 @@ wait_items() { # wanted count, seconds
   done
   return 1
 }
-run_palette_command() { # search text
-  xdotool windowfocus --sync "$window"
-  xdotool key --clearmodifiers ctrl+p
-  local palette=""
-  for _ in $(seq 1 25); do
-    palette="$(palette_window || true)"
-    [ -n "$palette" ] && break
-    sleep 0.2
-  done
-  [ -n "$palette" ] || return 1
-  xdotool type --delay 30 -- "$1"
-  sleep 0.6
-  xdotool key --clearmodifiers Return
-  sleep 0.8
-}
 
 # 36. Enabling sync creates the folder keyring and runs the first pass. The
 # target is seeded in config.json so the check only types the password.
@@ -1315,6 +1373,109 @@ else
   bad "Settings did not reopen for the Turn off check"
 fi
 
+# The panel is a window of its own: left up it takes the clicks meant for the
+# main window (the sync checks end with it in front, so close it here).
+close_settings || true
+
+# 44. Right-clicking a note row opens its menu. The rows sit lower when the
+# sidebar shows facet chips, so the row is found by watching for the click that
+# opens the menu (the menu is a popover window of its own — the palette, by
+# contrast, stays inside the main window). The menu's first entry takes focus
+# while it is up, so Enter duplicates that row's note and a copy lands in the
+# vault next to the original.
+xdotool windowfocus --sync "$window"
+xdotool windowraise "$window"
+copies_before="$(ls "$vault"/*-copy-*.md 2>/dev/null | wc -l | tr -d ' ' || true)"
+windows_before="$(xdotool search --onlyvisible --name '.*' 2>/dev/null | sort | tr '\n' ' ' || true)"
+menu_row=""
+for y in 170 190 210 230 250 270; do
+  xdotool mousemove --sync 200 "$y"
+  xdotool click 3
+  sleep 0.8
+  if [ "$(xdotool search --onlyvisible --name '.*' 2>/dev/null | sort | tr '\n' ' ')" != "$windows_before" ]; then
+    menu_row="$y"
+    break
+  fi
+done
+if [ -n "$menu_row" ]; then
+  import -window root "$out/103-row-menu.png" 2>/dev/null || true
+  xdotool key --clearmodifiers Return
+  sleep 1.5
+  copies_after="$(ls "$vault"/*-copy-*.md 2>/dev/null | wc -l | tr -d ' ' || true)"
+  if [ "$copies_after" -gt "$copies_before" ]; then
+    ok "the row menu's Duplicate wrote a copy to the vault"
+  else
+    bad "the row menu's Duplicate created no copy ($copies_before -> $copies_after)"
+  fi
+else
+  bad "right-clicking the note list opened no menu (row scan y=170..270 at x=200)"
+fi
+shot 104-note-copied
+
+# 45. The palette searches the Settings panel too: typing a setting's name and
+# pressing Enter opens the panel filtered to that row (the reveal the Tauri
+# palette has had all along).
+xdotool windowfocus --sync "$window"
+xdotool key --clearmodifiers ctrl+p
+sleep 0.8
+xdotool type --delay 25 -- "word count"
+sleep 0.8
+shot 105-palette-setting
+xdotool key --clearmodifiers Return
+revealed=""
+for _ in $(seq 1 25); do
+  revealed="$(settings_window || true)"
+  [ -n "$revealed" ] && break
+  sleep 0.2
+done
+if [ -n "$revealed" ]; then
+  ok "the palette found a settings row and opened the Settings panel on it"
+  shot_of 106-settings-revealed "$revealed"
+  xdotool key --clearmodifiers Escape
+  sleep 0.6
+else
+  bad "a settings search in the palette did not open the Settings panel"
+fi
+
+# The reveal raised the panel over the window; close it so the list divider
+# below is grabbable again.
+close_settings || true
+
+# 46. The list divider is remembered in config.json, and its floor keeps the
+# pane on screen: dragged hard left it stops at 200 px, never at zero.
+config_file="$config_home/com.writan.desktop/config.json"
+xdotool windowfocus --sync "$window"
+xdotool windowraise "$window"
+xdotool mousemove --sync 281 350
+xdotool mousedown 1
+xdotool mousemove --sync 460 350
+sleep 0.4
+xdotool mouseup 1
+sleep 1.4
+if wait_config_has '"sidebarWidth"'; then
+  ok "dragging the list divider was remembered in config.json"
+else
+  bad "the dragged divider never reached config.json"
+fi
+stored_width="$(grep -o '"sidebarWidth": *[0-9]*' "$config_file" | grep -o '[0-9]*' | tail -1 || true)"
+if [ -n "$stored_width" ]; then
+  xdotool mousemove --sync $((stored_width + 2)) 350
+  xdotool mousedown 1
+  xdotool mousemove --sync 0 350
+  sleep 0.4
+  xdotool mouseup 1
+  sleep 1.4
+  stored_width="$(grep -o '"sidebarWidth": *[0-9]*' "$config_file" | grep -o '[0-9]*' | tail -1 || true)"
+  if [ "$stored_width" = "200" ]; then
+    ok "the list pane cannot be dragged below its 200 px floor"
+  else
+    bad "the list divider left its floor (sidebarWidth: $stored_width)"
+  fi
+  shot 107-pane-floor
+else
+  bad "no sidebarWidth in config.json to drag from"
+fi
+
 # 43. A second device (its own vault and XDG dirs) joins the same folder with
 # the password: no second keyring appears and the vault adopts device one's
 # notes while publishing its own.
@@ -1351,7 +1512,10 @@ if open_settings; then
 else
   bad "Settings did not open on the second device"
 fi
-xdotool key --clearmodifiers Escape || true
+close_settings || true
 
+# The exit status is the whole point: zero when everything passed. The ERR
+# trap above would only add noise here.
+trap - ERR
 note "gtk-shell-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
