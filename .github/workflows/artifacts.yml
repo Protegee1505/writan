@@ -156,6 +156,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: android-actions/setup-android@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
@@ -170,9 +171,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix app
       - name: Install Android packages
-        # ubuntu-latest ships the SDK with ANDROID_HOME set; only the NDK and
-        # SDK 37 pieces are missing. (setup-android@v3 fails here — it asks
-        # sdkmanager for the removed `tools` package.)
+        # setup-android@v4 (v4.0.2 fixed the removed `tools` package) puts
+        # sdkmanager on PATH; the packages below are what the committed
+        # gen/android project asks for.
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install \
