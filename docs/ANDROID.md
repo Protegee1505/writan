@@ -7,9 +7,10 @@ responsive layout, and features still missing below. The project lives in
 
 ## Get the APK
 
-- CI: the **artifacts** workflow → `writan-android-arm64` (arm64 debug APK).
-  On a `v*` tag it is also attached to the release. Debug builds only —
-  release signing is still open.
+- CI: the **artifacts** workflow → `writan-android-arm64` (arm64 debug APK) and
+  `writan-android-arm64-release` (release build, R8 on). On a `v*` tag both are
+  attached to the release; the signing notes below say which key the release
+  APK carries.
 - Locally, after `scripts/android-setup.sh` prints the exports:
 
   ```sh
@@ -27,6 +28,35 @@ adb install -r app/src-tauri/gen/android/app/build/outputs/apk/**/app-*.apk
 ```
 
 or copy the APK to the phone and tap it (allow installing from this source).
+
+## Release APK and signing
+
+`artifacts.yml`'s **Android release APK (arm64)** job builds the release
+variant (`tauri android build --apk`, R8 on, desugared) and uploads
+`writan-android-arm64-release`; on a `v*` tag the release job attaches it
+beside the debug APK. Gradle signs with the repository keystore when the four
+`WRITAN_ANDROID_*` variables are set, and falls back to the debug key
+otherwise, so a release build can always be sideloaded to test.
+
+| variable | repository secret | what it is |
+| --- | --- | --- |
+| `WRITAN_ANDROID_KEYSTORE` | `WRITAN_ANDROID_KEYSTORE_BASE64` | path to the `.jks`; CI decodes the base64 secret to a temp file |
+| `WRITAN_ANDROID_KEYSTORE_PASSWORD` | same name | keystore password |
+| `WRITAN_ANDROID_KEY_ALIAS` | same name | key alias |
+| `WRITAN_ANDROID_KEY_PASSWORD` | same name | key password |
+
+Create the key once and keep it somewhere safe — updates can only install over
+the app if they are signed with the same key:
+
+```sh
+keytool -genkeypair -v -keystore writan-release.jks -alias writan \
+  -keyalg RSA -keysize 4096 -validity 10000
+base64 -w0 writan-release.jks   # → the WRITAN_ANDROID_KEYSTORE_BASE64 secret
+```
+
+Never commit the keystore or its passwords. Locally, the same variables sign a
+release build: `WRITAN_ANDROID_KEYSTORE=… npm --prefix app run tauri -- android
+build --apk --target aarch64`.
 
 ## First run
 
@@ -90,7 +120,7 @@ the worker also cancels itself when it wakes up to find `config.json` says off.
 
 - **Hardware back button** — Tauri 2.11 exposes no hook; the drawer closes by
   tapping a row or the scrim. Follow-up in slice 2.
-- Keyboard shortcuts, image/file shares, export/backup, release signing.
+- Keyboard shortcuts, image/file shares, export/backup, F-Droid metadata.
 
 ## Verifying without a device
 

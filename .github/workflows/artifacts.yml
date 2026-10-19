@@ -13,6 +13,10 @@
 # - android: debug APK for arm64 (M5). The Android project is committed under
 #            app/src-tauri/gen/android; the job installs JDK 17 + NDK
 #            r27.3.13750724 and builds with `tauri android build`.
+# - android-release: release APK for arm64, signed with the WRITAN_ANDROID_*
+#            secret keystore when it is configured (debug key otherwise); the
+#            release job attaches it on a v* tag. docs/ANDROID.md has the four
+#            secret names and how to make a keystore.
 # - release: only on a v* tag — attaches every artifact plus SHA256SUMS.txt to
 #            the GitHub release of that tag (manual runs skip it)
 #
@@ -193,12 +197,67 @@ jobs:
           if-no-files-found: error
           path: app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
 
+  android-release:
+    name: Android release APK (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix app
+      - name: Install Android packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "ndk;27.3.13750724"
+      - name: Build the release APK
+        env:
+          WRITAN_ANDROID_KEYSTORE_BASE64: ${{ secrets.WRITAN_ANDROID_KEYSTORE_BASE64 }}
+          WRITAN_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.WRITAN_ANDROID_KEYSTORE_PASSWORD }}
+          WRITAN_ANDROID_KEY_ALIAS: ${{ secrets.WRITAN_ANDROID_KEY_ALIAS }}
+          WRITAN_ANDROID_KEY_PASSWORD: ${{ secrets.WRITAN_ANDROID_KEY_PASSWORD }}
+        run: |
+          export NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.3.13750724"
+          if [ -n "$WRITAN_ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$WRITAN_ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/writan-release.keystore"
+            export WRITAN_ANDROID_KEYSTORE="$RUNNER_TEMP/writan-release.keystore"
+            echo "Signing with the repository release keystore"
+          else
+            echo "No release keystore secret; the release APK falls back to the debug key"
+          fi
+          npm --prefix app run tauri -- android build --apk --target aarch64
+      - name: List the APK
+        run: find app/src-tauri/gen/android/app/build/outputs/apk/universal/release -type f -printf '%p %s bytes\n'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: writan-android-arm64-release
+          if-no-files-found: error
+          path: app/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+
   release:
     name: Attach the installers to the GitHub release
     # Runs only for a v* tag; a manual dispatch (branch ref) skips it, so
     # artifacts still work without publishing anything.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, linux-bundles, server, android]
+    needs: [windows, linux, linux-bundles, server, android, android-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write

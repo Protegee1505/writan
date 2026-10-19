@@ -14,6 +14,12 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing: set the four WRITAN_ANDROID_* variables in the environment
+// (repository secrets in CI, or your shell locally) to sign release APKs with
+// your own keystore. Without them the release build falls back to the debug
+// key, so a sideloaded release APK still installs. See docs/ANDROID.md.
+val releaseKeystore = System.getenv("WRITAN_ANDROID_KEYSTORE")
+
 android {
     compileSdk = 37
     namespace = "com.writan.desktop"
@@ -24,6 +30,16 @@ android {
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("WRITAN_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("WRITAN_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("WRITAN_ANDROID_KEY_PASSWORD")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -39,6 +55,11 @@ android {
             }
         }
         getByName("release") {
+            signingConfig = if (releaseKeystore != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             optimization {
                enable = true
             }
