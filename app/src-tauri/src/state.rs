@@ -90,6 +90,14 @@ impl AppState {
             .map(|workspace| workspace.vault().root().to_path_buf())
     }
 
+    /// Whether a vault is currently open.
+    pub fn has_workspace(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|inner| inner.workspace.is_some())
+            .unwrap_or(false)
+    }
+
     /// Open (or create) a vault folder and make it the current one.
     pub fn open_vault(&self, path: &Path) -> Result<(), String> {
         fs::create_dir_all(path).map_err(|e| format!("failed to create vault folder: {e}"))?;

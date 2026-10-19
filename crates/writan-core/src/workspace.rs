@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::index::{Index, IndexError, IndexedNote, SearchHit, SearchQuery};
+use crate::share::{ShareError, draft_from_share};
 use crate::trash::{Trash, TrashEntry, TrashError};
 use crate::vault::{Note, ParsedFile, Vault, VaultError, derive_title};
 use crate::{NoteId, NoteMeta, now_rfc3339};
@@ -20,6 +21,8 @@ pub enum WorkspaceError {
     Index(#[from] IndexError),
     #[error("trash error: {0}")]
     Trash(#[from] TrashError),
+    #[error("share error: {0}")]
+    Share(#[from] ShareError),
     #[error("io error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -216,6 +219,22 @@ impl Workspace {
         let note = self.vault.create(title, tags)?;
         let rel = note.rel_path.clone();
         self.reconcile_one(&rel)?;
+        Ok(note)
+    }
+
+    /// Create a note from text shared into the app (Android share target).
+    ///
+    /// The title and body are derived by [`crate::share::draft_from_share`];
+    /// whitespace-only shares are rejected and leave no file behind.
+    pub fn create_note_from_share(
+        &mut self,
+        text: &str,
+        subject: Option<&str>,
+    ) -> Result<Note, WorkspaceError> {
+        let draft = draft_from_share(text, subject)?;
+        let mut note = self.vault.create(&draft.title, &[])?;
+        note.body = draft.body;
+        self.save_note(&mut note)?;
         Ok(note)
     }
 

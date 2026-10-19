@@ -29,6 +29,8 @@ class AppStore {
   searchTimer: ReturnType<typeof setTimeout> | null = null;
   noticeTimer: ReturnType<typeof setTimeout> | null = null;
   searchSeq = 0;
+  takingShare = false;
+  sharedWatched = false;
 
   get visible(): (Summary | Hit)[] {
     return this.hits ?? this.notes;
@@ -67,6 +69,8 @@ class AppStore {
     } finally {
       this.ready = true;
     }
+    this.watchShared();
+    void this.takeShared();
   }
 
   private async reopenOrSelectFirst() {
@@ -110,9 +114,46 @@ class AppStore {
       await this.refresh();
       await this.loadFacets();
       void this.refreshSync();
+      void this.takeShared();
     } catch (e) {
       this.error = String(e);
     }
+  }
+
+  /**
+   * Turn text shared from another app into a note and open it (Android share
+   * target). The native side keeps the share until a vault is open, so this
+   * is safe to call from `init` and from `adoptVault`.
+   */
+  private async takeShared() {
+    if (this.takingShare || !this.status.vaultPath) return;
+    this.takingShare = true;
+    try {
+      const note = await api.takeShared();
+      if (note) {
+        this.query = "";
+        this.hits = null;
+        await this.refresh();
+        void this.loadFacets();
+        await this.select(note.id);
+        this.notify("Saved the shared note");
+      }
+    } catch (e) {
+      this.error = String(e);
+    } finally {
+      this.takingShare = false;
+    }
+  }
+
+  /** A share can land while the app is already open; check when it wakes up. */
+  private watchShared() {
+    if (this.sharedWatched) return;
+    this.sharedWatched = true;
+    const check = () => {
+      if (document.visibilityState === "visible") void this.takeShared();
+    };
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
   }
 
   async refresh() {

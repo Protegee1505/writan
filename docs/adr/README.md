@@ -16,3 +16,4 @@ changes.
 | 0007 | [noteserver — protocol, authentication, storage](0007-noteserver.md) | Accepted — auth (§2) superseded by [ADR-0008](0008-one-password-signin.md) (which is the §12 exception) | 2026-10-18 |
 | 0008 | [One-password sign-in (verifier auth, password-derived vault key)](0008-one-password-signin.md) | Accepted | 2026-10-18 |
 | 0009 | [Android v1 — app-private vault and a one-pane shell](0009-android-v1-storage-and-shell.md) | Accepted | 2026-10-19 |
+| 0010 | [Android M5 integrations — share target, Keystore key storage, background sync](0010-android-m5-integrations.md) | Accepted | 2026-10-19 |

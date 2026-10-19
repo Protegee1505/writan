@@ -6,6 +6,9 @@
 # Two runs in one script: the narrow layout with a note open (the list is a
 # drawer over the editor), then a fresh Android install — no vault yet — whose
 # welcome card opens the app's own storage instead of a folder picker.
+#
+# The Android share-target flow lives in `mobile-share.actions`: a third
+# document load in one session races the mock dev server's reload.
 
 # --- one pane at a time, list as a drawer (desktop phone-sized window) ---
 # `until` polls: a cold CI runner needs longer than any fixed wait to compile

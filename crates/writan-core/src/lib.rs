@@ -8,12 +8,14 @@
 
 pub mod attachments;
 pub mod index;
+pub mod share;
 pub mod trash;
 pub mod vault;
 pub mod watch;
 pub mod workspace;
 
 pub use index::{Index, IndexError, IndexedNote, SearchHit, SearchQuery};
+pub use share::{ShareDraft, ShareError, draft_from_share};
 pub use trash::{Trash, TrashEntry, TrashError};
 pub use vault::{FileStat, Note, ParsedFile, Vault, VaultError};
 pub use watch::{VaultEvent, VaultWatcher, WatchError};

@@ -36,9 +36,12 @@ const VAULT = "/home/mock/Notes";
 const params = new URLSearchParams(typeof location === "undefined" ? "" : location.search);
 const platform = params.get("platform") ?? "linux";
 /** Where `open_default_vault` lands; mirrors the Android build's data dir. */
-const DEFAULT_VAULT = platform === "android" ? "/data/user/0/com.writan.desktop/files/vault" : VAULT;
+const DEFAULT_VAULT = platform === "android" ? "/data/user/0/com.writan.desktop/vault" : VAULT;
 /** `&welcome=1` starts with no vault open, like a fresh install. */
 let vaultPath: string | null = params.get("welcome") ? null : VAULT;
+/** `&share=TEXT&subject=S` simulates a share intent arriving with the launch. */
+const pendingShare = { text: params.get("share"), subject: params.get("subject") };
+let sharedPending = pendingShare.text !== null;
 
 function statusOf(): Status {
   return {
@@ -220,6 +223,26 @@ const commands: Record<string, Command> = {
     };
     notes.push(note);
     return summary(note);
+  },
+  take_shared: () => {
+    if (!sharedPending || pendingShare.text === null) return null;
+    sharedPending = false;
+    const firstLine = pendingShare.text.split("\n").find((line) => line.trim()) ?? "";
+    const title =
+      (pendingShare.subject ?? firstLine).replace(/^[#>*\-\s]+/, "").trim().slice(0, 80) ||
+      "Shared note";
+    const note: MockNote = {
+      id: `mock-${counter++}`,
+      relPath: `${title}.md`,
+      title,
+      tags: [],
+      pinned: false,
+      created: new Date().toISOString(),
+      updated: new Date().toISOString(),
+      body: pendingShare.text,
+    };
+    notes.push(note);
+    return note;
   },
   duplicate_note: (args) => {
     const source = notes.find((n) => n.id === args.id);

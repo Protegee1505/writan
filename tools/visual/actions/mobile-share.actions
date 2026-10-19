@@ -1,0 +1,28 @@
+# Android share target (M5 slice 2) against the mock backend, phone-sized.
+#
+#   scripts/mock-shot.sh --serve --size 390x844 \
+#     --actions tools/visual/actions/mobile-share.actions --strict
+#
+# Its own script on purpose: the share needs a second document load
+# (`?share=...`), and a third load in one driver session races the mock dev
+# server's module reload (the app boots into a blank page), so this flow must
+# not be appended to `mobile.actions`.
+
+# The driver opens `?mock=1` first; wait for the app to boot.
+until !!document.querySelector("section.pane")
+
+# A share intent lands while the vault is still unset: parked, not lost.
+goto http://127.0.0.1:5173/?mock=1&platform=android&welcome=1&share=Remember%20to%20buy%20milk&subject=From%20the%20share%20sheet
+until document.body.innerText.includes("Use this device's storage")
+assert !document.body.innerText.includes("Remember to buy milk")
+shot 00-android-share-waiting
+
+# Opening the app's own storage drains the parked share into a new note and
+# opens it: the body is in the editor, the subject became the title.
+click Use this device's storage
+until document.body.innerText.includes("Remember to buy milk")
+shot 10-android-share-note
+click Notes list
+wait 300
+assert document.body.innerText.includes("From the share sheet")
+shot 20-android-share-list

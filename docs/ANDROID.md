@@ -45,13 +45,33 @@ the vault: keep a copy through sync or the desktop until export ships.
 - The on-screen keyboard resizes the layout instead of covering the editor
   (`interactive-widget=resizes-content` plus `100dvh`).
 
+## Share target (M5 slice 2)
+
+Writan appears in the system share sheet for text and links. A shared text (or
+URL) becomes a note and opens: the share subject becomes the title, otherwise
+the first non-empty line (Markdown markers stripped); a lone URL becomes its
+host name. A share that arrives before a vault exists — first run, or the app
+was killed — is parked natively and becomes a note as soon as the vault is
+open, so nothing is dropped in favour of "set up the app first".
+
+Images and other file shares are not handled in v1.
+
+Without a phone, the flow runs in Chromium against the mock backend; either
+walk `tools/visual/actions/mobile-share.actions` or open
+
+```sh
+?mock=1&platform=android&share=Hello&subject=From%20the%20share%20sheet
+```
+
 ## Not yet
 
 - **Sync** — it needs the Keystore-backed unlock (M5 slice 2); the keyring
   falls back to its mock store on Android, so the settings panel says so.
+- **Background sync** — the opt-in 15-minute WorkManager run lands later in
+  slice 2, on top of the Keystore unlock.
 - **Hardware back button** — Tauri 2.11 exposes no hook; the drawer closes by
   tapping a row or the scrim. Follow-up in slice 2.
-- Keyboard shortcuts, share-target capture, export/backup, release signing.
+- Keyboard shortcuts, image/file shares, export/backup, release signing.
 
 ## Verifying without a device
 
@@ -64,5 +84,8 @@ scripts/mock-shot.sh --serve --size 390x844 \
 ```
 
 That script asserts the layout (one pane, drawer, no desktop bar) and walks the
-Android first-run flow. What it cannot check is touch feel, the real keyboard
-and Keystore behaviour — that needs the sideloaded APK on a phone.
+Android first-run flow. `scripts/mock-shot.sh --serve --size 390x844
+--actions tools/visual/actions/mobile-share.actions --strict` walks the share
+target (a parked share becomes the open note once the vault exists). What
+these cannot check is touch feel, the real keyboard and Keystore behaviour —
+that needs the sideloaded APK on a phone.

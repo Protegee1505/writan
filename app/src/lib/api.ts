@@ -134,6 +134,7 @@ export const api = {
     }),
   get: (id: string) => invoke<Note | null>("get_note", { id }),
   create: (title?: string) => invoke<Note>("create_note", { title }),
+  takeShared: () => invoke<Note | null>("take_shared"),
   duplicate: (id: string) => invoke<Note>("duplicate_note", { id }),
   save: (id: string, body: string, tags: string[]) =>
     invoke<Note>("save_note", { id, body, tags }),

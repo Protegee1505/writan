@@ -1,4 +1,5 @@
 mod commands;
+mod share;
 mod state;
 
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(share::init())
         .setup(|app| {
             let state_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&state_dir)?;
@@ -32,6 +34,7 @@ pub fn run() {
             commands::search_notes,
             commands::get_note,
             commands::create_note,
+            commands::take_shared,
             commands::duplicate_note,
             commands::save_note,
             commands::rename_note,

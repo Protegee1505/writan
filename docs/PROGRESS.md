@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4, M4.5, M5 slice 1; nightly sync soak fixed).
+Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a; nightly sync soak fixed).
 
 ## Milestone history
 
@@ -356,6 +356,24 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slice 1; nightly sync soak fixed).
   Android first run at 390×844 (8 artefacts, 0 failures; routine in
   `docs/ANDROID.md`). Local DoD green: fmt/clippy/223 tests (3 ignored),
   `svelte-check` 0/0, frontend build OK.
+- **M5 slice 2a — Android share target** (2026-10-19, commit `<2a>`): ADR-0010
+  (decisions 1–3). An in-repo Kotlin plugin
+  (`app/src-tauri/gen/android/app/src/main/java/com/writan/desktop/WritanPlugin.kt`,
+  package `com.writan.desktop`, registered by `register_android_plugin`) takes
+  `ACTION_SEND` `text/plain` from `load()`/`onNewIntent()` and parks
+  `{text, subject}` in SharedPreferences until Rust `take_shared` drains it —
+  a share that arrives before a vault exists survives process death and
+  becomes a note once one is open. `writan-core` derives title/body
+  (`share::draft_from_share`: subject wins, else the first non-empty line with
+  Markdown markers stripped, a lone URL becomes its host, 80-char cap;
+  whitespace-only input rejected) and `Workspace::create_note_from_share`
+  writes + indexes the file. The shell drains after `init`/vault adoption and
+  on window focus; the mock backend takes `?share=…&subject=…` and
+  `tools/visual/actions/mobile-share.actions` walks a first-run share (its own
+  script: a third document load in one driver session races the mock dev
+  server). Verification: full local DoD green (`cargo fmt`/`clippy` clean,
+  237 tests incl. 11 share unit + 1 integration, svelte-check 0/0, frontend
+  build OK) and both strict mock runs (`mobile.actions`, `mobile-share.actions`).
 - **Sync fixpoint fix — a merge must dominate both sides** (2026-10-19): the
   nightly soak's `m=1`-per-sweep loop was `LwwDiff3`'s fast-forward keeping one
   side's vector alone, so the version it published never covered the other
@@ -383,9 +401,11 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slice 1; nightly sync soak fixed).
   and a release server binary with a one-command installer. M5 slice 1 is done:
   the Svelte shell works one pane at a time at phone width and a fresh Android
   install opens an app-private vault (ADR-0009); the Android project is
-  committed and `artifacts.yml` builds the arm64 debug APK.
-  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 223 tests
-  green (3 ignored), `svelte-check` 0/0, frontend build OK.
+  committed and `artifacts.yml` builds the arm64 debug APK. Slice 2a adds the
+  share target: text/URL shares become notes, kept natively until a vault
+  exists (ADR-0010).
+  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 237 tests
+  green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
   `%APPDATA%\com.writan.desktop`). Workspace MSRV: Rust 1.90; version 0.2.0
   since M4.5.

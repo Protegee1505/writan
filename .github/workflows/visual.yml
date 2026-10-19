@@ -44,6 +44,10 @@ jobs:
         run: >
           scripts/mock-shot.sh --serve --size 390x844
           --actions tools/visual/actions/mobile.actions --strict --out shots
+      - name: Android share target (parked share becomes a note)
+        run: >
+          scripts/mock-shot.sh --serve --size 390x844
+          --actions tools/visual/actions/mobile-share.actions --strict --out shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:

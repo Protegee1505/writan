@@ -259,6 +259,33 @@ pub fn create_note(state: State<'_, AppState>, title: Option<String>) -> CmdResu
     })
 }
 
+/// Create a note from text shared into the app (Android share target).
+///
+/// Returns `None` when nothing is pending — and also when no vault is open
+/// yet: the native layer keeps the share until the user has a vault, so a
+/// first-run share is not dropped in favour of an "open a vault first" error.
+#[tauri::command]
+pub async fn take_shared(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Option<NoteDto>> {
+    if !state.has_workspace() {
+        return Ok(None);
+    }
+    let Some(payload) = crate::share::take_pending(&app).await? else {
+        return Ok(None);
+    };
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let workspace = inner
+        .workspace
+        .as_mut()
+        .ok_or_else(|| "no vault is open".to_string())?;
+    let note = workspace
+        .create_note_from_share(&payload.text, payload.subject.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(Some(note_dto(&note)))
+}
+
 #[tauri::command]
 pub fn duplicate_note(state: State<'_, AppState>, id: String) -> CmdResult<NoteDto> {
     let id = parse_id(&id)?;

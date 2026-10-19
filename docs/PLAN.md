@@ -15,7 +15,9 @@ Password field in both shells, and the release binary + `server-install.sh`.
 M5 Android started (2026-10-19): `app/src-tauri/gen/android` is committed and
 CI builds an arm64 debug APK (`writan-android-arm64`); slice 1 landed — the
 Svelte shell works one pane at a time at phone width, and a fresh install uses
-an app-private vault instead of a folder picker (ADR-0009).
+an app-private vault instead of a folder picker (ADR-0009). Slice 2a landed —
+text/URL shares become notes (ADR-0010); Keystore-backed unlock and opt-in
+background sync are next.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -39,11 +41,14 @@ Order is a suggestion, not a constraint.
    (task 1).
 3. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
    commit as every shell change.
-4. **M5 slice 2 — share-target capture**: an Android share intent (text or
-   URL) creates a note in the vault, then Keystore-backed unlock and the
-   opt-in 15-minute WorkManager sync (M5 exit criteria below). Sideload the
-   `writan-android-arm64` APK to check slice 1 on a phone first — the routine
-   is `docs/ANDROID.md`.
+4. **M5 slice 2b/2c — Keystore unlock, then background sync** (ADR-0010): the
+   share half is done; next is the Keystore-backed keychain under
+   `cfg(target_os = "android")` (then the settings hint at
+   `app/src/lib/components/SettingsPanel.svelte:253` goes away and folder-sync
+   is hidden there), and after it the opt-in 15-minute WorkManager sync
+   (JNI worker reusing the `sync_now` pass, `background_sync` in `AppConfig`).
+   Sideload the `writan-android-arm64` APK to check slice 1 + the share flow on
+   a phone first — the routine is `docs/ANDROID.md`.
 
 ## Upcoming milestones
 

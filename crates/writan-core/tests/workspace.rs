@@ -274,3 +274,30 @@ fn facets_reports_tags_and_folders() {
     let folders = ws.folder_counts().expect("folders");
     assert_eq!(folders, vec![("projects".to_string(), 1)]);
 }
+
+#[test]
+fn shared_text_becomes_an_indexed_note() {
+    let (vault_dir, _s, mut ws) = workspace();
+    let note = ws
+        .create_note_from_share("Check this out\nhttps://example.com", Some("From Chrome"))
+        .expect("share");
+    assert_eq!(note.meta.title, "From Chrome");
+    assert_eq!(note.body, "Check this out\nhttps://example.com");
+    // The file on disk carries the shared body, not an empty note.
+    let text = fs::read_to_string(ws.vault().abs_path(&note.rel_path)).expect("read");
+    assert!(text.contains("Check this out"), "{text}");
+    assert!(text.contains("example.com"), "{text}");
+    // It is indexed and searchable right away.
+    let hits = ws
+        .search(&SearchQuery {
+            text: "Check this out".into(),
+            ..Default::default()
+        })
+        .expect("search");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, note.meta.id);
+    // Whitespace-only shares are rejected and leave no file behind.
+    assert!(ws.create_note_from_share("  \n ", None).is_err());
+    assert_eq!(ws.list(10).expect("list").len(), 1);
+    assert_eq!(fs::read_dir(vault_dir.path()).expect("read dir").count(), 1);
+}
