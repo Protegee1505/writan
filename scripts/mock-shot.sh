@@ -91,6 +91,7 @@ for _ in $(seq 1 40); do
 done
 
 node "$repo/tools/visual/drive.mjs" \
-  --backend cdp --cdp "http://127.0.0.1:$port" --out "$out" --actions "$actions" $strict
+  --backend cdp --cdp "http://127.0.0.1:$port" --out "$out" --actions "$actions" \
+  --viewport "$size" $strict
 rm -rf "$profile"
 ls -1 "$out" | sed 's/^/shot: /'

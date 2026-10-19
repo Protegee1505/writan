@@ -28,6 +28,8 @@
  *   dump 30-dom         write visible text -> <out>/30-dom.txt (cdp only)
  *   assert-contains ok  fail unless the page shows that text  (cdp only)
  *   assert expr         fail unless the JS expression is truthy (cdp only)
+ *   until expr          wait (poll) until the expression is truthy, or fail
+ *                       after --wait-for ms (default 20000)   (cdp only)
  *   eval expr           evaluate JS, print its JSON result    (cdp only)
  *   goto <url>          navigate                             (cdp only)
  *
@@ -57,6 +59,13 @@ const cdpUrl = opt("cdp", "http://127.0.0.1:9222");
 const readyText = opt("ready-text", null);
 const strict = Boolean(opt("strict", false));
 const settle = Number(opt("settle", 1200));
+const waitFor = Number(opt("wait-for", 20000));
+// "390x844" (or "390,844"): pin the page viewport so the layout under test
+// does not depend on how the window manager sized the browser window.
+const viewportMatch = /^(\d+)x(\d+)$/.exec(opt("viewport", "").replace(",", "x"));
+const viewport = viewportMatch
+  ? { width: Number(viewportMatch[1]), height: Number(viewportMatch[2]) }
+  : null;
 
 if (!actionsPath) {
   console.error("drive.mjs: --actions <file> is required");
@@ -226,6 +235,7 @@ async function x11Setup() {
         case "dump":
         case "assert-contains":
         case "assert":
+        case "until":
         case "eval":
         case "goto":
           notes.push(`line ${action.n}: "${action.verb}" is cdp-only, skipped in x11 mode`);
@@ -307,6 +317,10 @@ async function cdpSetup() {
     finish(1);
   }
   console.log(`cdp page: ${page.url()}`);
+  if (viewport) {
+    await page.setViewportSize(viewport);
+    console.log(`viewport: ${viewport.width}x${viewport.height}`);
+  }
   if (readyText) {
     try {
       await page.waitForFunction(
@@ -351,6 +365,14 @@ async function cdpSetup() {
         case "assert": {
           const ok = await page.evaluate(action.rest);
           if (!ok) fail(`line ${action.n} assert`, `${action.rest} is not true`);
+          return;
+        }
+        case "until": {
+          try {
+            await page.waitForFunction(action.rest, undefined, { timeout: waitFor });
+          } catch {
+            fail(`line ${action.n} until`, `${action.rest} did not become true within ${waitFor} ms`);
+          }
           return;
         }
         case "eval": {

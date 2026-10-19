@@ -77,13 +77,19 @@ click Notes       # click by role/text            (cdp backend only)
 dump 30-dom       # visible text -> <out>/30-dom.txt (cdp backend only)
 assert-contains ok # fail unless the page shows it  (cdp backend only)
 assert expr       # fail unless the JS expression is truthy (cdp backend)
+until expr        # poll until truthy, else fail after --wait-for ms
+                  # (default 20000) — use it before the first screenshot, a
+                  # cold runner needs longer than any fixed wait
 eval expr         # print the JS expression's value, as JSON (cdp backend)
 goto <url>        # navigate                      (cdp backend only)
 ```
 
 `assert`/`eval` are how a walkthrough checks geometry the way a user would feel
 it — e.g. `assert document.querySelector(".sidebar.hidden")` or
-`eval window.innerWidth` (see `actions/mobile.actions`).
+`eval window.innerWidth` (see `actions/mobile.actions`). With `--viewport
+390x844` the driver pins the page viewport over CDP, so the layout under test
+does not depend on how the window manager sized the browser window
+(`scripts/mock-shot.sh --size` passes it).
 
 Two backends: `--backend x11` (xdotool + ImageMagick, Linux/Xvfb) and
 `--backend cdp` (playwright-core; anything launched with

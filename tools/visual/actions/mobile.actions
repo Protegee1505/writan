@@ -8,8 +8,10 @@
 # welcome card opens the app's own storage instead of a folder picker.
 
 # --- one pane at a time, list as a drawer (desktop phone-sized window) ---
-wait 1500
-assert document.documentElement.hasAttribute("data-narrow")
+# `until` polls: a cold CI runner needs longer than any fixed wait to compile
+# and paint the dev-server module graph.
+until !!document.querySelector("section.pane")
+until document.documentElement.hasAttribute("data-narrow")
 eval window.innerWidth
 shot 00-note
 # A note is open (the first one is selected on startup), so the editor owns
@@ -45,16 +47,14 @@ assert !document.querySelector(".panel")
 
 # --- fresh Android install: no folder picker, the app's own storage ---
 goto http://127.0.0.1:5173/?mock=1&platform=android&welcome=1
-wait 1500
+until document.body.innerText.includes("Use this device's storage")
 assert document.documentElement.hasAttribute("data-narrow")
-assert-contains Use this device's storage
 shot 50-android-welcome
 
 click Use this device's storage
-wait 800
+until !!document.querySelector("aside.sidebar.pane")
 assert !document.body.innerText.includes("Use this device's storage")
 # No note is open, so the list owns the window and there is no editor pane.
-assert document.querySelector("aside.sidebar.pane")
 assert !document.querySelector("section.pane")
 shot 60-android-vault
 
