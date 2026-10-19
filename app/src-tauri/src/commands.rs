@@ -4,10 +4,11 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 use writan_core::{Note, SearchQuery, Workspace};
 use writan_sync::{
-    FolderVault, KeyringPurpose, S3Connect, ServerConnect, ServerPairing, SyncReport, SyncStatus,
-    check_vault, connect_folder, connect_s3, connect_server, create_pairing, join_with_code,
-    keychain, open_target, pair_payload, parse_pair_payload, qr_svg, run_pass,
-    sync_status as session_status, unlock as unlock_session,
+    FolderVault, KeyringCredential, KeyringPurpose, S3Connect, ServerConnect, ServerPairing,
+    SyncReport, SyncStatus, change_password, check_vault, connect_folder, connect_s3,
+    connect_server, create_pairing, join_with_code, keychain, new_recovery_code, open_target,
+    pair_payload, parse_pair_payload, qr_svg, run_pass, sync_status as session_status,
+    unlock as unlock_session,
 };
 
 use crate::state::{AppState, Inner};
@@ -506,7 +507,7 @@ impl SyncStatusDto {
             unlocked: status.unlocked,
             kind: status.kind.as_str().to_string(),
             target: status.target,
-            server_url: None,
+            server_url: default_server_url(),
             server_email: None,
             vault_id: status.vault_id,
             device_id: status.device_id,
@@ -514,6 +515,16 @@ impl SyncStatusDto {
             last_report: status.last_report.as_ref().map(SyncReportDto::from_report),
         }
     }
+}
+
+/// The build-time default server address (`WRITAN_DEFAULT_SERVER`, ADR-0008
+/// §9): a personal build bakes its own domain so the form arrives filled in;
+/// a public release build compiles no value. Never a credential.
+fn default_server_url() -> Option<String> {
+    option_env!("WRITAN_DEFAULT_SERVER")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn sync_status_from(state: &AppState, inner: &Inner) -> SyncStatusDto {
@@ -566,6 +577,28 @@ fn run_sync_locked(state: &AppState, inner: &mut Inner) -> CmdResult<SyncReportD
     let dto = SyncReportDto::from_report(&report);
     let _ = workspace.reconcile();
     Ok(dto)
+}
+
+/// The optional older credential a retry carries after a connect asked for it
+/// ("this vault was created with a different password", ADR-0008 §5): the
+/// password the vault's keyring was made with, or its recovery code. Both
+/// halves must be present; an empty credential means the user asked to retry
+/// without one.
+fn keyring_fallback(
+    purpose: Option<String>,
+    credential: Option<String>,
+) -> CmdResult<Option<KeyringCredential>> {
+    let (Some(purpose), Some(credential)) = (purpose, credential) else {
+        return Ok(None);
+    };
+    if credential.is_empty() {
+        return Ok(None);
+    }
+    match purpose.as_str() {
+        "password" => Ok(Some(KeyringCredential::Password(credential))),
+        "recovery" => Ok(Some(KeyringCredential::Recovery(credential))),
+        other => Err(format!("unknown keyring credential kind: {other}")),
+    }
 }
 
 /// Connect this vault to a shared folder: create a fresh keyring there (the
@@ -663,28 +696,31 @@ fn default_device_name() -> String {
 
 /// Connect this vault to a writan-server (ADR-0007): sign in — or register,
 /// with `create_account` — as this device, then run the same keyring flow as
-/// the other targets. The account password doubles as the server credential;
-/// the sync password wraps the vault key and never leaves the devices.
+/// the other targets. One password serves both the sign-in verifier and the
+/// vault key's wrap (ADR-0008): it never leaves the device, and the server
+/// only ever sees a verifier derived from it.
 #[tauri::command]
 pub fn sync_connect_server(
     state: State<'_, AppState>,
     url: String,
     email: String,
-    account_password: String,
     create_account: bool,
     password: String,
+    keyring_purpose: Option<String>,
+    keyring_credential: Option<String>,
 ) -> CmdResult<SyncConnectDto> {
     let details = ServerConnect {
         url,
         email,
-        account_password,
         device_name: default_device_name(),
         create_account,
     };
+    let fallback = keyring_fallback(keyring_purpose, keyring_credential)?;
     let vault_path = state.workspace_root();
     let connected = connect_server(
         &details,
         &password,
+        fallback.as_ref(),
         vault_path.as_deref(),
         &state.sync_state_path,
     )
@@ -706,12 +742,14 @@ pub fn sync_connect_server(
 
 /// Join an account with a pairing code instead of its password: paste the
 /// text the other device's QR carried. The code grants blob access only, so
-/// the sync password is still required (ADR-0007 §4).
+/// the one password is still required (ADR-0007 §4, ADR-0008 §3).
 #[tauri::command]
 pub fn sync_join_server(
     state: State<'_, AppState>,
     payload: String,
     password: String,
+    keyring_purpose: Option<String>,
+    keyring_credential: Option<String>,
 ) -> CmdResult<SyncConnectDto> {
     let parsed = parse_pair_payload(payload.trim()).map_err(|e| e.to_string())?;
     let details = ServerPairing {
@@ -720,10 +758,12 @@ pub fn sync_join_server(
         email: parsed.email,
         device_name: default_device_name(),
     };
+    let fallback = keyring_fallback(keyring_purpose, keyring_credential)?;
     let vault_path = state.workspace_root();
     let connected = join_with_code(
         &details,
         &password,
+        fallback.as_ref(),
         vault_path.as_deref(),
         &state.sync_state_path,
     )
@@ -758,7 +798,7 @@ pub struct PairingDto {
 
 /// Mint a single-use pairing code and its QR (ADR-0007 §4). The code grants
 /// blob access only; the vault key never travels, and the joining device
-/// still needs the sync password or recovery code.
+/// still needs the same password or its recovery code.
 #[tauri::command]
 pub fn sync_pairing_code(state: State<'_, AppState>) -> CmdResult<PairingDto> {
     let (url, email) = {
@@ -821,6 +861,45 @@ fn unlock_sync(
     inner.sync = Some(session);
     state.save_config(&inner);
     Ok(sync_status_from(state, &inner))
+}
+
+/// Change the one password (ADR-0008 §6): first the keyring (a new generation
+/// only the new password opens, appended on this device), then the account's
+/// verifier on a server target. Other devices must sign in again; this one
+/// keeps its token.
+#[tauri::command]
+pub fn sync_change_password(
+    state: State<'_, AppState>,
+    old_password: String,
+    new_password: String,
+) -> CmdResult<SyncStatusDto> {
+    let inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let config = inner.config.sync.clone();
+    let Some(session) = inner.sync.as_ref() else {
+        return Err("sync is locked; unlock it first".to_string());
+    };
+    change_password(&config, session, old_password.trim(), new_password.trim())
+        .map_err(|e| e.to_string())?;
+    Ok(sync_status_from(&state, &inner))
+}
+
+/// Mint a fresh recovery code (ADR-0008 §7) and append a keyring generation
+/// only that code opens. The code is shown once and never stored anywhere; the
+/// old code keeps opening older generations.
+#[tauri::command]
+pub fn sync_new_recovery_code(state: State<'_, AppState>) -> CmdResult<String> {
+    let inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let config = inner.config.sync.clone();
+    let Some(session) = inner.sync.as_ref() else {
+        return Err("sync is locked; unlock it first".to_string());
+    };
+    new_recovery_code(&config, session).map_err(|e| e.to_string())
 }
 
 /// Run one sync pass now.

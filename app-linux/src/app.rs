@@ -107,8 +107,15 @@ struct State {
     sync_config: writan_sync::SyncConfig,
     /// The unlocked session (vault key in memory); `None` while locked.
     sync: Option<writan_sync::SyncSession>,
-    /// The recovery code from the last connect, shown once in Settings.
+    /// The recovery code from the last connect or "New recovery code", shown
+    /// once in Settings.
     sync_recovery: Option<String>,
+    /// A connect failed only because the typed password does not open the
+    /// existing keyring: the setup form asks for the older credential
+    /// (ADR-0008 §5) until a connect gets through.
+    sync_fallback: bool,
+    /// That failed connect was the pairing-code flow, so the retry joins too.
+    sync_fallback_join: bool,
     /// A connect, unlock or pass runs on a worker thread; its result lands
     /// here and the main-loop poll drains it.
     sync_jobs: Option<Receiver<SyncMessage>>,
@@ -211,6 +218,8 @@ fn build(application: &adw::Application) {
         sync_config: config::load_sync(&config_path),
         sync: None,
         sync_recovery: None,
+        sync_fallback: false,
+        sync_fallback_join: false,
         sync_jobs: None,
         sync_busy: false,
         sync_ui: None,
@@ -3853,6 +3862,9 @@ struct SyncUi {
     join_text: gtk::Entry,
     pairing_row: adw::ActionRow,
     password_row: adw::ActionRow,
+    /// The older-credential prompt a "different password" connect error brings
+    /// up (ADR-0008 §5).
+    fallback_row: adw::ActionRow,
     enable_row: adw::ActionRow,
     recovery_code: adw::ActionRow,
     recovery_hint: adw::ActionRow,
@@ -3864,6 +3876,10 @@ struct SyncUi {
     sync_now_row: adw::ActionRow,
     lock_row: adw::ActionRow,
     off_row: adw::ActionRow,
+    /// The connected panel's Change password row (ADR-0008 §6).
+    change_row: adw::ActionRow,
+    /// The connected panel's New recovery code row (ADR-0008 §7).
+    recovery_new_row: adw::ActionRow,
     unlock_password: gtk::Entry,
     unlock_recovery: gtk::Entry,
     buttons: Vec<gtk::Button>,
@@ -3886,10 +3902,40 @@ enum SyncMessage {
         payload: String,
         matrix: writan_sync::QrMatrix,
     },
+    /// The password just typed does not open this vault's keyring: the setup
+    /// form asks for the older password or recovery code (ADR-0008 §5).
+    NeedsFallback {
+        error: String,
+        /// The failed connect used the pairing text, so the retry does too.
+        join: bool,
+    },
+    /// The one password changed (ADR-0008 §6).
+    Changed(Box<writan_sync::SyncSession>),
+    /// A fresh recovery code; shown once in Settings (ADR-0008 §7).
+    RecoveryCode {
+        session: Box<writan_sync::SyncSession>,
+        code: String,
+    },
     Failed {
         session: Option<Box<writan_sync::SyncSession>>,
         error: String,
     },
+}
+
+/// A connect failure: the one that means "the password does not open this
+/// vault's keyring" asks for the older credential instead of just reporting.
+fn sync_connect_failure(error: writan_sync::SessionError, join: bool) -> SyncMessage {
+    if matches!(error, writan_sync::SessionError::KeyringDifferentPassword) {
+        SyncMessage::NeedsFallback {
+            error: error.to_string(),
+            join,
+        }
+    } else {
+        SyncMessage::Failed {
+            session: None,
+            error: error.to_string(),
+        }
+    }
 }
 
 /// One labelled text field inside a preferences group, for the S3 details and
@@ -4003,11 +4049,18 @@ fn build_sync_rows(
         field_row(group, "Server", "https://notes.example.com", false);
     let (server_email_row, server_email) =
         field_row(group, "Account email", "you@example.com", false);
-    let (server_account_row, server_account) =
-        field_row(group, "Account password", "Account password", true);
-    let server_rows = vec![server_url_row, server_email_row, server_account_row];
-    for entry in [&server_url, &server_email, &server_account] {
+    let server_rows = vec![server_url_row, server_email_row];
+    for entry in [&server_url, &server_email] {
         entries.push(entry.clone());
+    }
+
+    // A personal build bakes its own address (`WRITAN_DEFAULT_SERVER`, ADR-0008
+    // §9); a public release build compiles no value.
+    if let Some(default) = option_env!("WRITAN_DEFAULT_SERVER")
+        && server_url.text().trim().is_empty()
+        && !default.trim().is_empty()
+    {
+        server_url.set_text(default.trim());
     }
 
     // Reconnecting a server target starts from the remembered address and
@@ -4036,34 +4089,94 @@ fn build_sync_rows(
     entries.push(join_text.clone());
     group.add(&join_row);
 
-    let (password_row, password) = field_row(group, "Sync password", "Sync password", true);
-    password_row.set_subtitle("Unlocks this sync on a new device");
+    let (password_row, password) = field_row(group, "Password", "At least 8 characters", true);
+    password_row.set_subtitle("Signs this device in on a server and wraps this vault's key");
     entries.push(password.clone());
 
-    // The join button needs both the pairing text and the sync password.
-    {
+    // The enable button, the join button and the fallback prompt all read the
+    // same form, so they share one dispatcher: which flow to run (`join`), and
+    // the older credential a retry carries (ADR-0008 §5).
+    type Attempt = Rc<dyn Fn(bool, Option<writan_sync::KeyringCredential>)>;
+    let attempt: Attempt = {
         let state = state.clone();
         let ui = ui.clone();
         let join_text = join_text.clone();
         let password = password.clone();
+        let s3_endpoint = s3_endpoint.clone();
+        let s3_bucket = s3_bucket.clone();
+        let s3_region = s3_region.clone();
+        let s3_access = s3_access.clone();
+        let s3_secret = s3_secret.clone();
+        let server_url = server_url.clone();
+        let server_email = server_email.clone();
+        let server_create = server_create.clone();
+        Rc::new(
+            move |join_flow: bool, older: Option<writan_sync::KeyringCredential>| {
+                if state.borrow().workspace.is_none() {
+                    ui.toast
+                        .add_toast(adw::Toast::new("Open a vault before setting up sync."));
+                    return;
+                }
+                if join_flow && join_text.text().trim().is_empty() {
+                    ui.toast
+                        .add_toast(adw::Toast::new("Paste the pairing text first."));
+                    return;
+                }
+                if password.text().is_empty() {
+                    ui.toast.add_toast(adw::Toast::new("Set a password first."));
+                    return;
+                }
+                if older.is_some() {
+                    state.borrow_mut().sync_fallback = false;
+                }
+                let credential = password.text().to_string();
+                if join_flow {
+                    start_sync_join(&state, join_text.text().to_string(), credential, older);
+                    return;
+                }
+                // Read the form's target first: a borrow in a `match`
+                // scrutinee lives through every arm, and the arms below take a
+                // mutable borrow of their own (start_sync_*).
+                let kind = state.borrow().sync_config.kind;
+                let target = state.borrow().sync_config.target.clone();
+                match kind {
+                    writan_sync::SyncKind::Folder => {
+                        let Some(target) = target else {
+                            ui.toast
+                                .add_toast(adw::Toast::new("Choose a sync folder first."));
+                            return;
+                        };
+                        start_sync_folder(&state, target, credential);
+                    }
+                    writan_sync::SyncKind::S3 => {
+                        let details = writan_sync::S3Connect {
+                            endpoint: s3_endpoint.text().to_string(),
+                            bucket: s3_bucket.text().to_string(),
+                            region: s3_region.text().to_string(),
+                            access_key: s3_access.text().to_string(),
+                            secret_key: s3_secret.text().to_string(),
+                        };
+                        start_sync_s3(&state, details, credential);
+                    }
+                    writan_sync::SyncKind::Server => {
+                        let details = writan_sync::ServerConnect {
+                            url: server_url.text().to_string(),
+                            email: server_email.text().to_string(),
+                            device_name: default_device_name(),
+                            create_account: server_create.is_active(),
+                        };
+                        start_sync_server(&state, details, credential, older);
+                    }
+                }
+            },
+        )
+    };
+
+    {
+        let attempt = attempt.clone();
+        let password = password.clone();
         join.connect_clicked(move |_| {
-            if state.borrow().workspace.is_none() {
-                ui.toast
-                    .add_toast(adw::Toast::new("Open a vault before setting up sync."));
-                return;
-            }
-            if join_text.text().trim().is_empty() {
-                ui.toast
-                    .add_toast(adw::Toast::new("Paste the pairing text first."));
-                return;
-            }
-            if password.text().is_empty() {
-                ui.toast
-                    .add_toast(adw::Toast::new("Set the sync password first."));
-                return;
-            }
-            let credential = password.text().to_string();
-            start_sync_join(&state, join_text.text().to_string(), credential);
+            attempt(true, None);
             password.set_text("");
         });
     }
@@ -4076,68 +4189,58 @@ fn build_sync_rows(
     let enable = gtk::Button::with_label("Enable sync");
     enable.add_css_class("suggested-action");
     {
-        let state = state.clone();
-        let ui = ui.clone();
+        let attempt = attempt.clone();
         let password = password.clone();
-        let s3_endpoint = s3_endpoint.clone();
-        let s3_bucket = s3_bucket.clone();
-        let s3_region = s3_region.clone();
-        let s3_access = s3_access.clone();
-        let s3_secret = s3_secret.clone();
-        let server_url = server_url.clone();
-        let server_email = server_email.clone();
-        let server_account = server_account.clone();
-        let server_create = server_create.clone();
         enable.connect_clicked(move |_| {
-            if state.borrow().workspace.is_none() {
-                ui.toast
-                    .add_toast(adw::Toast::new("Open a vault before setting up sync."));
-                return;
-            }
-            if password.text().is_empty() {
-                ui.toast
-                    .add_toast(adw::Toast::new("Set a sync password first."));
-                return;
-            }
-            let credential = password.text().to_string();
-            let kind = state.borrow().sync_config.kind;
-            match kind {
-                writan_sync::SyncKind::Folder => {
-                    let target = state.borrow().sync_config.target.clone();
-                    let Some(target) = target else {
-                        ui.toast
-                            .add_toast(adw::Toast::new("Choose a sync folder first."));
-                        return;
-                    };
-                    start_sync_folder(&state, target, credential);
-                }
-                writan_sync::SyncKind::S3 => {
-                    let details = writan_sync::S3Connect {
-                        endpoint: s3_endpoint.text().to_string(),
-                        bucket: s3_bucket.text().to_string(),
-                        region: s3_region.text().to_string(),
-                        access_key: s3_access.text().to_string(),
-                        secret_key: s3_secret.text().to_string(),
-                    };
-                    start_sync_s3(&state, details, credential);
-                }
-                writan_sync::SyncKind::Server => {
-                    let details = writan_sync::ServerConnect {
-                        url: server_url.text().to_string(),
-                        email: server_email.text().to_string(),
-                        account_password: server_account.text().to_string(),
-                        device_name: default_device_name(),
-                        create_account: server_create.is_active(),
-                    };
-                    start_sync_server(&state, details, credential);
-                }
-            }
+            attempt(false, None);
             password.set_text("");
         });
     }
     enable_row.add_suffix(&enable);
     buttons.push(enable);
     group.add(&enable_row);
+
+    // "This vault was created with a different password": take the older
+    // credential once and bring the vault forward to the password above.
+    let fallback_row = adw::ActionRow::new();
+    fallback_row.set_title("Older password or recovery code");
+    fallback_row
+        .set_subtitle("Asked for when this vault's keyring was made with a different password");
+    let fallback_text = gtk::Entry::builder()
+        .placeholder_text("Old password")
+        .width_chars(18)
+        .visibility(false)
+        .build();
+    fallback_text.set_input_purpose(gtk::InputPurpose::Password);
+    let fallback_recovery = gtk::CheckButton::with_label("Recovery code");
+    let bring = gtk::Button::with_label("Bring forward");
+    bring.add_css_class("suggested-action");
+    {
+        let attempt = attempt.clone();
+        let state = state.clone();
+        let fallback_text = fallback_text.clone();
+        let fallback_recovery = fallback_recovery.clone();
+        bring.connect_clicked(move |_| {
+            let credential = fallback_text.text().to_string();
+            if credential.trim().is_empty() {
+                return;
+            }
+            let older = if fallback_recovery.is_active() {
+                writan_sync::KeyringCredential::Recovery(credential)
+            } else {
+                writan_sync::KeyringCredential::Password(credential)
+            };
+            let join_flow = state.borrow().sync_fallback_join;
+            attempt(join_flow, Some(older));
+            fallback_text.set_text("");
+        });
+    }
+    fallback_row.add_suffix(&fallback_text);
+    fallback_row.add_suffix(&fallback_recovery);
+    fallback_row.add_suffix(&bring);
+    buttons.push(bring);
+    entries.push(fallback_text.clone());
+    group.add(&fallback_row);
 
     // The recovery code, shown once after creating a keyring.
     let recovery_code = adw::ActionRow::new();
@@ -4337,6 +4440,69 @@ fn build_sync_rows(
     buttons.push(pair);
     group.add(&pairing_row);
 
+    // Change the one password: the keyring first, then the account (ADR-0008 §6).
+    let change_row = adw::ActionRow::new();
+    change_row.set_title("Change password");
+    change_row.set_subtitle("Rewraps this vault's key for the new password");
+    let change_old = gtk::Entry::builder()
+        .placeholder_text("Current password")
+        .width_chars(16)
+        .visibility(false)
+        .build();
+    change_old.set_input_purpose(gtk::InputPurpose::Password);
+    let change_new = gtk::Entry::builder()
+        .placeholder_text("New password")
+        .width_chars(16)
+        .visibility(false)
+        .build();
+    change_new.set_input_purpose(gtk::InputPurpose::Password);
+    let change = gtk::Button::with_label("Change");
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let change_old = change_old.clone();
+        let change_new = change_new.clone();
+        change.connect_clicked(move |_| {
+            let old = change_old.text().to_string();
+            let new = change_new.text().to_string();
+            if old.is_empty() {
+                ui.toast
+                    .add_toast(adw::Toast::new("Enter the current password first."));
+                return;
+            }
+            if new.len() < 8 {
+                ui.toast.add_toast(adw::Toast::new(
+                    "The new password must be at least 8 characters.",
+                ));
+                return;
+            }
+            start_sync_change_password(&state, old, new);
+            change_old.set_text("");
+            change_new.set_text("");
+        });
+    }
+    change_row.add_suffix(&change_old);
+    change_row.add_suffix(&change_new);
+    change_row.add_suffix(&change);
+    buttons.push(change);
+    entries.push(change_old.clone());
+    entries.push(change_new.clone());
+    group.add(&change_row);
+
+    // A fresh recovery code, shown once (ADR-0008 §7).
+    let recovery_new_row = adw::ActionRow::new();
+    recovery_new_row.set_title("New recovery code");
+    recovery_new_row.set_subtitle("Mints a code a new keyring generation is wrapped for");
+    let recovery_new = gtk::Button::with_label("New code");
+    recovery_new.add_css_class("flat");
+    {
+        let state = state.clone();
+        recovery_new.connect_clicked(move |_| start_sync_new_recovery(&state));
+    }
+    recovery_new_row.add_suffix(&recovery_new);
+    buttons.push(recovery_new);
+    group.add(&recovery_new_row);
+
     Rc::new(SyncUi {
         status,
         kind,
@@ -4348,6 +4514,7 @@ fn build_sync_rows(
         join_text,
         pairing_row,
         password_row,
+        fallback_row,
         enable_row,
         recovery_code,
         recovery_hint,
@@ -4359,6 +4526,8 @@ fn build_sync_rows(
         sync_now_row,
         lock_row,
         off_row,
+        change_row,
+        recovery_new_row,
         unlock_password,
         unlock_recovery,
         buttons,
@@ -4373,12 +4542,13 @@ fn refresh_sync(state: &Rc<RefCell<State>>) {
     let Some(sync_ui) = state.borrow().sync_ui.clone() else {
         return;
     };
-    let (snapshot, busy, recovery) = {
+    let (snapshot, busy, recovery, fallback) = {
         let st = state.borrow();
         (
             writan_sync::sync_status(&st.sync_config, st.sync.as_ref(), &sync_state_path(&st)),
             st.sync_busy,
             st.sync_recovery.clone(),
+            st.sync_fallback,
         )
     };
     let setup = !snapshot.enabled;
@@ -4399,6 +4569,7 @@ fn refresh_sync(state: &Rc<RefCell<State>>) {
     sync_ui.join_row.set_visible(server_setup);
     sync_ui.join_text.set_sensitive(server_setup && !busy);
     sync_ui.password_row.set_visible(setup);
+    sync_ui.fallback_row.set_visible(setup && fallback);
     sync_ui.enable_row.set_visible(setup);
     let has_recovery = recovery.is_some();
     sync_ui.recovery_code.set_visible(has_recovery);
@@ -4415,6 +4586,8 @@ fn refresh_sync(state: &Rc<RefCell<State>>) {
         &sync_ui.sync_now_row,
         &sync_ui.lock_row,
         &sync_ui.off_row,
+        &sync_ui.change_row,
+        &sync_ui.recovery_new_row,
     ] {
         row.set_visible(!setup && unlocked);
     }
@@ -4507,10 +4680,7 @@ fn start_sync_folder(state: &Rc<RefCell<State>>, target: PathBuf, password: Stri
                 &state_path,
             ) {
                 Ok(connected) => SyncMessage::Connected(Box::new(connected)),
-                Err(error) => SyncMessage::Failed {
-                    session: None,
-                    error: error.to_string(),
-                },
+                Err(error) => sync_connect_failure(error, false),
             };
             let _ = sender.send(message);
         });
@@ -4529,10 +4699,7 @@ fn start_sync_s3(state: &Rc<RefCell<State>>, details: writan_sync::S3Connect, pa
                 &state_path,
             ) {
                 Ok(connected) => SyncMessage::Connected(Box::new(connected)),
-                Err(error) => SyncMessage::Failed {
-                    session: None,
-                    error: error.to_string(),
-                },
+                Err(error) => sync_connect_failure(error, false),
             };
             let _ = sender.send(message);
         });
@@ -4544,6 +4711,7 @@ fn start_sync_server(
     state: &Rc<RefCell<State>>,
     details: writan_sync::ServerConnect,
     password: String,
+    fallback: Option<writan_sync::KeyringCredential>,
 ) {
     if let Some((sender, state_path)) = begin_sync_job(state) {
         let vault_path = current_vault_root(state);
@@ -4551,14 +4719,12 @@ fn start_sync_server(
             let message = match writan_sync::connect_server(
                 &details,
                 &password,
+                fallback.as_ref(),
                 vault_path.as_deref(),
                 &state_path,
             ) {
                 Ok(connected) => SyncMessage::Connected(Box::new(connected)),
-                Err(error) => SyncMessage::Failed {
-                    session: None,
-                    error: error.to_string(),
-                },
+                Err(error) => sync_connect_failure(error, false),
             };
             let _ = sender.send(message);
         });
@@ -4566,7 +4732,12 @@ fn start_sync_server(
     refresh_sync(state);
 }
 
-fn start_sync_join(state: &Rc<RefCell<State>>, payload: String, password: String) {
+fn start_sync_join(
+    state: &Rc<RefCell<State>>,
+    payload: String,
+    password: String,
+    fallback: Option<writan_sync::KeyringCredential>,
+) {
     if let Some((sender, state_path)) = begin_sync_job(state) {
         let vault_path = current_vault_root(state);
         std::thread::spawn(move || {
@@ -4581,14 +4752,12 @@ fn start_sync_join(state: &Rc<RefCell<State>>, payload: String, password: String
                     match writan_sync::join_with_code(
                         &details,
                         &password,
+                        fallback.as_ref(),
                         vault_path.as_deref(),
                         &state_path,
                     ) {
                         Ok(connected) => SyncMessage::Connected(Box::new(connected)),
-                        Err(error) => SyncMessage::Failed {
-                            session: None,
-                            error: error.to_string(),
-                        },
+                        Err(error) => sync_connect_failure(error, true),
                     }
                 }
                 Err(error) => SyncMessage::Failed {
@@ -4599,6 +4768,74 @@ fn start_sync_join(state: &Rc<RefCell<State>>, payload: String, password: String
             let _ = sender.send(message);
         });
     }
+    refresh_sync(state);
+}
+
+/// Change the one password (ADR-0008 §6): the keyring generation first, then
+/// the account on a server. The session rides through the worker and comes
+/// back in the message.
+fn start_sync_change_password(
+    state: &Rc<RefCell<State>>,
+    old_password: String,
+    new_password: String,
+) {
+    if state.borrow().sync_busy {
+        return;
+    }
+    let config = state.borrow().sync_config.clone();
+    if !config.enabled {
+        return;
+    }
+    let Some(session) = state.borrow_mut().sync.take() else {
+        return;
+    };
+    let Some((sender, _)) = begin_sync_job(state) else {
+        state.borrow_mut().sync = Some(session);
+        return;
+    };
+    std::thread::spawn(move || {
+        let message =
+            match writan_sync::change_password(&config, &session, &old_password, &new_password) {
+                Ok(()) => SyncMessage::Changed(Box::new(session)),
+                Err(error) => SyncMessage::Failed {
+                    session: Some(Box::new(session)),
+                    error: error.to_string(),
+                },
+            };
+        let _ = sender.send(message);
+    });
+    refresh_sync(state);
+}
+
+/// Mint a fresh recovery code (ADR-0008 §7); it lands in Settings once.
+fn start_sync_new_recovery(state: &Rc<RefCell<State>>) {
+    if state.borrow().sync_busy {
+        return;
+    }
+    let config = state.borrow().sync_config.clone();
+    if !config.enabled {
+        return;
+    }
+    let Some(session) = state.borrow_mut().sync.take() else {
+        return;
+    };
+    let Some((sender, _)) = begin_sync_job(state) else {
+        state.borrow_mut().sync = Some(session);
+        return;
+    };
+    std::thread::spawn(move || {
+        let message = match writan_sync::new_recovery_code(&config, &session) {
+            Ok(code) => SyncMessage::RecoveryCode {
+                session: Box::new(session),
+                code,
+            },
+            Err(error) => SyncMessage::Failed {
+                session: Some(Box::new(session)),
+                error: error.to_string(),
+            },
+        };
+        let _ = sender.send(message);
+    });
     refresh_sync(state);
 }
 
@@ -4810,6 +5047,8 @@ fn handle_sync_message(state: &Rc<RefCell<State>>, ui: &Ui, message: SyncMessage
                 let mut st = state.borrow_mut();
                 st.sync_config = config;
                 st.sync = Some(session);
+                st.sync_fallback = false;
+                st.sync_fallback_join = false;
                 if recovery_code.is_some() {
                     st.sync_recovery = recovery_code;
                 }
@@ -4858,6 +5097,33 @@ fn handle_sync_message(state: &Rc<RefCell<State>>, ui: &Ui, message: SyncMessage
         } => {
             refresh_sync(state);
             show_pairing_dialog(ui, &code, &expires_at, &payload, &matrix);
+        }
+        SyncMessage::NeedsFallback { error, join } => {
+            {
+                let mut st = state.borrow_mut();
+                st.sync_fallback = true;
+                st.sync_fallback_join = join;
+            }
+            ui.toast.add_toast(adw::Toast::new(&error));
+            refresh_sync(state);
+        }
+        SyncMessage::Changed(session) => {
+            state.borrow_mut().sync = Some(*session);
+            ui.toast.add_toast(adw::Toast::new(
+                "Password changed. Other devices must sign in again.",
+            ));
+            refresh_sync(state);
+        }
+        SyncMessage::RecoveryCode { session, code } => {
+            {
+                let mut st = state.borrow_mut();
+                st.sync = Some(*session);
+                st.sync_recovery = Some(code);
+            }
+            ui.toast.add_toast(adw::Toast::new(
+                "New recovery code — copy it now; it is shown once.",
+            ));
+            refresh_sync(state);
         }
         SyncMessage::Failed { session, error } => {
             if let Some(session) = session {

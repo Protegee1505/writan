@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { api, type PairingInfo } from "$lib/api";
+  import { api, type KeyringFallback, type PairingInfo } from "$lib/api";
   import { store } from "$lib/store.svelte";
 
   let kind = $state<"folder" | "s3" | "server">("folder");
@@ -12,19 +12,27 @@
   let s3SecretKey = $state("");
   let serverUrl = $state("");
   let serverEmail = $state("");
-  let accountPassword = $state("");
   let createAccount = $state(false);
   let joining = $state(false);
   let pairText = $state("");
   let pairing = $state<PairingInfo | null>(null);
   let pairCopied = $state(false);
   let password = $state("");
+  // The vault's keyring was wrapped with an older password: after that
+  // connect error the setup form asks for it (or its recovery code) once
+  // (ADR-0008 §5). `fallback` holds what was typed.
+  let needsFallback = $state(false);
+  let fallback = $state("");
+  let fallbackRecovery = $state(false);
   let code = $state("");
   let useRecovery = $state(false);
   let working = $state(false);
   let recoveryCode = $state<string | null>(null);
   let copied = $state(false);
   let confirmDisable = $state(false);
+  // The connected panel's Change password row.
+  let changeOld = $state("");
+  let changeNew = $state("");
 
   const status = $derived(store.sync);
   // Sync counts as set up only while it is enabled: a turned-off target stays
@@ -35,7 +43,7 @@
 
   // Coming back to the server form (say, after Turn off) starts from the
   // remembered address and account; the token stays in the keychain and the
-  // sync password is never stored.
+  // password is never stored.
   let prefilled = $state(false);
   $effect(() => {
     if (prefilled) return;
@@ -52,7 +60,20 @@
     if (typeof path === "string") target = path;
   }
 
-  async function connect() {
+  /** The credential the fallback prompt holds, in the IPC shape. */
+  function fallbackCredential(): KeyringFallback {
+    return {
+      purpose: fallbackRecovery ? "recovery" : "password",
+      credential: fallback.trim(),
+    };
+  }
+
+  /**
+   * Connect (or re-connect with an older credential, ADR-0008 §5). One
+   * password does everything: the server derives a verifier from it, the
+   * keyring wraps the vault key with it.
+   */
+  async function connect(older?: KeyringFallback) {
     if (working) return;
     if (kind === "folder" && !target.trim()) {
       store.error = "Choose a sync folder first.";
@@ -82,19 +103,17 @@
           store.error = "Paste the pairing text from the other device first.";
           return;
         }
-      } else {
-        if (!serverEmail.trim().includes("@")) {
-          store.error = "Enter the account email first.";
-          return;
-        }
-        if (!accountPassword) {
-          store.error = "Enter the account password first.";
-          return;
-        }
+      } else if (!serverEmail.trim().includes("@")) {
+        store.error = "Enter the account email first.";
+        return;
       }
     }
     if (!password) {
-      store.error = "Set a sync password first.";
+      store.error = "Set a password first.";
+      return;
+    }
+    if (password.length < 8) {
+      store.error = "The password must be at least 8 characters.";
       return;
     }
     working = true;
@@ -103,13 +122,13 @@
       const result =
         kind === "server"
           ? joining
-            ? await api.syncJoinServer(pairText.trim(), password)
+            ? await api.syncJoinServer(pairText.trim(), password, older)
             : await api.syncConnectServer(
                 serverUrl.trim(),
                 serverEmail.trim(),
-                accountPassword,
                 createAccount,
                 password,
+                older,
               )
           : kind === "s3"
             ? await api.syncConnectS3(
@@ -124,8 +143,10 @@
       recoveryCode = result.recoveryCode;
       password = "";
       s3SecretKey = "";
-      accountPassword = "";
       pairText = "";
+      fallback = "";
+      fallbackRecovery = false;
+      needsFallback = false;
       store.sync = result.status;
       store.notify(
         result.recoveryCode
@@ -140,6 +161,54 @@
       );
       await store.refresh();
       void store.loadFacets();
+    } catch (e) {
+      const message = String(e);
+      // This is the one error that a second credential can fix, so the form
+      // asks for it instead of just reporting (ADR-0008 §5).
+      if (message.includes("different password")) {
+        needsFallback = true;
+      }
+      store.error = message;
+    } finally {
+      working = false;
+    }
+  }
+
+  /** Change the one password: keyring first, then the account (ADR-0008 §6). */
+  async function changePassword() {
+    if (working) return;
+    if (!changeOld) {
+      store.error = "Enter the current password first.";
+      return;
+    }
+    if (changeNew.length < 8) {
+      store.error = "The new password must be at least 8 characters.";
+      return;
+    }
+    working = true;
+    store.error = null;
+    try {
+      store.sync = await api.syncChangePassword(changeOld, changeNew);
+      changeOld = "";
+      changeNew = "";
+      store.notify("Password changed. Other devices must sign in again.");
+      await store.refresh();
+    } catch (e) {
+      store.error = String(e);
+    } finally {
+      working = false;
+    }
+  }
+
+  /** Mint a fresh recovery code; it opens a new keyring generation only for it. */
+  async function newRecoveryCode() {
+    if (working) return;
+    working = true;
+    store.error = null;
+    try {
+      recoveryCode = await api.syncNewRecoveryCode();
+      copied = false;
+      store.notify("New recovery code — it is shown only now.");
     } catch (e) {
       store.error = String(e);
     } finally {
@@ -383,7 +452,7 @@
               spellcheck="false"
             />
             <button class="link" onclick={() => (joining = false)}>
-              Sign in with the account password instead
+              Sign in with the email instead
             </button>
           </div>
         </div>
@@ -392,7 +461,8 @@
           <div class="meta">
             <span class="label">Account</span>
             <span class="desc">
-              The email and password this server knows. Neither is the sync password below.
+              The email this server knows. The password below never leaves this device: the
+              server only holds a verifier derived from it.
             </span>
           </div>
           <div class="control wide">
@@ -400,13 +470,6 @@
               class="path"
               bind:value={serverEmail}
               placeholder="you@example.com"
-              spellcheck="false"
-            />
-            <input
-              class="path"
-              type="password"
-              bind:value={accountPassword}
-              placeholder="Account password"
               spellcheck="false"
             />
           </div>
@@ -428,17 +491,18 @@
     {/if}
     <div class="row">
       <div class="meta">
-        <span class="label">Sync password</span>
+        <span class="label">Password</span>
         <span class="desc">
-          Wraps this vault's key. The first device creates the keyring and shows a recovery
-          code; other devices join with the same password.
+          One password for the whole vault: it signs this device in on a server and wraps the
+          vault key. The first device creates the keyring and shows a recovery code; every
+          other device joins with the same password.
         </span>
       </div>
       <div class="control">
         <input
           type="password"
           bind:value={password}
-          placeholder="Password"
+          placeholder="At least 8 characters"
           spellcheck="false"
           onkeydown={(e) => {
             if (e.key === "Enter") void connect();
@@ -449,6 +513,40 @@
         </button>
       </div>
     </div>
+    {#if needsFallback}
+      <div class="row column boxed">
+        <div class="meta">
+          <span class="label">{fallbackRecovery ? "Older recovery code" : "Older password"}</span>
+          <span class="desc">
+            This vault's key is wrapped with a different password. Enter the one it was made
+            with (or its recovery code) to bring the vault forward to the password above.
+          </span>
+          {#if fallbackRecovery}
+            <button class="link" onclick={() => (fallbackRecovery = false)}>
+              Use the old password instead
+            </button>
+          {:else}
+            <button class="link" onclick={() => (fallbackRecovery = true)}>
+              Have the recovery code?
+            </button>
+          {/if}
+        </div>
+        <div class="control wide">
+          <input
+            type={fallbackRecovery ? "text" : "password"}
+            bind:value={fallback}
+            placeholder={fallbackRecovery ? "XXXX-XXXX-…" : "Old password"}
+            spellcheck="false"
+            onkeydown={(e) => {
+              if (e.key === "Enter") void connect(fallbackCredential());
+            }}
+          />
+          <button class="btn" disabled={working} onclick={() => void connect(fallbackCredential())}>
+            {working ? "Working…" : "Bring it forward"}
+          </button>
+        </div>
+      </div>
+    {/if}
   {:else if !status?.unlocked}
     <div class="row column">
       <div class="meta">
@@ -519,7 +617,7 @@
           <span class="label">Pair a device</span>
           <span class="desc">
             Show a one-time QR for a new device. It carries blob access only — the new device
-            still needs the sync password or recovery code.
+            still needs the same password or its recovery code.
           </span>
         </div>
         <div class="control">
@@ -544,6 +642,47 @@
         </div>
       {/if}
     {/if}
+    <div class="row column">
+      <div class="meta">
+        <span class="label">Change password</span>
+        <span class="desc">
+          Rewraps this vault's key for the new password
+          {status?.kind === "server" ? ", then replaces the account's verifier on the server" : ""}
+          — the vault key itself never changes. Other devices must sign in again.
+        </span>
+      </div>
+      <div class="control wide">
+        <input
+          type="password"
+          bind:value={changeOld}
+          placeholder="Current password"
+          spellcheck="false"
+        />
+        <input
+          type="password"
+          bind:value={changeNew}
+          placeholder="New password"
+          spellcheck="false"
+        />
+        <button class="btn" disabled={working} onclick={() => void changePassword()}>
+          {working ? "Working…" : "Change"}
+        </button>
+      </div>
+    </div>
+    <div class="row">
+      <div class="meta">
+        <span class="label">New recovery code</span>
+        <span class="desc">
+          Mint a fresh code if the old one leaked — it is shown once, and the old code keeps
+          opening older versions of the key.
+        </span>
+      </div>
+      <div class="control">
+        <button class="btn" disabled={working} onclick={() => void newRecoveryCode()}>
+          New code
+        </button>
+      </div>
+    </div>
     <div class="row column">
       <div class="meta">
         <span class="label">Last sync</span>

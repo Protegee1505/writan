@@ -78,7 +78,8 @@ export interface SyncStatus {
   /** "folder", "s3" or "server". */
   kind: string;
   target: string | null;
-  /** The remembered writan-server address and account, for form prefill. */
+  /** The remembered writan-server address (or the build's baked default) and
+   * account, for form prefill. */
   serverUrl: string | null;
   serverEmail: string | null;
   vaultId: string | null;
@@ -91,6 +92,16 @@ export interface SyncConnectResult {
   /** Shown exactly once, when this device created the keyring. */
   recoveryCode: string | null;
   status: SyncStatus;
+}
+
+/**
+ * The older credential a retry carries after a connect failed with "this vault
+ * was created with a different password" (ADR-0008 §5): the password the
+ * vault's keyring was made with, or its recovery code.
+ */
+export interface KeyringFallback {
+  purpose: "password" | "recovery";
+  credential: string;
 }
 
 /** A fresh pairing code and its QR (ADR-0007 §4). */
@@ -160,20 +171,29 @@ export const api = {
   syncConnectServer: (
     url: string,
     email: string,
-    accountPassword: string,
     createAccount: boolean,
     password: string,
+    fallback?: KeyringFallback,
   ) =>
     invoke<SyncConnectResult>("sync_connect_server", {
       url,
       email,
-      accountPassword,
       createAccount,
       password,
+      keyringPurpose: fallback?.purpose,
+      keyringCredential: fallback?.credential,
     }),
-  syncJoinServer: (payload: string, password: string) =>
-    invoke<SyncConnectResult>("sync_join_server", { payload, password }),
+  syncJoinServer: (payload: string, password: string, fallback?: KeyringFallback) =>
+    invoke<SyncConnectResult>("sync_join_server", {
+      payload,
+      password,
+      keyringPurpose: fallback?.purpose,
+      keyringCredential: fallback?.credential,
+    }),
   syncPairingCode: () => invoke<PairingInfo>("sync_pairing_code"),
+  syncChangePassword: (oldPassword: string, newPassword: string) =>
+    invoke<SyncStatus>("sync_change_password", { oldPassword, newPassword }),
+  syncNewRecoveryCode: () => invoke<string>("sync_new_recovery_code"),
   syncNow: () => invoke<SyncReport>("sync_now"),
   syncLock: () => invoke<SyncStatus>("sync_lock"),
   syncDisable: () => invoke<SyncStatus>("sync_disable"),
