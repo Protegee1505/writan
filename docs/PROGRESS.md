@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c; nightly sync soak fixed).
+Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c and the release APK lane; nightly sync soak fixed).
 
 ## Milestone history
 
@@ -426,6 +426,18 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c; nightly sync soak fix
   `mobile-share.actions` run green incl. the background-sync toggle step; the
   arm64 debug APK job green
   ([39254222619](https://github.com/Protegee1505/writan/actions/runs/39254222619)).
+- **M5 exit — signed release APK lane** (2026-10-19, commit `903cfb6`): a
+  second Android CI job (`android-release`) builds the release variant
+  (`tauri android build --apk`, R8 on, desugared) and uploads
+  `writan-android-arm64-release` — 12.3 MiB against the debug APK's 206 MB —
+  and the `release` job attaches it on `v*` tags. Gradle signs with the
+  keystore named by the four `WRITAN_ANDROID_*` environment variables (CI: the
+  `WRITAN_ANDROID_KEYSTORE_BASE64` secret decoded to a temp file, plus the
+  password, alias and key-password secrets) and falls back to the debug key
+  when unset, so release APKs stay sideloadable before the secrets exist
+  (`docs/ANDROID.md`). Verification: artifacts
+  [39255545481](https://github.com/Protegee1505/writan/actions/runs/39255545481)
+  green including the new release job.
 
 ## Current state
 
@@ -444,7 +456,9 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c; nightly sync soak fix
   exists (ADR-0010). Slice 2b backs the sync secrets with the Android keystore,
   so a restart unlocks sync without the password; slice 2c adds the opt-in
   background sync — a 15-minute WorkManager job that runs the same pass on its
-  own, off unless the panel says on.
+  own, off unless the panel says on. An arm64 release APK lane is in place
+  (R8; keystore-signed once the `WRITAN_ANDROID_*` secrets are set, debug key
+  otherwise), so M5 is left with the phone acceptance pass alone.
   Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 238 tests
   green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
