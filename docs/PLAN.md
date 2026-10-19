@@ -15,10 +15,10 @@ Password field in both shells, and the release binary + `server-install.sh`.
 M5 Android started (2026-10-19): `app/src-tauri/gen/android` is committed and
 CI builds an arm64 debug APK (`writan-android-arm64`); slice 1 landed — the
 Svelte shell works one pane at a time at phone width, and a fresh install uses
-an app-private vault instead of a folder picker (ADR-0009). Slice 2a landed —
-text/URL shares become notes, and slice 2b — the keychain is Keystore-backed,
-so sync unlocks without the password (ADR-0010). Opt-in background sync is
-next.
+an app-private vault instead of a folder picker (ADR-0009). Slice 2 landed —
+text/URL shares become notes, the keychain is Keystore-backed so sync unlocks
+without the password, and background sync is an opt-in 15-minute WorkManager
+job (ADR-0010). Left: the signed release APK and on-device acceptance.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -42,13 +42,13 @@ Order is a suggestion, not a constraint.
    (task 1).
 3. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
    commit as every shell change.
-4. **M5 slice 2c — opt-in background sync** (ADR-0010): share capture and the
-   Keystore-backed keychain are in; next is the 15-minute WorkManager run —
-   `androidx.work` + a `SyncWorker` calling a JNI sync pass that reuses the
-   `sync_now` path, `background_sync` in `AppConfig`, the Android-only toggle
-   in `SyncSection.svelte`, and the schedule reconciled on launch. Then
-   sideload the `writan-android-arm64` APK and check slice 1 + share + unlock +
-   background sync on a phone — the routine is `docs/ANDROID.md`.
+4. **M5 exit — signed release APK + on-device acceptance** (ADR-0010): the
+   three slice-2 features are in (share capture, Keystore-backed keychain,
+   opt-in 15-minute background sync); what is left is the release side —
+   signing, and attaching the APK to a release — plus the phone pass in
+   `docs/ANDROID.md`: share from another app (cold and warm), kill the app and
+   watch sync unlock from the Keystore, enable background sync and watch a run
+   land. Sideload the `writan-android-arm64` debug APK meanwhile.
 
 ## Upcoming milestones
 

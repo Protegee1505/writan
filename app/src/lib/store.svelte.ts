@@ -244,6 +244,16 @@ class AppStore {
     }
   }
 
+  /** Opt in or out of the Android 15-minute background sync job. */
+  async setBackgroundSync(enabled: boolean) {
+    try {
+      this.sync = await api.syncSetBackground(enabled);
+      this.notify(enabled ? "Background sync is on" : "Background sync is off");
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
   toggleTag(tag: string) {
     this.tagFilter = this.tagFilter === tag ? null : tag;
     void this.refresh();

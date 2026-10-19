@@ -18,6 +18,11 @@ pub struct AppConfig {
     /// both shells read and write the same config.
     #[serde(default)]
     pub sync: SyncConfig,
+    /// Opt-in periodic background sync (M5 slice 2c, ADR-0010 §7): when true,
+    /// Android schedules a WorkManager job that runs one engine pass every
+    /// ~15 minutes. Desktop ignores it.
+    #[serde(default)]
+    pub background_sync: bool,
 }
 
 #[derive(Default)]
@@ -144,6 +149,28 @@ impl AppState {
         Ok(())
     }
 
+    /// Whether the opt-in background sync job should be scheduled (Android,
+    /// M5 slice 2c). False when the config never mentioned it. Only the
+    /// Android schedule reconcile reads it, hence the allowance on desktop.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn background_sync(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|inner| inner.config.background_sync)
+            .unwrap_or(false)
+    }
+
+    /// Persist the background-sync opt-in flag.
+    pub fn save_background_sync(&self, enabled: bool) -> Result<(), String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        inner.config.background_sync = enabled;
+        self.save_config(&inner);
+        Ok(())
+    }
+
     pub(crate) fn save_config(&self, inner: &Inner) {
         let Ok(json) = serde_json::to_string_pretty(&inner.config) else {
             return;
@@ -191,6 +218,20 @@ mod tests {
         std::fs::write(dir.join("config.json"), r#"{ "vault_path": null }"#).unwrap();
         state.load_config();
         assert_eq!(state.settings(), serde_json::json!({}));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_sync_defaults_off_and_roundtrips() {
+        let (state, dir) = temp_state();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{ "vault_path": null }"#).unwrap();
+        state.load_config();
+        assert!(!state.background_sync());
+        state.save_background_sync(true).unwrap();
+        let reloaded = AppState::new(dir.clone());
+        reloaded.load_config();
+        assert!(reloaded.background_sync());
         let _ = fs::remove_dir_all(&dir);
     }
 

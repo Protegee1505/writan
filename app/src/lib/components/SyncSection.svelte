@@ -704,6 +704,26 @@
         <div class="control"><span class="report">{reportLine()}</span></div>
       {/if}
     </div>
+    {#if store.android}
+      <div class="row">
+        <div class="meta">
+          <span class="label">Background sync</span>
+          <span class="desc">
+            Syncs every ~15 minutes while the app is closed. Android batches jobs, so the time
+            varies, and nothing runs without a network.
+          </span>
+        </div>
+        <div class="control">
+          <button
+            class="btn"
+            class:selected={status?.background}
+            onclick={() => void store.setBackgroundSync(!status?.background)}
+          >
+            {status?.background ? "On" : "Off"}
+          </button>
+        </div>
+      </div>
+    {/if}
   {/if}
 </div>
 

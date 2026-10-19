@@ -88,6 +88,8 @@ export interface SyncStatus {
   deviceId: string | null;
   lastSync: string | null;
   lastReport: SyncReport | null;
+  /** Opt-in 15-minute background sync (Android, M5 slice 2c). */
+  background: boolean;
 }
 
 export interface SyncConnectResult {
@@ -199,6 +201,8 @@ export const api = {
     invoke<SyncStatus>("sync_change_password", { oldPassword, newPassword }),
   syncNewRecoveryCode: () => invoke<string>("sync_new_recovery_code"),
   syncNow: () => invoke<SyncReport>("sync_now"),
+  syncSetBackground: (enabled: boolean) =>
+    invoke<SyncStatus>("sync_set_background", { enabled }),
   syncLock: () => invoke<SyncStatus>("sync_lock"),
   syncDisable: () => invoke<SyncStatus>("sync_disable"),
 };

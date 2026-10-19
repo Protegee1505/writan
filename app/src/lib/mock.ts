@@ -128,17 +128,21 @@ let trash: TrashEntry[] = [];
 let settings: Record<string, unknown> = {};
 let counter = seedBodies.length + 1;
 
+/** `&sync=connected` opens the connected sync panel (mock S3 target). */
+const syncConnected = params.get("sync") === "connected";
+
 let sync: SyncStatus = {
-  enabled: false,
-  unlocked: false,
-  kind: "folder",
-  target: null,
+  enabled: syncConnected,
+  unlocked: syncConnected,
+  kind: syncConnected ? "s3" : "folder",
+  target: syncConnected ? "writan-sim" : null,
   serverUrl: null,
   serverEmail: null,
-  vaultId: null,
+  vaultId: syncConnected ? "mock-vault" : null,
   deviceId: "mock-device",
-  lastSync: null,
+  lastSync: syncConnected ? new Date().toISOString() : null,
   lastReport: null,
+  background: false,
 };
 
 function summary(note: MockNote): Summary {
@@ -408,6 +412,10 @@ const commands: Record<string, Command> = {
     return report;
   },
   sync_lock: (): SyncStatus => setUnlocked(false),
+  sync_set_background: (args): SyncStatus => {
+    sync = { ...sync, background: Boolean(args.enabled) };
+    return sync;
+  },
   sync_disable: (): SyncStatus => {
     // Like the real command (app/src-tauri/src/commands.rs): turned-off sync
     // keeps kind/target/server so the setup form can prefill, and only drops

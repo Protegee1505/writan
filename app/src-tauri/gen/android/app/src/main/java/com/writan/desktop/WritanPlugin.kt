@@ -67,6 +67,14 @@ class WritanPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
+  /** Schedule or cancel the opt-in background sync job (ADR-0010 §7). */
+  @Command
+  fun background(invoke: Invoke) {
+    val enabled = invoke.args.optBoolean("enabled", false)
+    SyncWork.set(activity.applicationContext, enabled)
+    invoke.resolve(JSObject().apply { put("scheduled", enabled) })
+  }
+
   private companion object {
     const val PREFS = "writan-share"
     const val KEY_PENDING = "pending"

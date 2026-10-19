@@ -12,6 +12,13 @@
 #   public *;
 #}
 
+# M5 slice 2: reached by name only (JNI + Tauri reflection), so keep them.
+-keep class com.writan.desktop.WritanPlugin { *; }
+-keep class com.writan.desktop.Keyring { *; }
+-keep class com.writan.desktop.SyncBridge { *; }
+-keep class com.writan.desktop.SyncWork { *; }
+-keep class com.writan.desktop.SyncWorker { *; }
+
 # Uncomment this to preserve the line number information for
 # debugging stack traces.
 #-keepattributes SourceFile,LineNumberTable

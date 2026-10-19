@@ -12,7 +12,9 @@
 until !!document.querySelector("section.pane")
 
 # A share intent lands while the vault is still unset: parked, not lost.
-goto http://127.0.0.1:5173/?mock=1&platform=android&welcome=1&share=Remember%20to%20buy%20milk&subject=From%20the%20share%20sheet
+# `sync=connected` also turns on the mock's connected sync panel, which the
+# last steps use for the opt-in background-sync toggle (M5 slice 2c).
+goto http://127.0.0.1:5173/?mock=1&platform=android&welcome=1&share=Remember%20to%20buy%20milk&subject=From%20the%20share%20sheet&sync=connected
 until document.body.innerText.includes("Use this device's storage")
 assert !document.body.innerText.includes("Remember to buy milk")
 shot 00-android-share-waiting
@@ -26,3 +28,17 @@ click Notes list
 wait 300
 assert document.body.innerText.includes("From the share sheet")
 shot 20-android-share-list
+
+# The connected panel carries the opt-in background-sync toggle on Android
+# (M5 slice 2c, ADR-0010 §7): off by default, one tap turns it on.
+click More actions
+wait 300
+click Settings
+wait 400
+click Sync
+wait 300
+assert document.body.innerText.includes("Background sync")
+eval (function () { const b = [...document.querySelectorAll("button")].find((x) => x.textContent.trim() === "Off"); if (!b) return false; b.click(); return true; })()
+wait 300
+assert [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "On")
+shot 30-android-background-sync

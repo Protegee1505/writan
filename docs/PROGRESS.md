@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fixed).
+Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c; nightly sync soak fixed).
 
 ## Milestone history
 
@@ -408,6 +408,23 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fix
   svelte-check 0/0, frontend build OK); `ci.yml`, the Docker image and the
   arm64 debug APK job all green
   ([39250831846](https://github.com/Protegee1505/writan/actions/runs/39250831846)).
+- **M5 slice 2c — opt-in background sync** (2026-10-19, commit `<2c>`, ADR-0010
+  decisions 7–8): `AppConfig.background_sync` (default off) and a `background`
+  field on the sync status; the connected Android panel carries an On/Off row
+  whose command (`sync_set_background`) stores the flag and asks the Kotlin
+  plugin to schedule or cancel a unique WorkManager job (`writan-sync`,
+  network-connected, 15-minute floor, `ExistingPeriodicWorkPolicy.UPDATE`,
+  plus one immediate run when switching on). The worker hands the app-data
+  directory to Rust (`SyncBridge.run` → `app/src-tauri/src/android.rs`), which
+  reuses the live app's workspace and session when the process is up and
+  otherwise opens the same state headlessly, unlocking from the Keystore; the
+  JSON reply tells Kotlin success/retry/disabled, and a disabled reply cancels
+  the job. Launch reconciles the schedule with `config.json` (a short retry
+  while the plugin loads). Verification: desktop DoD green (fmt/clippy, 238
+  tests, svelte-check 0/0, frontend build OK); `clippy --target
+  aarch64-linux-android` for `writan-sync`/`writan-app` clean; strict
+  `mobile-share.actions` run green incl. the background-sync toggle step; the
+  arm64 debug APK job green.
 
 ## Current state
 
@@ -424,8 +441,10 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fix
   committed and `artifacts.yml` builds the arm64 debug APK. Slice 2a adds the
   share target: text/URL shares become notes, kept natively until a vault
   exists (ADR-0010). Slice 2b backs the sync secrets with the Android keystore,
-  so a restart unlocks sync without the password.
-  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 237 tests
+  so a restart unlocks sync without the password; slice 2c adds the opt-in
+  background sync — a 15-minute WorkManager job that runs the same pass on its
+  own, off unless the panel says on.
+  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 238 tests
   green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
   `%APPDATA%\com.writan.desktop`). Workspace MSRV: Rust 1.90; version 0.2.0

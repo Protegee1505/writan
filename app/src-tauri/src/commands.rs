@@ -531,6 +531,8 @@ pub struct SyncStatusDto {
     pub device_id: Option<String>,
     pub last_sync: Option<String>,
     pub last_report: Option<SyncReportDto>,
+    /// The Android opt-in for the 15-minute background sync job (M5 slice 2c).
+    pub background: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -555,6 +557,7 @@ impl SyncStatusDto {
             device_id: status.device_id,
             last_sync: status.last_sync,
             last_report: status.last_report.as_ref().map(SyncReportDto::from_report),
+            background: false,
         }
     }
 }
@@ -579,6 +582,7 @@ fn sync_status_from(state: &AppState, inner: &Inner) -> SyncStatusDto {
         dto.server_url = Some(server.url.clone());
         dto.server_email = Some(server.email.clone());
     }
+    dto.background = inner.config.background_sync;
     dto
 }
 
@@ -592,8 +596,9 @@ pub fn sync_status(state: State<'_, AppState>) -> CmdResult<SyncStatusDto> {
 }
 
 /// One engine pass while `inner` is already locked; reconciles the index so
-/// notes merged in from other devices show up in the UI.
-fn run_sync_locked(state: &AppState, inner: &mut Inner) -> CmdResult<SyncReportDto> {
+/// notes merged in from other devices show up in the UI. Also the entry point
+/// of the Android background worker (M5 slice 2c).
+pub(crate) fn run_sync_locked(state: &AppState, inner: &mut Inner) -> CmdResult<SyncReportDto> {
     if !inner.config.sync.enabled {
         return Err("sync is disabled".to_string());
     }
@@ -952,6 +957,27 @@ pub fn sync_now(state: State<'_, AppState>) -> CmdResult<SyncReportDto> {
         .lock()
         .map_err(|_| "state lock poisoned".to_string())?;
     run_sync_locked(&state, &mut inner)
+}
+
+/// Opt in or out of the Android background sync job (M5 slice 2c, ADR-0010
+/// §7): persists the flag and lets the Kotlin plugin schedule or cancel the
+/// WorkManager job. Desktop stores the flag too, it just never schedules.
+#[tauri::command]
+pub async fn sync_set_background(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> CmdResult<SyncStatusDto> {
+    #[cfg(not(target_os = "android"))]
+    let _ = &app;
+    state.save_background_sync(enabled)?;
+    #[cfg(target_os = "android")]
+    crate::android::set_background_sync(&app, enabled).await?;
+    let inner = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    Ok(sync_status_from(&state, &inner))
 }
 
 /// Lock sync: drop the in-memory key and forget the keychain entry.

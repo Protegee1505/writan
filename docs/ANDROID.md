@@ -63,7 +63,7 @@ walk `tools/visual/actions/mobile-share.actions` or open
 ?mock=1&platform=android&share=Hello&subject=From%20the%20share%20sheet
 ```
 
-## Sync (M5 slice 2b)
+## Sync (M5 slices 2b + 2c)
 
 Sync works on Android with the S3 and Writan-server targets. The vault key,
 the S3 secret and the server token live in the app's Keystore-backed store
@@ -74,10 +74,20 @@ Android backup stays off (`android:allowBackup="false"`): a Keystore key cannot
 leave the device, and the vault is app-private. The shared-folder target is
 desktop-only — Android has no folder picker (ADR-0009 §2).
 
+### Background sync
+
+Off by default. The connected sync panel on Android carries a **Background
+sync** toggle; turning it on schedules a unique WorkManager job (`writan-sync`)
+that runs one engine pass every ~15 minutes, plus one run straight away.
+Android batches jobs (Doze, battery), so the real gap varies, and nothing runs
+without a network. A pass is the same work as **Sync now**: `SyncWorker` hands
+the app-data directory to Rust (`SyncBridge.run` → `android.rs`), which reuses
+the running app's workspace when it is alive and otherwise opens the vault and
+unlocks from the Keystore itself. Turning the toggle off cancels the job, and
+the worker also cancels itself when it wakes up to find `config.json` says off.
+
 ## Not yet
 
-- **Background sync** — the opt-in 15-minute WorkManager run lands later in
-  slice 2, on top of this Keystore unlock.
 - **Hardware back button** — Tauri 2.11 exposes no hook; the drawer closes by
   tapping a row or the scrim. Follow-up in slice 2.
 - Keyboard shortcuts, image/file shares, export/backup, release signing.

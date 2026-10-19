@@ -27,6 +27,26 @@ pub fn run() {
             state.load_config();
             app.manage(state);
             start_watcher_if_open(app.handle());
+            #[cfg(target_os = "android")]
+            {
+                android::remember_app_handle(app.handle());
+                // Keep WorkManager in step with config.json on every launch
+                // (ADR-0010 §8). The plugin may still be loading while setup
+                // runs, so a failure is retried briefly on a side thread.
+                let handle = app.handle().clone();
+                let enabled = app.state::<AppState>().background_sync();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        let scheduled = tauri::async_runtime::block_on(
+                            android::set_background_sync(&handle, enabled),
+                        );
+                        if scheduled.is_ok() {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -65,6 +85,7 @@ pub fn run() {
             commands::sync_change_password,
             commands::sync_new_recovery_code,
             commands::sync_now,
+            commands::sync_set_background,
             commands::sync_lock,
             commands::sync_disable,
         ])

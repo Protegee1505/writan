@@ -71,6 +71,10 @@ Status: accepted. Date: 2026-10-19.
    flipped: app setup reads `background_sync` and schedules or cancels the job,
    so a reinstall or a cleared WorkManager database cannot leave the two out
    of step.
+   *(2026-10-19, implementation: the launch reconcile retries briefly on a
+   side thread because the Kotlin plugin may still be loading when setup runs;
+   the worker cancels its own job when `config.json` says the opt-in is off,
+   which also covers a schedule that outlived an uninstall of the toggle.)*
 
 ## Consequences
 
