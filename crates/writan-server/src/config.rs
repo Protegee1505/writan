@@ -7,6 +7,9 @@ use crate::auth::LockoutPolicy;
 /// Everything the server reads from the environment at startup.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
+    /// Address to listen on (`WRITAN_BIND`, default `0.0.0.0`; an installer
+    /// that terminates TLS in a reverse proxy sets `127.0.0.1`).
+    pub bind: std::net::IpAddr,
     /// TCP port (`WRITAN_PORT`, default 8787).
     pub port: u16,
     /// Directory holding `writan-server.sqlite` (`WRITAN_DATA_DIR`, default
@@ -29,6 +32,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            bind: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
             port: 8787,
             data_dir: PathBuf::from("writan-data"),
             registration_open: true,
@@ -51,6 +55,11 @@ impl ServerConfig {
     /// parsing is testable without touching the process environment.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let mut config = Self::default();
+        if let Some(value) = lookup("WRITAN_BIND") {
+            config.bind = value.trim().parse().map_err(|_| {
+                format!("WRITAN_BIND must be an address like 0.0.0.0 or 127.0.0.1, got `{value}`")
+            })?;
+        }
         if let Some(value) = lookup("WRITAN_PORT") {
             config.port = parse("WRITAN_PORT", &value)?;
         }
@@ -110,6 +119,10 @@ mod tests {
     #[test]
     fn defaults_match_the_documented_values() {
         let config = ServerConfig::from_lookup(lookup(&[])).expect("empty environment");
+        assert_eq!(
+            config.bind,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        );
         assert_eq!(config.port, 8787);
         assert_eq!(config.data_dir, PathBuf::from("writan-data"));
         assert!(config.registration_open);
@@ -121,6 +134,7 @@ mod tests {
     #[test]
     fn environment_overrides_parse() {
         let config = ServerConfig::from_lookup(lookup(&[
+            ("WRITAN_BIND", "127.0.0.1"),
             ("WRITAN_PORT", "9000"),
             ("WRITAN_DATA_DIR", "/data"),
             ("WRITAN_REGISTRATION", "closed"),
@@ -129,6 +143,10 @@ mod tests {
             ("WRITAN_PAIRING_TTL_SECS", "120"),
         ]))
         .expect("all valid");
+        assert_eq!(
+            config.bind,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        );
         assert_eq!(config.port, 9000);
         assert_eq!(config.data_dir, PathBuf::from("/data"));
         assert!(!config.registration_open);
@@ -141,6 +159,7 @@ mod tests {
     fn malformed_values_name_their_variable() {
         for (key, value) in [
             ("WRITAN_PORT", "soon"),
+            ("WRITAN_BIND", "everywhere"),
             ("WRITAN_MAX_BLOB_KIB", "-1"),
             ("WRITAN_VAULT_QUOTA_MIB", "lots"),
             ("WRITAN_PAIRING_TTL_SECS", "later"),
