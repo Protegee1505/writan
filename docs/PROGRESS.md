@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-18 (M4 complete).
+Last updated: 2026-10-19 (M4 complete + the sync-setup panel fix).
 
 ## Milestone history
 
@@ -301,6 +301,11 @@ Last updated: 2026-10-18 (M4 complete).
   image was built and smoke-tested locally: health, account, vault, blob and
   change feed over the container, uid 10001, SQLite persisted in the volume.
   **M4 complete.**
+- **Sync setup panel fix** (2026-10-19, commit `ccdd36d`): after Turn off the
+  Tauri panel showed the Locked view (the target stays in the config to prefill
+  the form) with no way back to the method picker — reported on Windows; setup
+  now means `enabled`, as in the GTK shell
+  (`app/src/lib/components/SyncSection.svelte:30`).
 
 ## Current state
 
