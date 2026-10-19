@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 slice 1 done).
+Last updated: 2026-10-19 (M4, M4.5, M5 slice 1; nightly sync soak fixed).
 
 ## Milestone history
 
@@ -356,6 +356,18 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 slice 1 done).
   Android first run at 390×844 (8 artefacts, 0 failures; routine in
   `docs/ANDROID.md`). Local DoD green: fmt/clippy/223 tests (3 ignored),
   `svelte-check` 0/0, frontend build OK.
+- **Sync fixpoint fix — a merge must dominate both sides** (2026-10-19): the
+  nightly soak's `m=1`-per-sweep loop was `LwwDiff3`'s fast-forward keeping one
+  side's vector alone, so the version it published never covered the other
+  device's and the pair re-merged the same note on every sweep
+  (`crates/writan-sync/src/merge.rs`, `resolve`): all three fast-forward paths
+  now claim the union of both vectors — the newer stamp standing for both when
+  the content is equal. Regression: `crates/writan-sync/tests/fixpoint.rs`
+  (fails without the fix) plus vector-dominance assertions in the merge tests;
+  15/15 local release soak runs green where 5/15 failed before. The soak's
+  failure dump also became self-explaining (per-file recorded vs on-disk
+  digests, each target entry with its vector and digest; `note_digest` /
+  `blob_digest` are public for it).
 
 ## Current state
 
@@ -415,21 +427,6 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 slice 1 done).
   touch feel, the real on-screen keyboard and the app-private vault need the
   sideloaded `writan-android-arm64` APK on a phone — the routine is in
   `docs/ANDROID.md`.
-- **Nightly sync soak red since 2026-10-19**: both simulator jobs failed in
-  release mode with `devices never reached a clean fixpoint`
-  (`crates/writan-sync/tests/simulator.rs:239`, folder + bucket variants; run
-  [39225792597](https://github.com/Protegee1505/writan/actions/runs/39225792597)),
-  and it is a flake, not a one-off: 5 of 15 local release runs of
-  `three_devices_converge_through_a_shared_folder` fail (seed is fixed, so the
-  nondeterminism is outside the PRNG — wall-clock `updated` stamps and target
-  listing order are the suspects). Signature in every failing run: two devices
-  merge exactly one note on *every* sweep (`m=1`) and never settle, one device
-  ends with 3 more vectors and a single item under its own device id grows to
-  version 21 — a merge ping-pong, not a decode error. Next step: instrument
-  `merge_flow` (`crates/writan-sync/src/engine.rs:518`) to dump the `(base,
-  local, remote)` vv/`updated` triple on each merge, then find which side fails
-  to become dominated. The tests are `--ignored`, so the normal `cargo test`
-  never runs them.
 
 ## How to run & verify
 

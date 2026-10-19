@@ -3,9 +3,12 @@
 //! Two devices that edited the same note are reconciled by [`LwwDiff3`], the
 //! v1 [`MergeStrategy`] (ADR-0001, `docs/PLAN.md`):
 //!
-//! 1. A side unchanged since the stored base is adopted as-is. (Vector
-//!    dominance is the engine's call, at the storage level, where a vector
-//!    always describes a whole published version — not an unpublished edit.)
+//! 1. A side unchanged since the stored base is adopted as-is, and equal
+//!    content adopts one side; either way the kept version carries the union
+//!    of both vectors, so the other device can never stay concurrent with a
+//!    version that already has its content. (Vector dominance itself is the
+//!    engine's call, at the storage level, where a vector always describes a
+//!    whole published version — not an unpublished edit.)
 //! 2. Edits whose `updated` stamps lie within 60 s of each other resolve to
 //!    the newer side, whole (Notesnook-style window).
 //! 3. Otherwise a bounded line-based three-way diff merges both bodies
@@ -91,15 +94,20 @@ pub enum Resolution {
 impl MergeStrategy for LwwDiff3 {
     fn resolve(&self, base: Option<&NoteBlob>, local: &NoteBlob, remote: &NoteBlob) -> MergePlan {
         if same_content(local, remote) {
-            return plan(local.clone(), Resolution::FastForward);
+            // The bodies agree, so either side can stand for both — but the
+            // kept version must be *dominated by neither*: claiming the union
+            // of both vectors is what lets the other device fast-forward to it
+            // instead of merging the same note again on every sweep.
+            let (newer, _) = ordered_halves(local, remote);
+            return plan(claim(newer, local, remote), Resolution::FastForward);
         }
         let local_changed = changed(base, local);
         let remote_changed = changed(base, remote);
         if !local_changed {
-            return plan(remote.clone(), Resolution::FastForward);
+            return plan(claim(remote, local, remote), Resolution::FastForward);
         }
         if !remote_changed {
-            return plan(local.clone(), Resolution::FastForward);
+            return plan(claim(local, local, remote), Resolution::FastForward);
         }
         let (newer, older) = ordered_halves(local, remote);
         if self.within_lww_window(local, remote) {
@@ -408,6 +416,53 @@ mod tests {
         let plan = strategy().resolve(Some(&base), &local, &remote);
         assert_eq!(plan.resolution, Resolution::FastForward);
         assert_eq!(plan.kept.body, remote.body);
+        dominates_both(&plan, &local, &remote);
+
+        // And from the other device: the untouched side is still covered.
+        let flipped = strategy().resolve(Some(&base), &remote, &local);
+        assert_eq!(flipped.kept.body, remote.body);
+        dominates_both(&flipped, &remote, &local);
+    }
+
+    /// The kept version must cover both callers' vectors: if it did not, the
+    /// other device would stay concurrent with it and merge the same note on
+    /// every sweep (the 2026-10-19 soak loop).
+    fn dominates_both(plan: &MergePlan, local: &NoteBlob, remote: &NoteBlob) {
+        assert!(
+            plan.kept.vv.contains(&local.vv) && plan.kept.vv.contains(&remote.vv),
+            "kept {:?} must cover local {:?} and remote {:?}",
+            plan.kept.vv,
+            local.vv,
+            remote.vv
+        );
+    }
+
+    #[test]
+    fn equal_content_fast_forward_claims_both_vectors() {
+        let id = Uuid::new_v4();
+        let device_a = Uuid::new_v4();
+        let device_b = Uuid::new_v4();
+        let base = note(id, &base_body(), Some("2026-10-17T09:00:00Z"));
+
+        // Equal content under different stamps, with vectors that cover only
+        // parts of each other — the shape the soak reached.
+        let mut local = note(id, &base_body(), Some(MIN_10));
+        local.vv.observe(&device_a, 16);
+        local.vv.observe(&device_b, 3);
+        let mut remote = note(id, &base_body(), Some(T0));
+        remote.vv.observe(&device_a, 6);
+        remote.vv.observe(&device_b, 14);
+
+        let plan = strategy().resolve(Some(&base), &local, &remote);
+        assert_eq!(plan.resolution, Resolution::FastForward);
+        dominates_both(&plan, &local, &remote);
+        assert_eq!(
+            plan.kept.updated.as_deref(),
+            Some(MIN_10),
+            "the newer stamp stands for both sides"
+        );
+        let flipped = strategy().resolve(Some(&base), &remote, &local);
+        assert_eq!(flipped.kept, plan.kept, "one kept version either way");
     }
 
     #[test]
