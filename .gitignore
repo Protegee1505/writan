@@ -9,8 +9,10 @@ dist/
 .svelte-kit/
 *.local
 
-# Tauri
-/app/src-tauri/gen/
+# Tauri: schemas are regenerated on every build, the Android project (M5) is
+# committed so CI can build the APK without running `android init`.
+/app/src-tauri/gen/*
+!/app/src-tauri/gen/android
 
 # Editors & OS
 .DS_Store
