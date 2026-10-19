@@ -418,8 +418,8 @@ async fn repeated_failures_lock_the_account() {
     let state = state_with(ServerConfig {
         lockout: LockoutPolicy {
             after: 2,
-            base_secs: 2,
-            cap_secs: 2,
+            base_secs: 60,
+            cap_secs: 900,
         },
         ..ServerConfig::default()
     });
@@ -456,8 +456,14 @@ async fn repeated_failures_lock_the_account() {
         StatusCode::TOO_MANY_REQUESTS,
         "locked even with the right password"
     );
-
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    // The locked window is a timestamp, so the clock is moved by hand instead
+    // of sleeping through a real one: the test stays fast and cannot go flaky
+    // when a slow derivation straddles the boundary.
+    {
+        let conn = state.db.lock().expect("the database lock");
+        conn.execute("UPDATE accounts SET locked_until = 0", [])
+            .expect("expire the lock");
+    }
     let (status, body) = sign_in(
         &state,
         "ada@example.com",

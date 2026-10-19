@@ -321,8 +321,10 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete).
   Releases gain a `writan-server` binary (glibc 2.35 floor) and
   `scripts/server-install.sh` (SHA-256-verified download, systemd unit, Caddy
   `--domain`); a personal build can bake `WRITAN_DEFAULT_SERVER`. Version
-  0.2.0. Verification: `cargo test --workspace` 223 tests green (3 ignored),
-  `svelte-check` 0/0, frontend build OK.
+  0.2.0, released as `v0.2.0` (PR #1). Verification: `cargo test --workspace`
+  223 tests green (3 ignored), `svelte-check` 0/0, frontend build OK,
+  `gtk-shell-test` 62/62 (its sync section drives the one-password flow end to
+  end, including a second device joining the keyring).
 
 ## Current state
 
