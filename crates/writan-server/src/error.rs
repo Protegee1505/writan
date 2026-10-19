@@ -16,6 +16,10 @@ pub enum ApiError {
     Unauthorized,
     #[error("registration is closed")]
     RegistrationClosed,
+    #[error(
+        "this account predates this server version; the server owner must run `writan-server reset-password EMAIL`"
+    )]
+    LegacyAccount,
     #[error("an account with this email already exists")]
     EmailTaken,
     #[error("too many failed attempts; try again later")]
@@ -39,6 +43,7 @@ impl ApiError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::RegistrationClosed => StatusCode::FORBIDDEN,
+            Self::LegacyAccount => StatusCode::FORBIDDEN,
             Self::EmailTaken => StatusCode::CONFLICT,
             Self::Locked => StatusCode::TOO_MANY_REQUESTS,
             Self::NotFound(_) => StatusCode::NOT_FOUND,

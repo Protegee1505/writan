@@ -1,21 +1,29 @@
-//! Password and token handling (ADR-0007 §§2–4).
+//! Password and token handling (ADR-0007 §§2–4, ADR-0008 §§1–3).
 //!
-//! Account passwords are hashed with the same Argon2id parameters as the
-//! E2EE KEK ([`writan_crypto::derive_kek`]), so the workspace keeps one KDF.
-//! Device tokens are high-entropy random strings stored as a single SHA-256;
-//! they authenticate HTTP requests and are unrelated to the vault key.
+//! The account credential is a *verifier*: the client derives it from the one
+//! password (`Argon2id(password, salt_auth)`) and sends it; the server stores
+//! only `salt_auth` and `SHA-256(verifier)` and runs no KDF on a request
+//! (ADR-0008 §1). Device tokens are high-entropy random strings stored as a
+//! single SHA-256; they authenticate HTTP requests and are unrelated to the
+//! vault key.
 
 use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use hmac::{Hmac, Mac as _};
 use rand::RngCore as _;
 use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
 
-/// Shortest accepted account password (bytes).
+/// Shortest accepted password (bytes). Enforced by the clients and the admin
+/// CLI — the server never receives the password itself (ADR-0008 §1).
 pub const PASSWORD_MIN_LEN: usize = 8;
-/// Longest accepted account password (bytes; KDF cost guard).
+/// Longest accepted password (bytes; KDF cost guard).
 pub const PASSWORD_MAX_LEN: usize = 1024;
+/// Length of an account's auth salt (`salt_auth`).
+pub const SALT_LEN: usize = 16;
+/// Length of a verifier (the Argon2id output the client sends).
+pub const VERIFIER_LEN: usize = 32;
 /// Entropy of a device token.
 pub const TOKEN_BYTES: usize = 32;
 /// `last_seen_at` is written at most this often (ADR-0007 §3).
@@ -94,27 +102,46 @@ pub fn validate_password(password: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Derive a fresh salt and the stored password hash.
-pub fn hash_password(password: &str) -> Result<([u8; 16], [u8; 32]), ApiError> {
-    let salt = writan_crypto::random_salt();
-    let hash = writan_crypto::derive_kek(password, &salt)
-        .map_err(|error| ApiError::Internal(format!("kdf: {error}")))?;
-    Ok((salt, hash))
+/// Decode an account auth salt (16 bytes, standard base64).
+pub fn parse_salt(raw: &str) -> Result<[u8; SALT_LEN], ApiError> {
+    decode_fixed(raw.trim(), "salt")
 }
 
-/// Constant-time comparison of the derived hash with the stored one.
-pub fn verify_password(password: &str, salt: &[u8; 16], hash: &[u8; 32]) -> bool {
-    match writan_crypto::derive_kek(password, salt) {
-        Ok(derived) => ct_eq(&derived, hash),
-        Err(_) => false,
-    }
+/// Decode a verifier (32 bytes, standard base64).
+pub fn parse_verifier(raw: &str) -> Result<[u8; VERIFIER_LEN], ApiError> {
+    decode_fixed(raw.trim(), "verifier")
 }
 
-/// Pay one KDF derivation so a login for an unknown email costs a real one
-/// (no account probing, ADR-0007 §2).
-pub fn verify_dummy(password: &str) {
-    const SALT: [u8; 16] = [0; 16];
-    let _ = writan_crypto::derive_kek(password, &SALT);
+fn decode_fixed<const N: usize>(raw: &str, what: &str) -> Result<[u8; N], ApiError> {
+    STANDARD
+        .decode(raw)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| ApiError::BadRequest(format!("{what} must be {N} base64-encoded bytes")))
+}
+
+/// What the server stores for a verifier: its SHA-256 (see `verifier_matches`).
+pub fn hash_verifier(verifier: &[u8; VERIFIER_LEN]) -> [u8; VERIFIER_LEN] {
+    let mut hasher = Sha256::new();
+    hasher.update(verifier);
+    hasher.finalize().into()
+}
+
+/// Constant-time comparison of a presented verifier with the stored hash.
+pub fn verifier_matches(verifier: &[u8; VERIFIER_LEN], stored: &[u8; VERIFIER_LEN]) -> bool {
+    ct_eq(&hash_verifier(verifier), stored)
+}
+
+/// The salt handed to an unknown email: `HMAC-SHA256(secret, email)` cut to
+/// [`SALT_LEN`], so the answer is stable per email and tells an attacker
+/// nothing about which accounts exist (ADR-0008 §3).
+pub fn dummy_salt(secret: &[u8; 32], email: &str) -> [u8; SALT_LEN] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(email.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    let mut salt = [0u8; SALT_LEN];
+    salt.copy_from_slice(&tag[..SALT_LEN]);
+    salt
 }
 
 /// A fresh device token: 32 random bytes, base64url without padding.
@@ -176,13 +203,53 @@ mod tests {
     }
 
     #[test]
-    fn hash_verify_roundtrip_and_rejection() {
-        let (salt, hash) = hash_password("correct horse battery").expect("hash");
-        assert!(verify_password("correct horse battery", &salt, &hash));
-        assert!(!verify_password("wrong password here", &salt, &hash));
-        let (other_salt, _) = hash_password("correct horse battery").expect("hash");
-        assert_ne!(salt, other_salt, "salts are random");
-        verify_dummy("anything"); // must not panic, and must not be verifiable
+    fn salt_and_verifier_parsing_is_strict() {
+        let salt = parse_salt(&STANDARD.encode([7u8; SALT_LEN])).expect("base64 salt");
+        assert_eq!(salt, [7u8; SALT_LEN]);
+        let verifier =
+            parse_verifier(&STANDARD.encode([9u8; VERIFIER_LEN])).expect("base64 verifier");
+        assert_eq!(verifier, [9u8; VERIFIER_LEN]);
+        // Whitespace around the field is tolerated; wrong lengths and other
+        // alphabets are not.
+        assert!(parse_salt(&format!(" {} ", STANDARD.encode([7u8; SALT_LEN]))).is_ok());
+        // The field is standard base64: unpadded (url-safe) alphabets are not it.
+        assert!(parse_salt(&URL_SAFE_NO_PAD.encode([7u8; SALT_LEN])).is_err());
+        for bad in [
+            "",
+            "not base64",
+            &STANDARD.encode([7u8; 15]),
+            &STANDARD.encode([7u8; 17]),
+        ] {
+            assert!(parse_salt(bad).is_err(), "{bad:?} must be refused");
+        }
+        for bad in ["", &STANDARD.encode([9u8; 31]), &STANDARD.encode([9u8; 33])] {
+            assert!(parse_verifier(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn verifier_matching_accepts_the_hash_of_the_same_verifier() {
+        let verifier = [9u8; VERIFIER_LEN];
+        let stored = hash_verifier(&verifier);
+        assert!(verifier_matches(&verifier, &stored));
+        assert!(!verifier_matches(&[8u8; VERIFIER_LEN], &stored));
+        assert_ne!(
+            stored, verifier,
+            "the stored form is a hash, not the verifier"
+        );
+    }
+
+    #[test]
+    fn dummy_salt_is_stable_per_email_and_secret() {
+        let secret = [3u8; 32];
+        let salt = dummy_salt(&secret, "ada@example.com");
+        assert_eq!(salt, dummy_salt(&secret, "ada@example.com"), "stable");
+        assert_ne!(salt, dummy_salt(&secret, "bob@example.com"));
+        assert_ne!(
+            salt,
+            dummy_salt(&[4u8; 32], "ada@example.com"),
+            "secret matters"
+        );
     }
 
     #[test]

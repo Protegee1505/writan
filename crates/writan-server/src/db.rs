@@ -1,18 +1,21 @@
-//! SQLite storage (ADR-0007 §8): one file, WAL, single connection behind a
-//! mutex. The schema already carries the whole M4 surface — accounts,
-//! devices, vaults, blobs, pairings — so the later chunks only add queries;
-//! `meta.schema_version` guards migrations.
+//! SQLite storage (ADR-0007 §8, ADR-0008 §5): one file, WAL, single connection
+//! behind a mutex. Accounts carry verifier material (auth salt + verifier
+//! hash), never a password; `meta.schema_version` guards migrations and the
+//! v1 → v2 migration only makes the old password columns go away.
 
 use std::path::Path;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+use rand::RngCore as _;
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::auth::LockoutPolicy;
+use crate::auth::{LockoutPolicy, SALT_LEN, VERIFIER_LEN};
 use crate::error::ApiError;
 
 /// Bump with any migration; stored under `meta.schema_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
@@ -28,8 +31,8 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS accounts (
     id            TEXT PRIMARY KEY,
     email         TEXT NOT NULL UNIQUE,
-    password_salt BLOB NOT NULL,
-    password_hash BLOB NOT NULL,
+    auth_salt     BLOB,
+    verifier_hash BLOB,
     created_at    INTEGER NOT NULL,
     failed_logins INTEGER NOT NULL DEFAULT 0,
     locked_until  INTEGER NOT NULL DEFAULT 0
@@ -84,12 +87,14 @@ pub struct Account {
     pub locked_until: i64,
 }
 
-/// Password material for one account.
+/// Verifier material for one account (ADR-0008 §2). Both fields are `None`
+/// on a row that predates schema v2: the owner mints new material with
+/// `writan-server reset-password EMAIL` (ADR-0008 §4).
 #[derive(Debug, Clone)]
 pub struct AccountAuth {
     pub account: Account,
-    pub salt: [u8; 16],
-    pub hash: [u8; 32],
+    pub salt: Option<[u8; SALT_LEN]>,
+    pub verifier_hash: Option<[u8; VERIFIER_LEN]>,
 }
 
 /// A device row (no token material).
@@ -110,7 +115,7 @@ pub struct Vault {
 
 /// Open (creating if needed) the database and apply the schema.
 pub fn open(path: &Path) -> Result<Connection, ApiError> {
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
     let stored: Option<String> = conn
         .query_row(
@@ -136,14 +141,35 @@ pub fn open(path: &Path) -> Result<Connection, ApiError> {
                 )));
             }
             if version < SCHEMA_VERSION {
-                return Err(ApiError::Internal(format!(
-                    "database schema v{version} is older than this server (v{SCHEMA_VERSION}); \
-                     no migration path yet"
-                )));
+                migrate(&mut conn, version)?;
             }
         }
     }
     Ok(conn)
+}
+
+/// In-place migrations, oldest first (ADR-0008 §4).
+///
+/// v1 → v2: the password columns become the nullable verifier columns. The
+/// rows stay; such an account answers 403 [`ApiError::LegacyAccount`] until
+/// the owner runs `writan-server reset-password EMAIL` (the CLI is also the
+/// migration for it, ADR-0008 §4).
+fn migrate(conn: &mut Connection, from: i64) -> Result<(), ApiError> {
+    if from < 2 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE accounts ADD COLUMN auth_salt BLOB;
+             ALTER TABLE accounts ADD COLUMN verifier_hash BLOB;
+             ALTER TABLE accounts DROP COLUMN password_salt;
+             ALTER TABLE accounts DROP COLUMN password_hash;",
+        )?;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+            params![SCHEMA_VERSION.to_string()],
+        )?;
+        tx.commit()?;
+    }
+    Ok(())
 }
 
 /// Insert an account; a second account for the same email is
@@ -151,15 +177,21 @@ pub fn open(path: &Path) -> Result<Connection, ApiError> {
 pub fn create_account(
     conn: &Connection,
     email: &str,
-    salt: &[u8; 16],
-    hash: &[u8; 32],
+    salt: &[u8; SALT_LEN],
+    verifier_hash: &[u8; VERIFIER_LEN],
     now: i64,
 ) -> Result<Account, ApiError> {
     let id = Uuid::new_v4();
     let inserted = conn.execute(
-        "INSERT OR IGNORE INTO accounts (id, email, password_salt, password_hash, created_at)
+        "INSERT OR IGNORE INTO accounts (id, email, auth_salt, verifier_hash, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id.to_string(), email, salt.as_slice(), hash.as_slice(), now],
+        params![
+            id.to_string(),
+            email,
+            salt.as_slice(),
+            verifier_hash.as_slice(),
+            now
+        ],
     )?;
     if inserted == 0 {
         return Err(ApiError::EmailTaken);
@@ -173,11 +205,11 @@ pub fn create_account(
     })
 }
 
-/// Look an account up by its normalized email, with password material.
+/// Look an account up by its normalized email, with verifier material.
 pub fn account_by_email(conn: &Connection, email: &str) -> Result<Option<AccountAuth>, ApiError> {
     let found = conn
         .query_row(
-            "SELECT id, email, created_at, failed_logins, locked_until, password_salt, password_hash
+            "SELECT id, email, created_at, failed_logins, locked_until, auth_salt, verifier_hash
              FROM accounts WHERE email = ?1",
             params![email],
             |row| {
@@ -188,18 +220,18 @@ pub fn account_by_email(conn: &Connection, email: &str) -> Result<Option<Account
                     failed_logins: row.get(3)?,
                     locked_until: row.get(4)?,
                 };
-                let salt: Vec<u8> = row.get(5)?;
-                let hash: Vec<u8> = row.get(6)?;
-                Ok((account, salt, hash))
+                let salt: Option<Vec<u8>> = row.get(5)?;
+                let verifier_hash: Option<Vec<u8>> = row.get(6)?;
+                Ok((account, salt, verifier_hash))
             },
         )
         .optional()?;
     found
-        .map(|(account, salt, hash)| {
+        .map(|(account, salt, verifier_hash)| {
             Ok(AccountAuth {
                 account,
-                salt: take16(salt)?,
-                hash: take32(hash)?,
+                salt: optional_fixed(salt, "auth_salt")?,
+                verifier_hash: optional_fixed(verifier_hash, "verifier_hash")?,
             })
         })
         .transpose()
@@ -216,30 +248,86 @@ pub fn account_by_id(conn: &Connection, account_id: Uuid) -> Result<Option<Accou
     .map_err(Into::into)
 }
 
-/// Replace the password hash, reset the lockout counters and revoke every
-/// device of the account. Returns `false` when there is no such account.
-pub fn reset_password(
+/// Replace the verifier material, reset the lockout counters and revoke every
+/// device except `keep_device` (ADR-0008 §6). Returns `false` when there is
+/// no such account.
+pub fn replace_verifier(
     conn: &mut Connection,
     account_id: Uuid,
-    salt: &[u8; 16],
-    hash: &[u8; 32],
+    salt: &[u8; SALT_LEN],
+    verifier_hash: &[u8; VERIFIER_LEN],
+    keep_device: Option<Uuid>,
 ) -> Result<bool, ApiError> {
     let tx = conn.transaction()?;
     let updated = tx.execute(
         "UPDATE accounts
-         SET password_salt = ?1, password_hash = ?2, failed_logins = 0, locked_until = 0
+         SET auth_salt = ?1, verifier_hash = ?2, failed_logins = 0, locked_until = 0
          WHERE id = ?3",
-        params![salt.as_slice(), hash.as_slice(), account_id.to_string()],
+        params![
+            salt.as_slice(),
+            verifier_hash.as_slice(),
+            account_id.to_string()
+        ],
     )?;
     if updated == 0 {
         return Ok(false);
     }
-    tx.execute(
-        "DELETE FROM devices WHERE account_id = ?1",
-        params![account_id.to_string()],
-    )?;
+    match keep_device {
+        Some(device_id) => {
+            tx.execute(
+                "DELETE FROM devices WHERE account_id = ?1 AND id <> ?2",
+                params![account_id.to_string(), device_id.to_string()],
+            )?;
+        }
+        None => {
+            tx.execute(
+                "DELETE FROM devices WHERE account_id = ?1",
+                params![account_id.to_string()],
+            )?;
+        }
+    }
     tx.commit()?;
     Ok(true)
+}
+
+/// Read one `meta` value.
+fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, ApiError> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Write one `meta` value.
+fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), ApiError> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// The HMAC key behind dummy salts (ADR-0008 §3): 32 random bytes minted on
+/// first use, kept in `meta` (base64) so the answer for an unknown email is
+/// stable across restarts and tells an attacker nothing.
+pub fn dummy_salt_secret(conn: &Connection) -> Result<[u8; 32], ApiError> {
+    const KEY: &str = "dummy_salt_secret";
+    if let Some(raw) = meta_get(conn, KEY)? {
+        let decoded = STANDARD
+            .decode(raw.trim())
+            .map_err(|_| ApiError::Internal("meta.dummy_salt_secret is not base64".to_string()))?;
+        return decoded
+            .try_into()
+            .map_err(|_| ApiError::Internal("meta.dummy_salt_secret is not 32 bytes".to_string()));
+    }
+    let mut secret = [0u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    meta_set(conn, KEY, &STANDARD.encode(secret))?;
+    Ok(secret)
 }
 
 /// Record a failed login and return the `locked_until` value that was
@@ -692,16 +780,18 @@ fn uuid_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Uuid
     })
 }
 
-fn take16(bytes: Vec<u8>) -> Result<[u8; 16], ApiError> {
+/// A fixed-size column that schema v2 leaves nullable on legacy rows.
+fn optional_fixed<const N: usize>(
+    bytes: Option<Vec<u8>>,
+    column: &str,
+) -> Result<Option<[u8; N]>, ApiError> {
     bytes
-        .try_into()
-        .map_err(|_| ApiError::Internal("stored salt has the wrong length".to_string()))
-}
-
-fn take32(bytes: Vec<u8>) -> Result<[u8; 32], ApiError> {
-    bytes
-        .try_into()
-        .map_err(|_| ApiError::Internal("stored hash has the wrong length".to_string()))
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| ApiError::Internal(format!("stored {column} has the wrong length")))
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -745,8 +835,8 @@ mod tests {
             .expect("lookup")
             .expect("found");
         assert_eq!(auth.account, account);
-        assert_eq!(auth.salt, SALT);
-        assert_eq!(auth.hash, HASH);
+        assert_eq!(auth.salt, Some(SALT));
+        assert_eq!(auth.verifier_hash, Some(HASH));
         assert!(account_by_id(&conn, account.id).expect("by id").is_some());
         let duplicate = create_account(&conn, "ada@example.com", &SALT, &HASH, 200)
             .expect_err("duplicate refused");
@@ -774,22 +864,101 @@ mod tests {
     }
 
     #[test]
-    fn reset_password_swaps_material_and_revokes_devices() {
+    fn replace_verifier_swaps_material_and_revokes_devices() {
         let mut conn = memory_db();
         let account = create_account(&conn, "ada@example.com", &SALT, &HASH, 100).expect("create");
-        upsert_device(&conn, account.id, Uuid::new_v4(), "laptop", &[1; 32], 100).expect("device");
+        let laptop = Uuid::new_v4();
+        let phone = Uuid::new_v4();
+        upsert_device(&conn, account.id, laptop, "laptop", &[1; 32], 100).expect("device");
+        upsert_device(&conn, account.id, phone, "phone", &[2; 32], 100).expect("device");
         let new_salt = [8; 16];
-        let new_hash = [10; 32];
-        assert!(reset_password(&mut conn, account.id, &new_salt, &new_hash).expect("reset"));
+        let new_verifier = [10; 32];
+        // The CLI form (no device kept) revokes every device.
+        assert!(
+            replace_verifier(&mut conn, account.id, &new_salt, &new_verifier, None).expect("reset")
+        );
         let auth = account_by_email(&conn, "ada@example.com")
             .expect("lookup")
             .expect("found");
-        assert_eq!(auth.salt, new_salt);
-        assert_eq!(auth.hash, new_hash);
+        assert_eq!(auth.salt, Some(new_salt));
+        assert_eq!(auth.verifier_hash, Some(new_verifier));
         assert!(list_devices(&conn, account.id).expect("devices").is_empty());
+        // The in-app form keeps the caller's device (ADR-0008 §6).
+        upsert_device(&conn, account.id, laptop, "laptop", &[3; 32], 200).expect("device");
+        upsert_device(&conn, account.id, phone, "phone", &[4; 32], 200).expect("device");
         assert!(
-            !reset_password(&mut conn, Uuid::new_v4(), &new_salt, &new_hash).expect("missing"),
+            replace_verifier(&mut conn, account.id, &[11; 16], &[12; 32], Some(laptop),)
+                .expect("change")
+        );
+        let remaining = list_devices(&conn, account.id).expect("devices");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, laptop);
+        assert!(
+            !replace_verifier(&mut conn, Uuid::new_v4(), &new_salt, &new_verifier, None)
+                .expect("missing"),
             "unknown account is reported"
+        );
+    }
+
+    #[test]
+    fn v1_database_migrates_without_losing_the_account() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("writan-server.sqlite");
+        {
+            // A schema-v1 file: the M4 accounts table, a legacy row, a device.
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE accounts (
+                     id TEXT PRIMARY KEY,
+                     email TEXT NOT NULL UNIQUE,
+                     password_salt BLOB NOT NULL,
+                     password_hash BLOB NOT NULL,
+                     created_at INTEGER NOT NULL,
+                     failed_logins INTEGER NOT NULL DEFAULT 0,
+                     locked_until INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE TABLE devices (
+                     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                     id TEXT NOT NULL,
+                     name TEXT NOT NULL,
+                     token_hash BLOB NOT NULL UNIQUE,
+                     created_at INTEGER NOT NULL,
+                     last_seen_at INTEGER NOT NULL,
+                     PRIMARY KEY (account_id, id)
+                 );
+                 INSERT INTO meta VALUES ('schema_version', '1');
+                 INSERT INTO accounts VALUES ('11111111-1111-4111-8111-111111111111',
+                     'ada@example.com', x'00', x'00', 100, 0, 0);
+                 INSERT INTO devices VALUES ('11111111-1111-4111-8111-111111111111',
+                     '22222222-2222-4222-8222-222222222222', 'laptop', x'01', 100, 100);",
+            )
+            .expect("v1 file");
+        }
+        let conn = open(&path).expect("migrate");
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schema_version");
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+        let auth = account_by_email(&conn, "ada@example.com")
+            .expect("lookup")
+            .expect("found");
+        assert_eq!(auth.salt, None, "a legacy row has no verifier material");
+        assert_eq!(auth.verifier_hash, None);
+        assert_eq!(
+            list_devices(&conn, auth.account.id).expect("devices").len(),
+            1,
+            "devices survive the migration"
+        );
+        // The old columns are gone.
+        assert!(
+            conn.execute("SELECT password_salt FROM accounts", [])
+                .is_err(),
+            "password_salt was dropped"
         );
     }
 

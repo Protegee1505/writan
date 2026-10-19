@@ -1,6 +1,6 @@
-//! The HTTP surface (ADR-0007 §§2–7). Chunks A–E: health, accounts,
-//! sessions, vaults, the blob API, the change feed and its SSE stream, and
-//! pairing.
+//! The HTTP surface (ADR-0007 §§2–7, ADR-0008 §§2–3,6). Health, the salt
+//! lookup, accounts, sessions, the verifier change, vaults, the blob API, the
+//! change feed and its SSE stream, and pairing.
 //!
 //! Handlers take the single writer connection behind a mutex — cheap at one
 //! user per instance (ADR-0007 §8); a connection pool is a later change with
@@ -21,6 +21,8 @@ use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post, put};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use futures_util::stream::unfold;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -64,17 +66,21 @@ pub struct AppState {
     pub config: Arc<ServerConfig>,
     /// Live change events for the SSE streams.
     pub events: broadcast::Sender<FeedEvent>,
+    /// The HMAC key behind dummy salts for unknown emails (ADR-0008 §3).
+    dummy_secret: [u8; 32],
 }
 
 impl AppState {
-    /// Wrap an open connection.
-    pub fn new(conn: Connection, config: ServerConfig) -> Self {
+    /// Wrap an open connection, loading (or minting) the dummy-salt secret.
+    pub fn new(conn: Connection, config: ServerConfig) -> Result<Self, ApiError> {
+        let dummy_secret = db::dummy_salt_secret(&conn)?;
         let (events, _) = broadcast::channel(FEED_CAPACITY);
-        Self {
+        Ok(Self {
             db: Arc::new(Mutex::new(conn)),
             config: Arc::new(config),
             events,
-        }
+            dummy_secret,
+        })
     }
 
     /// The shared connection; a panicked handler cannot poison the server.
@@ -92,8 +98,10 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/accounts", post(create_account))
+        .route("/api/v1/accounts/salt", get(account_salt))
         .route("/api/v1/sessions", post(login).delete(logout))
         .route("/api/v1/account", get(account_info))
+        .route("/api/v1/account/verifier", post(change_verifier))
         .route("/api/v1/vaults", get(list_vaults))
         .route("/api/v1/vaults/{vault_id}", put(create_vault))
         .route("/api/v1/vaults/{vault_id}/blobs", get(list_blobs))
@@ -117,12 +125,40 @@ struct Health {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Credentials {
+struct SaltQuery {
     email: String,
-    password: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SaltResponse {
+    salt: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterRequest {
+    email: String,
+    salt: String,
+    verifier: String,
     device_id: Uuid,
     device_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignInRequest {
+    email: String,
+    verifier: String,
+    device_id: Uuid,
+    device_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangeVerifierRequest {
+    old_verifier: String,
+    salt: String,
+    verifier: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,21 +251,38 @@ async fn health() -> Json<Health> {
     })
 }
 
-/// `POST /api/v1/accounts` — register and sign the device in.
+/// `GET /api/v1/accounts/salt?email=` — the account's `salt_auth`, or a dummy
+/// salt for an unknown email (ADR-0008 §§2–3). The shape is identical either
+/// way, so the endpoint cannot be used to enumerate accounts.
+async fn account_salt(
+    State(state): State<AppState>,
+    Query(query): Query<SaltQuery>,
+) -> Result<Json<SaltResponse>, ApiError> {
+    let email = auth::normalize_email(&query.email)?;
+    let conn = state.conn();
+    let salt = db::account_by_email(&conn, &email)?
+        .and_then(|material| material.salt)
+        .unwrap_or_else(|| auth::dummy_salt(&state.dummy_secret, &email));
+    Ok(Json(SaltResponse {
+        salt: STANDARD.encode(salt),
+    }))
+}
+
+/// `POST /api/v1/accounts` — register with a verifier and sign the device in.
 async fn create_account(
     State(state): State<AppState>,
-    Json(request): Json<Credentials>,
+    Json(request): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<Session>), ApiError> {
     if !state.config.registration_open {
         return Err(ApiError::RegistrationClosed);
     }
     let email = auth::normalize_email(&request.email)?;
-    auth::validate_password(&request.password)?;
+    let salt = auth::parse_salt(&request.salt)?;
+    let verifier = auth::parse_verifier(&request.verifier)?;
     let device_name = clean_device_name(&request.device_name);
-    let (salt, hash) = auth::hash_password(&request.password)?;
     let now = now_unix();
     let conn = state.conn();
-    let account = db::create_account(&conn, &email, &salt, &hash, now)?;
+    let account = db::create_account(&conn, &email, &salt, &auth::hash_verifier(&verifier), now)?;
     let token = auth::generate_token();
     db::upsert_device(
         &conn,
@@ -250,24 +303,30 @@ async fn create_account(
     ))
 }
 
-/// `POST /api/v1/sessions` — email + password, answered with a fresh device
+/// `POST /api/v1/sessions` — email + verifier, answered with a fresh device
 /// token (the sign-in of both shells).
 async fn login(
     State(state): State<AppState>,
-    Json(request): Json<Credentials>,
+    Json(request): Json<SignInRequest>,
 ) -> Result<Json<Session>, ApiError> {
     let email = auth::normalize_email(&request.email)?;
+    let verifier = auth::parse_verifier(&request.verifier)?;
     let device_name = clean_device_name(&request.device_name);
     let now = now_unix();
     let conn = state.conn();
     let Some(material) = db::account_by_email(&conn, &email)? else {
-        auth::verify_dummy(&request.password);
         return Err(ApiError::Unauthorized);
+    };
+    // A row that predates schema v2 has no verifier material; the 403 (before
+    // the lockout check) is what sends its owner to `reset-password`
+    // (ADR-0008 §4).
+    let Some(stored) = material.verifier_hash else {
+        return Err(ApiError::LegacyAccount);
     };
     if material.account.locked_until > now {
         return Err(ApiError::Locked);
     }
-    if !auth::verify_password(&request.password, &material.salt, &material.hash) {
+    if !auth::verifier_matches(&verifier, &stored) {
         let locked_until =
             db::record_login_failure(&conn, material.account.id, &state.config.lockout, now)?;
         return Err(if locked_until > now {
@@ -292,6 +351,51 @@ async fn login(
         request.device_id,
         token,
     )))
+}
+
+/// `POST /api/v1/account/verifier` — change the password: replace the salt and
+/// verifier hash after checking the old verifier, and revoke every other
+/// device (ADR-0008 §6). The caller's own token stays valid.
+async fn change_verifier(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ChangeVerifierRequest>,
+) -> Result<StatusCode, ApiError> {
+    let now = now_unix();
+    let mut conn = state.conn();
+    // Authentication first: an unauthenticated caller learns nothing about
+    // the body, and the material is only parsed for the account that sent it.
+    let (account, device) = require_auth(&conn, &headers)?;
+    let old_verifier = auth::parse_verifier(&request.old_verifier)?;
+    let salt = auth::parse_salt(&request.salt)?;
+    let verifier = auth::parse_verifier(&request.verifier)?;
+    let Some(material) = db::account_by_email(&conn, &account.email)? else {
+        return Err(ApiError::Unauthorized);
+    };
+    let Some(stored) = material.verifier_hash else {
+        return Err(ApiError::LegacyAccount);
+    };
+    if material.account.locked_until > now {
+        return Err(ApiError::Locked);
+    }
+    if !auth::verifier_matches(&old_verifier, &stored) {
+        let locked_until = db::record_login_failure(&conn, account.id, &state.config.lockout, now)?;
+        return Err(if locked_until > now {
+            ApiError::Locked
+        } else {
+            ApiError::Unauthorized
+        });
+    }
+    if !db::replace_verifier(
+        &mut conn,
+        account.id,
+        &salt,
+        &auth::hash_verifier(&verifier),
+        Some(device.id),
+    )? {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/v1/pairings` — mint a single-use code another device can trade
