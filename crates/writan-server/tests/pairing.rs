@@ -3,6 +3,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use base64::Engine as _;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
@@ -11,7 +12,7 @@ use writan_server::{AppState, ServerConfig, app, db};
 
 fn state_with(config: ServerConfig) -> AppState {
     let conn = db::open(std::path::Path::new(":memory:")).expect("in-memory database");
-    AppState::new(conn, config)
+    AppState::new(conn, config).expect("state")
 }
 
 async fn call(state: &AppState, request: Request<Body>) -> (StatusCode, Value) {
@@ -48,19 +49,46 @@ fn request(method: &str, path: &str, body: Value, token: Option<&str>) -> Reques
 }
 
 /// Register an account (which signs the device in) and give back its token.
+/// The helper derives the verifier from the password against the server's
+/// salt, as the shells do (ADR-0008 §2).
 async fn sign_up(state: &AppState, email: &str, device: Uuid) -> String {
+    let salt = salt_for(state, email).await;
+    let verifier = verifier_for("correct horse", &salt);
     let (status, answer) = call(
         state,
         request(
             "POST",
             "/api/v1/accounts",
-            json!({"email": email, "password": "correct horse", "deviceId": device, "deviceName": "laptop"}),
+            json!({"email": email, "salt": salt, "verifier": verifier,
+                   "deviceId": device, "deviceName": "laptop"}),
             None,
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{answer}");
     answer["token"].as_str().expect("token").to_string()
+}
+
+/// The salt a client derives its verifier against (ADR-0008 §2).
+async fn salt_for(state: &AppState, email: &str) -> String {
+    let (status, body) = call(
+        state,
+        request(
+            "GET",
+            &format!("/api/v1/accounts/salt?email={email}"),
+            json!({}),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["salt"].as_str().expect("salt").to_string()
+}
+
+fn verifier_for(password: &str, salt: &str) -> String {
+    let salt = writan_server::auth::parse_salt(salt).expect("salt is valid");
+    let verifier = writan_crypto::derive_kek(password, &salt).expect("kdf");
+    base64::engine::general_purpose::STANDARD.encode(verifier)
 }
 
 async fn mint(state: &AppState, token: &str) -> (StatusCode, Value) {

@@ -1,8 +1,12 @@
-//! End-to-end HTTP tests for the chunk A surface (ADR-0007 §§2–4), driven
-//! through the real router with an in-memory database.
+//! End-to-end HTTP tests for the account surface (ADR-0007 §§2–4,
+//! ADR-0008 §§2–3,6), driven through the real router with an in-memory
+//! database. The helpers model a client: fetch the salt, derive the verifier
+//! from the password, send the verifier.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
@@ -16,7 +20,7 @@ fn state() -> AppState {
 
 fn state_with(config: ServerConfig) -> AppState {
     let conn = db::open(std::path::Path::new(":memory:")).expect("in-memory database");
-    AppState::new(conn, config)
+    AppState::new(conn, config).expect("state")
 }
 
 async fn call_raw(state: &AppState, request: Request<Body>) -> (StatusCode, Vec<u8>) {
@@ -78,13 +82,43 @@ fn blob_request(
         .expect("request")
 }
 
-fn credentials(email: &str, password: &str, device_id: Uuid, device_name: &str) -> Value {
-    json!({
-        "email": email,
-        "password": password,
-        "deviceId": device_id,
-        "deviceName": device_name,
-    })
+/// Percent-encode an email for the query string, as the clients must: keep
+/// `@` and the unreserved characters, encode the rest (`+` in a form-encoded
+/// query means a space, so it gets encoded too).
+fn encode_email(email: &str) -> String {
+    let mut out = String::new();
+    for byte in email.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'@' | b'.' | b'-' | b'_') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The salt a client would derive its verifier against (ADR-0008 §2): the
+/// account's own, or the server's stable dummy for an unknown email.
+async fn salt_for(state: &AppState, email: &str) -> String {
+    let (status, body) = call(
+        state,
+        request(
+            "GET",
+            &format!("/api/v1/accounts/salt?email={}", encode_email(email)),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["salt"].as_str().expect("salt").to_string()
+}
+
+/// `Argon2id(password, salt)` as both shells compute it, base64.
+fn verifier_for(password: &str, salt: &str) -> String {
+    let salt = writan_server::auth::parse_salt(salt).expect("salt is valid");
+    let verifier = writan_crypto::derive_kek(password, &salt).expect("kdf");
+    STANDARD.encode(verifier)
 }
 
 async fn create_account(
@@ -94,12 +128,20 @@ async fn create_account(
     device_id: Uuid,
     device_name: &str,
 ) -> (StatusCode, Value) {
+    let salt = salt_for(state, email).await;
+    let verifier = verifier_for(password, &salt);
     call(
         state,
         request(
             "POST",
             "/api/v1/accounts",
-            Some(credentials(email, password, device_id, device_name)),
+            Some(json!({
+                "email": email,
+                "salt": salt,
+                "verifier": verifier,
+                "deviceId": device_id,
+                "deviceName": device_name,
+            })),
             None,
         ),
     )
@@ -113,13 +155,49 @@ async fn sign_in(
     device_id: Uuid,
     device_name: &str,
 ) -> (StatusCode, Value) {
+    let salt = salt_for(state, email).await;
+    let verifier = verifier_for(password, &salt);
     call(
         state,
         request(
             "POST",
             "/api/v1/sessions",
-            Some(credentials(email, password, device_id, device_name)),
+            Some(json!({
+                "email": email,
+                "verifier": verifier,
+                "deviceId": device_id,
+                "deviceName": device_name,
+            })),
             None,
+        ),
+    )
+    .await
+}
+
+/// Change the account credential from `old_password` to `new_password`, as
+/// the shells do (ADR-0008 §6).
+async fn change_verifier(
+    state: &AppState,
+    email: &str,
+    token: &str,
+    old_password: &str,
+    new_password: &str,
+) -> (StatusCode, Value) {
+    let old_salt = salt_for(state, email).await;
+    let old_verifier = verifier_for(old_password, &old_salt);
+    let new_salt = writan_crypto::random_salt();
+    let new_verifier = writan_crypto::derive_kek(new_password, &new_salt).expect("kdf");
+    call(
+        state,
+        request(
+            "POST",
+            "/api/v1/account/verifier",
+            Some(json!({
+                "oldVerifier": old_verifier,
+                "salt": STANDARD.encode(new_salt),
+                "verifier": STANDARD.encode(new_verifier),
+            })),
+            Some(token),
         ),
     )
     .await
@@ -197,20 +275,64 @@ async fn duplicate_email_is_refused_case_insensitively() {
 }
 
 #[tokio::test]
-async fn bad_email_and_short_password_are_refused() {
+async fn bad_email_and_malformed_verifier_material_are_refused() {
     let state = state();
-    let (status, _) = create_account(
+    // A malformed email is refused by the salt lookup (which the client calls
+    // first) and by registration itself.
+    let (status, answer) = call(
         &state,
-        "not-an-email",
+        request(
+            "GET",
+            "/api/v1/accounts/salt?email=not-an-email",
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    let (status, answer) = call(
+        &state,
+        request(
+            "POST",
+            "/api/v1/accounts",
+            Some(
+                json!({"email": "not-an-email", "salt": STANDARD.encode([7u8; 16]),
+                       "verifier": STANDARD.encode([9u8; 32]),
+                       "deviceId": Uuid::new_v4(), "deviceName": "laptop"}),
+            ),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    // The password policy lives in the clients (ADR-0008 §1); the server
+    // refuses malformed verifier material, whoever sent it.
+    let good = STANDARD.encode([9u8; 32]);
+    for body in [
+        json!({"email": "ada@example.com", "salt": "not base64", "verifier": good,
+               "deviceId": Uuid::new_v4(), "deviceName": "laptop"}),
+        json!({"email": "ada@example.com", "salt": STANDARD.encode([7u8; 16]),
+               "verifier": "short", "deviceId": Uuid::new_v4(), "deviceName": "laptop"}),
+        json!({"email": "ada@example.com", "salt": STANDARD.encode([7u8; 15]),
+               "verifier": good, "deviceId": Uuid::new_v4(), "deviceName": "laptop"}),
+    ] {
+        let (status, answer) = call(
+            &state,
+            request("POST", "/api/v1/accounts", Some(body), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    }
+    // A well-formed registration for the same address still works.
+    let (status, body) = create_account(
+        &state,
+        "ada@example.com",
         "correct horse",
         Uuid::new_v4(),
         "laptop",
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) =
-        create_account(&state, "ada@example.com", "short", Uuid::new_v4(), "laptop").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
 #[tokio::test]
@@ -278,7 +400,8 @@ async fn wrong_password_is_unauthorized() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    // An unknown email answers the same way, after the same kind of work.
+    // An unknown email answers the same way; the client derived its verifier
+    // against the stable dummy salt for it (ADR-0008 §3).
     let (status, _) = sign_in(
         &state,
         "nobody@example.com",
@@ -344,6 +467,188 @@ async fn repeated_failures_lock_the_account() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "the lock expires: {body}");
+}
+
+#[tokio::test]
+async fn salt_lookup_is_stable_for_unknown_emails() {
+    let state = state();
+    let first = salt_for(&state, "nobody@example.com").await;
+    let second = salt_for(&state, "nobody@example.com").await;
+    assert_eq!(first, second, "the dummy salt is stable per email");
+    assert_eq!(STANDARD.decode(&first).expect("base64").len(), 16);
+    assert_ne!(
+        first,
+        salt_for(&state, "somebody@example.com").await,
+        "and distinct per email"
+    );
+    assert_eq!(
+        first,
+        salt_for(&state, "  Nobody@Example.com  ").await,
+        "the email is normalized before the salt is derived"
+    );
+    // A real account answers with the salt its registration used: the sign-in
+    // below derives against it, so a match proves the lookup agreed.
+    create_account(
+        &state,
+        "ada@example.com",
+        "correct horse",
+        Uuid::new_v4(),
+        "laptop",
+    )
+    .await;
+    let (status, body) = sign_in(
+        &state,
+        "ada@example.com",
+        "correct horse",
+        Uuid::new_v4(),
+        "phone",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn changing_the_verifier_revokes_other_devices() {
+    let state = state();
+    let (_, laptop) = create_account(
+        &state,
+        "ada@example.com",
+        "correct horse",
+        Uuid::new_v4(),
+        "laptop",
+    )
+    .await;
+    let laptop_token = token_of(&laptop);
+    let (_, phone) = sign_in(
+        &state,
+        "ada@example.com",
+        "correct horse",
+        Uuid::new_v4(),
+        "phone",
+    )
+    .await;
+    let phone_token = token_of(&phone);
+
+    // The old verifier is required; a wrong one is unauthorized.
+    let (status, body) = change_verifier(
+        &state,
+        "ada@example.com",
+        &laptop_token,
+        "wrong password",
+        "new correct horse",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    // A token is required too.
+    let (status, _) = call(
+        &state,
+        request(
+            "POST",
+            "/api/v1/account/verifier",
+            Some(json!({"oldVerifier": "x", "salt": "x", "verifier": "x"})),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = change_verifier(
+        &state,
+        "ada@example.com",
+        &laptop_token,
+        "correct horse",
+        "new correct horse",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    // The caller keeps its token; the other device was revoked.
+    let (status, body) = call(
+        &state,
+        request("GET", "/api/v1/account", None, Some(&laptop_token)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["devices"].as_array().expect("devices").len(),
+        1,
+        "only the caller's device is left"
+    );
+    let (status, _) = call(
+        &state,
+        request("GET", "/api/v1/account", None, Some(&phone_token)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the other device is out");
+
+    // The new password signs in, the old one no longer does.
+    let (status, body) = sign_in(
+        &state,
+        "ada@example.com",
+        "new correct horse",
+        Uuid::new_v4(),
+        "desktop",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = sign_in(
+        &state,
+        "ada@example.com",
+        "correct horse",
+        Uuid::new_v4(),
+        "desktop",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn legacy_accounts_are_told_to_reset_the_password() {
+    let state = state();
+    // A row that predates schema v2: no verifier material (ADR-0008 §4).
+    {
+        let conn = state.db.lock().expect("connection");
+        conn.execute(
+            "INSERT INTO accounts (id, email, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![Uuid::new_v4().to_string(), "legacy@example.com", 100],
+        )
+        .expect("legacy row");
+    }
+    let salt = salt_for(&state, "legacy@example.com").await;
+    assert_eq!(
+        STANDARD.decode(&salt).expect("base64").len(),
+        16,
+        "dummy salt"
+    );
+    let (status, body) = sign_in(
+        &state,
+        "legacy@example.com",
+        "correct horse",
+        Uuid::new_v4(),
+        "laptop",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error")
+            .contains("reset-password"),
+        "the answer names the migration: {body}"
+    );
+    // The legacy row has no device, so no token can exist for it: neither
+    // sign-in nor a verifier change can reach the account before the CLI
+    // migration.
+    let token = "some-token";
+    let (status, _) = change_verifier(
+        &state,
+        "legacy@example.com",
+        token,
+        "correct horse",
+        "new correct horse",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no device, no change");
 }
 
 #[tokio::test]

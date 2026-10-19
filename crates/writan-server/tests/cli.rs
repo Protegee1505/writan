@@ -57,12 +57,21 @@ fn version_and_help_answer() {
 }
 
 #[test]
-fn reset_password_swaps_the_hash_and_revokes_devices() {
+fn reset_password_swaps_the_verifier_and_revokes_devices() {
     let dir = tempfile::tempdir().expect("tempdir");
     let database = dir.path().join("writan-server.sqlite");
     let conn = db::open(&database).expect("database");
-    let (salt, hash) = auth::hash_password("old password").expect("hash");
-    let account = db::create_account(&conn, "ada@example.com", &salt, &hash, 100).expect("create");
+    // An account registered the way a client registers: salt + verifier hash.
+    let salt = writan_crypto::random_salt();
+    let verifier = writan_crypto::derive_kek("old password", &salt).expect("kdf");
+    let account = db::create_account(
+        &conn,
+        "ada@example.com",
+        &salt,
+        &auth::hash_verifier(&verifier),
+        100,
+    )
+    .expect("create");
     db::upsert_device(
         &conn,
         account.id,
@@ -94,22 +103,48 @@ fn reset_password_swaps_the_hash_and_revokes_devices() {
     let found = db::account_by_email(&conn, "ada@example.com")
         .expect("lookup")
         .expect("found");
-    assert!(auth::verify_password(
-        "new password",
-        &found.salt,
-        &found.hash
-    ));
-    assert!(!auth::verify_password(
-        "old password",
-        &found.salt,
-        &found.hash
-    ));
+    let stored = found.verifier_hash.expect("verifier hash");
+    let new_salt = found.salt.expect("auth salt");
+    let new_verifier = writan_crypto::derive_kek("new password", &new_salt).expect("kdf");
+    assert!(auth::verifier_matches(&new_verifier, &stored));
+    let old_verifier = writan_crypto::derive_kek("old password", &new_salt).expect("kdf");
+    assert!(!auth::verifier_matches(&old_verifier, &stored));
     assert!(
         db::list_devices(&conn, account.id)
             .expect("devices")
             .is_empty(),
         "the reset revokes every device"
     );
+}
+
+#[test]
+fn reset_password_migrates_a_legacy_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let database = dir.path().join("writan-server.sqlite");
+    let conn = db::open(&database).expect("database");
+    // A row that predates schema v2: no verifier material (ADR-0008 §4).
+    conn.execute(
+        "INSERT INTO accounts (id, email, created_at)
+         VALUES ('11111111-1111-4111-8111-111111111111', 'legacy@example.com', 100)",
+        [],
+    )
+    .expect("legacy row");
+    drop(conn);
+
+    let output = run_in(
+        dir.path(),
+        &["reset-password", "legacy@example.com"],
+        Some("new password"),
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let conn = db::open(&database).expect("reopen");
+    let found = db::account_by_email(&conn, "legacy@example.com")
+        .expect("lookup")
+        .expect("found");
+    let salt = found.salt.expect("the CLI minted an auth salt");
+    let stored = found.verifier_hash.expect("the CLI minted a verifier hash");
+    let verifier = writan_crypto::derive_kek("new password", &salt).expect("kdf");
+    assert!(auth::verifier_matches(&verifier, &stored));
 }
 
 #[test]

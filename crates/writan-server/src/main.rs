@@ -13,9 +13,11 @@ writan-server — optional Writan sync server (ADR-0007)
 Usage:
   writan-server [serve]              start the HTTP server (default)
   writan-server reset-password EMAIL set a new password for EMAIL and revoke
-                                     every device of that account; the new
-                                     password comes from WRITAN_NEW_PASSWORD
-                                     or, when unset, from stdin
+                                     every device of that account; also the
+                                     migration for an account that predates
+                                     schema v2. The new password comes from
+                                     WRITAN_NEW_PASSWORD or, when unset, from
+                                     stdin
   writan-server --version | -V       print the version
   writan-server --help | -h          print this help
 
@@ -78,7 +80,7 @@ fn serve() -> Result<(), String> {
     std::fs::create_dir_all(&config.data_dir)
         .map_err(|error| format!("cannot create {}: {error}", config.data_dir.display()))?;
     let conn = db::open(&database_path(&config)).map_err(reason)?;
-    let state = AppState::new(conn, config.clone());
+    let state = AppState::new(conn, config.clone()).map_err(reason)?;
     let listener = std::net::TcpListener::bind(("0.0.0.0", config.port))
         .map_err(|error| format!("cannot bind port {}: {error}", config.port))?;
     let address = listener
@@ -92,18 +94,29 @@ fn serve() -> Result<(), String> {
     writan_server::serve_blocking(listener, state).map_err(|error| format!("server: {error}"))
 }
 
-/// Replace an account's password and revoke its devices (ADR-0007 §2).
+/// Replace an account's verifier material and revoke its devices
+/// (ADR-0007 §2, ADR-0008 §4/§6). The new password is derived into a verifier
+/// exactly as a client would, so a legacy row is migrated by the same run.
 fn reset_password(email: &str) -> Result<(), String> {
     let config = ServerConfig::from_env()?;
     let email = auth::normalize_email(email).map_err(reason)?;
     let password = new_password()?;
     auth::validate_password(&password).map_err(reason)?;
-    let (salt, hash) = auth::hash_password(&password).map_err(reason)?;
+    let salt = writan_crypto::random_salt();
+    let verifier = writan_crypto::derive_kek(&password, &salt).map_err(reason)?;
     let mut conn = db::open(&database_path(&config)).map_err(reason)?;
     let Some(found) = db::account_by_email(&conn, &email).map_err(reason)? else {
         return Err(format!("no account for {email}"));
     };
-    if !db::reset_password(&mut conn, found.account.id, &salt, &hash).map_err(reason)? {
+    if !db::replace_verifier(
+        &mut conn,
+        found.account.id,
+        &salt,
+        &auth::hash_verifier(&verifier),
+        None,
+    )
+    .map_err(reason)?
+    {
         return Err(format!("no account for {email}"));
     }
     eprintln!("password updated for {email}; all its devices were revoked");

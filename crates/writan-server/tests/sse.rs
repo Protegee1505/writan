@@ -7,8 +7,16 @@ use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// `Argon2id(password, salt)`, base64 — what a client sends (ADR-0008 §2).
+fn verifier_for(password: &str, salt: &str) -> String {
+    let salt = writan_server::auth::parse_salt(salt).expect("salt is valid");
+    let verifier = writan_crypto::derive_kek(password, &salt).expect("kdf");
+    base64::engine::general_purpose::STANDARD.encode(verifier)
+}
 
 /// Kill the child even when an assertion below fails.
 struct Guard(Child);
@@ -129,14 +137,28 @@ fn the_event_stream_replays_and_follows_live_writes() {
     }
 
     let device = Uuid::new_v4();
+    let email = "ada@example.com";
+    let salt_response = call(
+        port,
+        "GET",
+        &format!("/api/v1/accounts/salt?email={email}"),
+        None,
+        b"",
+    );
+    assert!(salt_response.starts_with("HTTP/1.1 200"), "{salt_response}");
+    let salt = body_of(&salt_response)["salt"]
+        .as_str()
+        .expect("salt")
+        .to_string();
     let account = call(
         port,
         "POST",
         "/api/v1/accounts",
         None,
         json!({
-            "email": "ada@example.com",
-            "password": "correct horse",
+            "email": email,
+            "salt": salt,
+            "verifier": verifier_for("correct horse", &salt),
             "deviceId": device,
             "deviceName": "laptop",
         })

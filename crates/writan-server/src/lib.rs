@@ -1,14 +1,12 @@
-//! Optional self-hosted Writan sync server (ADR-0007).
+//! Optional self-hosted Writan sync server (ADR-0007, ADR-0008).
 //!
 //! The server is a dumb, untrusted blob store with accounts: it persists the
 //! encrypted blob tree from ADR-0005 and a change feed, and never sees keys
-//! or plaintext. Accounts and bearer tokens guard *access*; the E2EE key
-//! hierarchy stays client-side. Configuration is environment-only; the
-//! binary adds `serve` and an admin `reset-password` command.
-//!
-//! Milestone M4 lands in chunks (ADR-0007 §12): accounts, device sessions,
-//! vaults, the blob API, the change feed and its SSE stream, and pairing are
-//! in; the Docker image and deploy doc follow.
+//! or plaintext. Since ADR-0008 the credential it checks is a *verifier* the
+//! client derived from the one password — accounts and bearer tokens guard
+//! *access*; the E2EE key hierarchy stays client-side. Configuration is
+//! environment-only; the binary adds `serve` and the admin `reset-password`
+//! command (which also migrates an account that predates schema v2).
 
 #![forbid(unsafe_code)]
 
