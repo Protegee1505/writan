@@ -11,14 +11,16 @@ use std::path::{Path, PathBuf};
 use writan_core::vault::{Note, Vault};
 use writan_sync::server::{ServerHttpTransport, ServerLogin, ServerTarget};
 use writan_sync::{
-    Connected, FolderVault, ServerConnect, ServerConnection, ServerPairing, SessionError, SyncKind,
-    SyncReport, SyncSession, SyncTarget, connect_server, create_pairing, join_with_code,
-    pair_payload, parse_pair_payload, run_pass,
+    Connected, FolderVault, KeyringPurpose, ServerConnect, ServerConnection, ServerPairing,
+    SessionError, SyncKind, SyncReport, SyncSession, SyncTarget, connect_server, create_pairing,
+    join_with_code, keyring_generations, pair_payload, parse_pair_payload, push_generation,
+    rewrap_generation, run_pass, unlock_keyring,
 };
 
 const EMAIL: &str = "ada@example.com";
-const ACCOUNT_PASSWORD: &str = "account secret";
-const SYNC_PASSWORD: &str = "shared secret";
+/// One password signs the device in and opens the keyring (ADR-0008).
+const PASSWORD: &str = "shared secret";
+const NEW_PASSWORD: &str = "brand new secret";
 
 /// Start the real server on an ephemeral port; the thread lives until the
 /// test process ends.
@@ -31,7 +33,8 @@ fn spawn_server(data_dir: &Path) -> String {
             data_dir: data_dir.to_path_buf(),
             ..writan_server::ServerConfig::default()
         },
-    );
+    )
+    .expect("state");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let addr = listener.local_addr().expect("addr");
@@ -95,23 +98,24 @@ impl End {
     }
 }
 
+/// One device connecting with the one password; no fallback credential (the
+/// fresh-device flow ADR-0008 is about).
 fn connect(
     url: &str,
     end: &End,
     device_name: &str,
     create_account: bool,
-    sync_password: &str,
-    account_password: &str,
+    password: &str,
 ) -> Result<Connected, SessionError> {
     connect_server(
         &ServerConnect {
             url: url.to_string(),
             email: EMAIL.to_string(),
-            account_password: account_password.to_string(),
             device_name: device_name.to_string(),
             create_account,
         },
-        sync_password,
+        password,
+        None,
         Some(&end.root),
         &end.state_path,
     )
@@ -119,11 +123,11 @@ fn connect(
 
 /// Sign the connected device in again to get its token (the connect flow
 /// keeps it in the keychain, which tests do not have).
-fn token(url: &str, connected: &Connected, device_name: &str) -> String {
+fn token(url: &str, connected: &Connected, device_name: &str, password: &str) -> String {
     writan_sync::server::login(&ServerLogin {
         url: url.to_string(),
         email: EMAIL.to_string(),
-        password: ACCOUNT_PASSWORD.to_string(),
+        password: password.to_string(),
         device_id: connected.session.device,
         device_name: device_name.to_string(),
     })
@@ -157,13 +161,16 @@ fn two_devices_converge_through_a_writan_server() {
 
     // Device A registers the account and owns a fresh vault: the recovery
     // code comes back exactly once.
-    let mut a_connected =
-        connect(&url, &a, "laptop", true, SYNC_PASSWORD, ACCOUNT_PASSWORD).expect("connect a");
+    let mut a_connected = connect(&url, &a, "laptop", true, PASSWORD).expect("connect a");
     assert_eq!(a_connected.config.kind, SyncKind::Server);
     assert!(a_connected.recovery_code.is_some());
     let vault_id = a_connected.session.vault_id;
 
-    let target_a = target(&url, &token(&url, &a_connected, "laptop"), Some(vault_id));
+    let target_a = target(
+        &url,
+        &token(&url, &a_connected, "laptop", PASSWORD),
+        Some(vault_id),
+    );
     a.vault.create("Alpha", &[]).expect("create");
     a.edit("Alpha", "from a\n", "2026-03-01T10:00:00Z");
     let report = a.sync(&mut a_connected.session, &target_a);
@@ -187,13 +194,14 @@ fn two_devices_converge_through_a_writan_server() {
         "note text never reaches the server in the clear"
     );
 
-    // Device B joins with the account password, discovers the vault from the
-    // server (`vault_id: None` in its target) and adopts the note.
-    let mut b_connected =
-        connect(&url, &b, "phone", false, SYNC_PASSWORD, ACCOUNT_PASSWORD).expect("join b");
+    // Device B — a fresh machine — joins with the address, the email and the
+    // same password: one credential signs in and opens the keyring. It
+    // discovers the vault from the server (`vault_id: None` in its target)
+    // and adopts the note.
+    let mut b_connected = connect(&url, &b, "phone", false, PASSWORD).expect("join b");
     assert!(b_connected.recovery_code.is_none(), "the keyring exists");
     assert_eq!(b_connected.session.vault_id, vault_id);
-    let target_b = target(&url, &token(&url, &b_connected, "phone"), None);
+    let target_b = target(&url, &token(&url, &b_connected, "phone", PASSWORD), None);
     assert_eq!(b.sync(&mut b_connected.session, &target_b).adopted, 1);
     assert_eq!(b.body_of("Alpha").as_deref(), Some("from a\n"));
 
@@ -210,35 +218,33 @@ fn two_devices_converge_through_a_writan_server() {
 }
 
 #[test]
-fn joining_needs_the_right_passwords() {
+fn joining_needs_the_right_password() {
     let root = tempfile::tempdir().expect("tempdir");
     let url = spawn_server(&root.path().join("data"));
     let a = End::new(root.path(), "a");
     let b = End::new(root.path(), "b");
-    connect(&url, &a, "laptop", true, SYNC_PASSWORD, ACCOUNT_PASSWORD).expect("connect a");
+    connect(&url, &a, "laptop", true, PASSWORD).expect("connect a");
 
-    // The account password gates the sign-in.
-    let wrong_account = connect(&url, &b, "phone", false, SYNC_PASSWORD, "nope");
-    assert!(matches!(wrong_account, Err(SessionError::Server(_))));
+    // The wrong password does not sign in — and so never reaches the keyring.
+    let wrong = connect(&url, &b, "phone", false, "not the password");
+    assert!(matches!(wrong, Err(SessionError::Server(_))));
 
-    // The sync password gates the keyring: the account signs in, the join
-    // still fails, and nothing is created for the half-joined device.
-    let wrong_sync = connect(&url, &b, "phone", false, "wrong secret", ACCOUNT_PASSWORD);
-    assert!(wrong_sync.is_err(), "a wrong sync password must not join");
+    // The right one joins.
+    let joined = connect(&url, &b, "phone", false, PASSWORD).expect("join b");
+    assert!(joined.recovery_code.is_none());
 }
 
 #[test]
-fn joining_by_pairing_code_skips_the_account_password() {
+fn joining_by_pairing_code_skips_the_sign_in() {
     let root = tempfile::tempdir().expect("tempdir");
     let url = spawn_server(&root.path().join("data"));
     let a = End::new(root.path(), "a");
     let b = End::new(root.path(), "b");
 
     // A registers, publishes a note, and mints a pairing code.
-    let mut a_connected =
-        connect(&url, &a, "laptop", true, SYNC_PASSWORD, ACCOUNT_PASSWORD).expect("connect a");
+    let mut a_connected = connect(&url, &a, "laptop", true, PASSWORD).expect("connect a");
     let vault_id = a_connected.session.vault_id;
-    let a_token = token(&url, &a_connected, "laptop");
+    let a_token = token(&url, &a_connected, "laptop", PASSWORD);
     let target_a = target(&url, &a_token, Some(vault_id));
     a.vault.create("Alpha", &[]).expect("create");
     a.edit("Alpha", "from a\n", "2026-03-01T10:00:00Z");
@@ -255,19 +261,20 @@ fn joining_by_pairing_code_skips_the_account_password() {
         device_name: device_name.to_string(),
     };
 
-    // B joins with the code alone — no account password — and adopts A's
-    // note. (The test signs B in again below only because it has no OS
-    // keychain to recall the paired token from.)
+    // B joins with the code alone — no sign-in — and adopts A's note. (The
+    // test signs B in again below only because it has no OS keychain to
+    // recall the paired token from.)
     let mut b_connected = join_with_code(
         &details("phone"),
-        SYNC_PASSWORD,
+        PASSWORD,
+        None,
         Some(&b.root),
         &b.state_path,
     )
     .expect("join by code");
     assert_eq!(b_connected.session.vault_id, vault_id);
     assert!(b_connected.recovery_code.is_none(), "the keyring exists");
-    let target_b = target(&url, &token(&url, &b_connected, "phone"), None);
+    let target_b = target(&url, &token(&url, &b_connected, "phone", PASSWORD), None);
     assert_eq!(b.sync(&mut b_connected.session, &target_b).adopted, 1);
     assert_eq!(b.body_of("Alpha").as_deref(), Some("from a\n"));
 
@@ -275,14 +282,15 @@ fn joining_by_pairing_code_skips_the_account_password() {
     let c = End::new(root.path(), "c");
     let consumed = join_with_code(
         &details("tablet"),
-        SYNC_PASSWORD,
+        PASSWORD,
+        None,
         Some(&c.root),
         &c.state_path,
     );
     assert!(consumed.is_err(), "a used code must not join again");
 
     // And a code grants access, not the key: with a fresh code, the wrong
-    // sync password still refuses the join.
+    // password still refuses the join.
     let fresh = create_pairing(&url, &a_token).expect("pairing");
     let parsed = parse_pair_payload(&pair_payload(&url, &fresh.code, EMAIL)).expect("payload");
     let details = ServerPairing {
@@ -291,9 +299,90 @@ fn joining_by_pairing_code_skips_the_account_password() {
         email: parsed.email.clone(),
         device_name: "tablet".to_string(),
     };
-    let wrong_key = join_with_code(&details, "wrong secret", Some(&c.root), &c.state_path);
+    let wrong_key = join_with_code(&details, "wrong secret", None, Some(&c.root), &c.state_path);
     assert!(
         wrong_key.is_err(),
         "the vault key never travels with a code"
     );
+}
+
+#[test]
+fn changing_the_password_keeps_the_vault_and_retires_the_old_one() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let url = spawn_server(&root.path().join("data"));
+    let a = End::new(root.path(), "a");
+    let b = End::new(root.path(), "b");
+    let c = End::new(root.path(), "c");
+
+    // A registers, publishes a note, and B joins with the one password.
+    let mut a_connected = connect(&url, &a, "laptop", true, PASSWORD).expect("connect a");
+    let vault_id = a_connected.session.vault_id;
+    let a_token = token(&url, &a_connected, "laptop", PASSWORD);
+    let target_a = target(&url, &a_token, Some(vault_id));
+    a.vault.create("Alpha", &[]).expect("create");
+    a.edit("Alpha", "from a\n", "2026-03-01T10:00:00Z");
+    assert_eq!(a.sync(&mut a_connected.session, &target_a).published, 1);
+    let mut b_connected = connect(&url, &b, "phone", false, PASSWORD).expect("join b");
+    let target_b = target(&url, &token(&url, &b_connected, "phone", PASSWORD), None);
+    assert_eq!(b.sync(&mut b_connected.session, &target_b).adopted, 1);
+
+    // Change the one password. The keyring first (ADR-0008 §6): a new
+    // generation the new password opens, wrapping the same vault key — the
+    // two steps `writan_sync::change_password` performs, minus the OS
+    // keychain this test does not have.
+    let generations = keyring_generations(&target_a).expect("generations");
+    let unlocked = unlock_keyring(
+        &generations,
+        KeyringPurpose::Password,
+        PASSWORD,
+        Some(vault_id),
+    )
+    .expect("the current password opens the keyring");
+    let generation = generations
+        .iter()
+        .map(|(number, _)| *number)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let file = rewrap_generation(
+        vault_id,
+        &unlocked.vault_key,
+        generation,
+        KeyringPurpose::Password,
+        NEW_PASSWORD,
+    )
+    .expect("rewrap");
+    push_generation(&target_a, &file).expect("push");
+    // Then the account: the server learns the new verifier.
+    writan_sync::server::change_verifier(&url, &a_token, PASSWORD, NEW_PASSWORD).expect("change");
+
+    // Changing the password signs the other devices out (ADR-0008 §6): B's
+    // token is refused…
+    let io = FolderVault::new(&b.vault);
+    let resigned = run_pass(&b.state_path, &mut b_connected.session, &io, &target_b);
+    assert!(resigned.is_err(), "the other devices must sign in again");
+
+    // …and the new password brings B back, keyring and all, while A keeps
+    // syncing on the token it changed the password with.
+    let mut b_again = connect(&url, &b, "phone", false, NEW_PASSWORD).expect("sign in again");
+    let target_b = target(&url, &token(&url, &b_again, "phone", NEW_PASSWORD), None);
+    b.vault.create("Beta", &[]).expect("create");
+    b.edit("Beta", "from b\n", "2026-03-02T10:00:00Z");
+    assert_eq!(b.sync(&mut b_again.session, &target_b).published, 1);
+    assert_eq!(a.sync(&mut a_connected.session, &target_a).adopted, 1);
+    assert_eq!(a.body_of("Beta").as_deref(), Some("from b\n"));
+
+    // A third device signs in with the new password and gets both notes.
+    let mut c_connected = connect(&url, &c, "tablet", false, NEW_PASSWORD).expect("join c");
+    assert_eq!(c_connected.session.vault_id, vault_id);
+    let target_c = target(
+        &url,
+        &token(&url, &c_connected, "tablet", NEW_PASSWORD),
+        None,
+    );
+    assert_eq!(c.sync(&mut c_connected.session, &target_c).adopted, 2);
+
+    // The old password neither signs in nor opens the keyring.
+    let stale = connect(&url, &End::new(root.path(), "d"), "spare", false, PASSWORD);
+    assert!(matches!(stale, Err(SessionError::Server(_))));
 }

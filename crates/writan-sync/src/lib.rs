@@ -41,7 +41,7 @@ pub use keys::{
     FORMAT_KEYRING, KdfParams, KeyringError, KeyringFile, KeyringPurpose, KeyringWrap, Unlocked,
     bootstrap_keyring, create_keyring, decode_recovery_code, encode_recovery_code,
     generate_recovery_code, keyring_aad, keyring_generations, keyring_path, parse_keyring,
-    parse_keyring_path, unlock_keyring, unwrap_vault_key,
+    parse_keyring_path, push_generation, rewrap_generation, unlock_keyring, unwrap_vault_key,
 };
 pub use merge::{LwwDiff3, MergePlan, MergePolicy, MergeStrategy, Resolution};
 pub use qr::{QrMatrix, qr_matrix, qr_svg};
@@ -52,10 +52,11 @@ pub use server::{
     parse_pair_payload, redeem_pairing,
 };
 pub use session::{
-    AnyTarget, Connected, S3ConfigFile, S3Connect, SYNC_STATE_FILE, ServerConfigFile,
-    ServerConnect, ServerPairing, SessionError, SyncConfig, SyncKind, SyncSession, SyncStatus,
-    check_vault, connect_folder, connect_s3, connect_server, join_with_code, open_target, resume,
-    run_pass, status as sync_status, unlock,
+    AnyTarget, Connected, KeyringCredential, S3ConfigFile, S3Connect, SYNC_STATE_FILE,
+    ServerConfigFile, ServerConnect, ServerPairing, SessionError, SyncConfig, SyncKind,
+    SyncSession, SyncStatus, change_password, check_vault, connect_folder, connect_s3,
+    connect_server, join_with_code, new_recovery_code, open_target, resume, run_pass,
+    status as sync_status, unlock,
 };
 pub use target::{FolderTarget, SyncTarget, TargetError};
 

@@ -1,19 +1,26 @@
-//! The writan-server sync target (ADR-0007 §§6, 11).
+//! The writan-server sync target (ADR-0007 §§6, 11; ADR-0008 §§2–6).
 //!
 //! A server is the same dumb blob store as a shared folder or an S3 bucket:
 //! [`ServerTransport`] is the HTTP seam (one method per REST call the target
 //! needs), [`ServerHttpTransport`] is the live `ureq` implementation carrying
 //! the device token, and [`ServerTarget`] maps the replies onto the engine's
-//! create-only rules (ADR-0005 §12). Around them, [`login`], [`logout`],
-//! [`discover_vault`], [`ensure_vault`] and the pairing trio
-//! ([`create_pairing`], [`redeem_pairing`], [`pair_payload`]) are the account
-//! calls a shell needs to set sync up.
+//! create-only rules (ADR-0005 §12). Around them, [`login`], [`register`],
+//! [`change_verifier`], [`logout`], [`discover_vault`], [`ensure_vault`] and
+//! the pairing trio ([`create_pairing`], [`redeem_pairing`],
+//! [`pair_payload`]) are the account calls a shell needs to set sync up.
+//!
+//! Since ADR-0008 the account password never crosses the wire: the client
+//! derives an Argon2id *verifier* from it against a salt the server hands out
+//! and sends only that.
 
 use std::io;
 use std::sync::OnceLock;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use writan_crypto::{CryptoError, SALT_LEN, derive_kek, random_salt};
 
 use crate::target::{SyncTarget, TargetError};
 
@@ -93,6 +100,8 @@ pub enum ServerError {
     Transport(String),
     #[error("the server refused the email or password")]
     Credentials,
+    #[error("the server refused the current password — sign in again, then try once more")]
+    CurrentPasswordRefused,
     #[error("that email already has an account on this server — sign in instead")]
     EmailTaken,
     #[error("the device token is not valid any more — sign in again")]
@@ -105,10 +114,13 @@ pub enum ServerError {
     SeveralVaults(usize),
     #[error("the server's vault does not match the one this device syncs")]
     VaultMismatch,
+    #[error("could not derive the sign-in verifier: {0}")]
+    Derive(CryptoError),
 }
 
-/// The details a sign-in needs. The password is the *account* password
-/// (ADR-0007 §2), not the sync password that unlocks the keyring.
+/// The details a sign-in needs. The password is the *one* password
+/// (ADR-0008 §1): it becomes the account verifier here and unlocks the
+/// keyring on the client.
 #[derive(Debug, Clone)]
 pub struct ServerLogin {
     pub url: String,
@@ -121,16 +133,32 @@ pub struct ServerLogin {
 }
 
 /// Create the account — registering this device — and return its token
-/// (`POST /api/v1/accounts`). Fails with [`ServerError::EmailTaken`] when the
-/// email is already registered.
+/// (`POST /api/v1/accounts`). The password never leaves this process: a fresh
+/// auth salt goes up with its Argon2id verifier (ADR-0008 §2). Fails with
+/// [`ServerError::EmailTaken`] when the email is already registered.
 pub fn register(details: &ServerLogin) -> Result<String, ServerError> {
     register_at(&Api::new(&details.url, ""), details)
 }
 
 /// Sign in — registering this device if it is new — and return its token
-/// (`POST /api/v1/sessions`). The token belongs in the OS keychain.
+/// (`POST /api/v1/sessions`). Asks for this email's auth salt, then sends the
+/// verifier derived from the password (ADR-0008 §§2–3); the token belongs in
+/// the OS keychain.
 pub fn login(details: &ServerLogin) -> Result<String, ServerError> {
     login_at(&Api::new(&details.url, ""), details)
+}
+
+/// Replace the account's verifier (`POST /api/v1/account/verifier`) after
+/// proving `old_password`, so every other device of the account is revoked
+/// and the caller keeps its token (ADR-0008 §6). Both passwords are derived
+/// here; only verifiers travel.
+pub fn change_verifier(
+    base_url: &str,
+    token: &str,
+    old_password: &str,
+    new_password: &str,
+) -> Result<(), ServerError> {
+    change_verifier_at(&Api::new(base_url, token), old_password, new_password)
 }
 
 /// Sign this device out; its token dies (`DELETE /api/v1/sessions`).
@@ -166,7 +194,8 @@ pub fn create_pairing(base_url: &str, token: &str) -> Result<Pairing, ServerErro
 
 /// Trade a pairing code for this device's own token
 /// (`POST /api/v1/pairings/redeem`). Blob access only — the vault key never
-/// travels, and the device still needs the sync password (ADR-0007 §4).
+/// travels, and the device still needs the one password (or a recovery code)
+/// to open the keyring (ADR-0007 §4, ADR-0008 §1).
 pub fn redeem_pairing(
     base_url: &str,
     code: &str,
@@ -223,17 +252,17 @@ pub fn parse_pair_payload(text: &str) -> Result<PairPayload, ServerError> {
     Ok(payload)
 }
 
-fn credentials_body(details: &ServerLogin) -> serde_json::Value {
-    serde_json::json!({
+fn register_at(api: &Api, details: &ServerLogin) -> Result<String, ServerError> {
+    let salt = random_salt();
+    let verifier = verifier_for(&details.password, &salt)?;
+    let body = serde_json::json!({
         "email": details.email,
-        "password": details.password,
+        "salt": STANDARD.encode(salt),
+        "verifier": STANDARD.encode(verifier),
         "deviceId": details.device_id,
         "deviceName": details.device_name,
-    })
-}
-
-fn register_at(api: &Api, details: &ServerLogin) -> Result<String, ServerError> {
-    let (status, body) = api.post("/api/v1/accounts", &credentials_body(details))?;
+    });
+    let (status, body) = api.post("/api/v1/accounts", &body)?;
     match status {
         200 | 201 => token_from(&body),
         409 => Err(ServerError::EmailTaken),
@@ -242,7 +271,15 @@ fn register_at(api: &Api, details: &ServerLogin) -> Result<String, ServerError> 
 }
 
 fn login_at(api: &Api, details: &ServerLogin) -> Result<String, ServerError> {
-    let (status, body) = api.post("/api/v1/sessions", &credentials_body(details))?;
+    let salt = salt_for(api, &details.email)?;
+    let verifier = verifier_for(&details.password, &salt)?;
+    let body = serde_json::json!({
+        "email": details.email,
+        "verifier": STANDARD.encode(verifier),
+        "deviceId": details.device_id,
+        "deviceName": details.device_name,
+    });
+    let (status, body) = api.post("/api/v1/sessions", &body)?;
     match status {
         200 | 201 => token_from(&body),
         401 => Err(ServerError::Credentials),
@@ -251,6 +288,74 @@ fn login_at(api: &Api, details: &ServerLogin) -> Result<String, ServerError> {
         )),
         _ => Err(refuse(status, &body)),
     }
+}
+
+fn change_verifier_at(
+    api: &Api,
+    old_password: &str,
+    new_password: &str,
+) -> Result<(), ServerError> {
+    // The old verifier must be derived against the *stored* salt, so the
+    // account's email (and through it the salt) is fetched first.
+    let email = account_email(api)?;
+    let old_salt = salt_for(api, &email)?;
+    let old_verifier = verifier_for(old_password, &old_salt)?;
+    let salt = random_salt();
+    let verifier = verifier_for(new_password, &salt)?;
+    let body = serde_json::json!({
+        "oldVerifier": STANDARD.encode(old_verifier),
+        "salt": STANDARD.encode(salt),
+        "verifier": STANDARD.encode(verifier),
+    });
+    let (status, body) = api.post("/api/v1/account/verifier", &body)?;
+    match status {
+        200 | 204 => Ok(()),
+        401 => Err(ServerError::CurrentPasswordRefused),
+        429 => Err(ServerError::Refused(
+            "too many failed sign-ins — try again in a moment".to_string(),
+        )),
+        _ => Err(refuse(status, &body)),
+    }
+}
+
+/// The account's email as the server knows it (`GET /api/v1/account`).
+fn account_email(api: &Api) -> Result<String, ServerError> {
+    let (status, body) = api.get("/api/v1/account")?;
+    if status != 200 {
+        return Err(refuse(status, &body));
+    }
+    json_body(&body)
+        .and_then(|answer| answer.get("email")?.as_str().map(str::to_string))
+        .ok_or_else(|| {
+            ServerError::Transport("the server's account answer carried no email".to_string())
+        })
+}
+
+/// The auth salt a sign-in verifier is derived against
+/// (`GET /api/v1/accounts/salt`). Unknown emails answer a dummy salt, so the
+/// call itself reveals nothing (ADR-0008 §3).
+fn salt_for(api: &Api, email: &str) -> Result<[u8; SALT_LEN], ServerError> {
+    let path = format!("/api/v1/accounts/salt?email={}", encode_query(email));
+    let (status, body) = api.get(&path)?;
+    if status != 200 {
+        return Err(refuse(status, &body));
+    }
+    let text = json_body(&body)
+        .and_then(|answer| answer.get("salt")?.as_str().map(str::to_string))
+        .ok_or_else(|| {
+            ServerError::Transport("the server's salt answer was not JSON".to_string())
+        })?;
+    let salt = STANDARD
+        .decode(text.as_bytes())
+        .map_err(|_| ServerError::Transport("the server's salt is not base64".to_string()))?;
+    salt.try_into()
+        .map_err(|_| ServerError::Transport("the server's salt has the wrong length".to_string()))
+}
+
+/// The verifier for a password: the pinned Argon2id KDF against the account's
+/// auth salt (ADR-0008 §2). The server stores only its SHA-256.
+fn verifier_for(password: &str, salt: &[u8; SALT_LEN]) -> Result<[u8; 32], ServerError> {
+    derive_kek(password, salt).map_err(ServerError::Derive)
 }
 
 /// The JSON of an answer, when it is one.
@@ -575,6 +680,20 @@ fn encode_path(path: &str) -> String {
     for byte in path.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+/// Percent-encode a query-string value (an email carries `@` and maybe `+`).
+fn encode_query(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 encoded.push(byte as char);
             }
             _ => encoded.push_str(&format!("%{byte:02X}")),
