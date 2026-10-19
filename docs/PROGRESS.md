@@ -341,7 +341,7 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 slice 1 done).
   resolves to its `mock` store on Android, so no key persistence until the
   M5 Keystore task.
 - **M5 slice 1 — responsive phone shell + app-private vault** (2026-10-19,
-  commit `d83d579`): ADR-0009. One breakpoint (`(max-width: 700px)` →
+  commit `e4b9668`): ADR-0009. One breakpoint (`(max-width: 700px)` →
   `:root[data-narrow]`, `app/src/lib/viewport.svelte.ts`): one pane at a time,
   the list returns as a drawer with a scrim, touch targets ≥44 px (rows ≥48),
   `100dvh` + `interactive-widget=resizes-content` for the keyboard, safe-area
