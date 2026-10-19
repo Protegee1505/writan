@@ -305,7 +305,9 @@ Last updated: 2026-10-19 (M4 complete + the sync-setup panel fix).
   Tauri panel showed the Locked view (the target stays in the config to prefill
   the form) with no way back to the method picker — reported on Windows; setup
   now means `enabled`, as in the GTK shell
-  (`app/src/lib/components/SyncSection.svelte:30`).
+  (`app/src/lib/components/SyncSection.svelte:30`); the browser mock's
+  `sync_disable` kept a stale `target: null`, which is why the mock loop never
+  showed it (`app/src/lib/mock.ts:308`).
 
 ## Current state
 

@@ -306,7 +306,10 @@ const commands: Record<string, Command> = {
   },
   sync_lock: (): SyncStatus => setUnlocked(false),
   sync_disable: (): SyncStatus => {
-    sync = { ...sync, enabled: false, unlocked: false, target: null, vaultId: null };
+    // Like the real command (app/src-tauri/src/commands.rs): turned-off sync
+    // keeps kind/target/server so the setup form can prefill, and only drops
+    // the session. Nulling the target here used to hide the panel-state bug.
+    sync = { ...sync, enabled: false, unlocked: false, vaultId: null };
     return sync;
   },
   "plugin:dialog|open": () => VAULT,
