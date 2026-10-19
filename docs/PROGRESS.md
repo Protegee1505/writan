@@ -415,6 +415,13 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 slice 1 done).
   touch feel, the real on-screen keyboard and the app-private vault need the
   sideloaded `writan-android-arm64` APK on a phone — the routine is in
   `docs/ANDROID.md`.
+- **Nightly sync soak red since 2026-10-19**: both simulator jobs failed in
+  release mode with `devices never reached a clean fixpoint`
+  (`crates/writan-sync/tests/simulator.rs:239`, folder + bucket variants; run
+  [39225792597](https://github.com/Protegee1505/writan/actions/runs/39225792597)).
+  The 2026-10-18 cron was green and the only `writan-sync` change since is
+  `585d2cb` (M4.5 client/keyring rotation), so suspect that commit or a flake;
+  the tests are `--ignored`, so the normal `cargo test` never runs them.
 
 ## How to run & verify
 
