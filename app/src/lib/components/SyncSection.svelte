@@ -27,7 +27,11 @@
   let confirmDisable = $state(false);
 
   const status = $derived(store.sync);
-  const setupComplete = $derived(Boolean(status?.target));
+  // Sync counts as set up only while it is enabled: a turned-off target stays
+  // in the config just to prefill the setup form below (GTK parity: setup =
+  // !enabled). Keying off `target` alone stranded a turned-off vault on the
+  // Locked panel with no way back to the method picker.
+  const setupComplete = $derived(Boolean(status?.enabled));
 
   // Coming back to the server form (say, after Turn off) starts from the
   // remembered address and account; the token stays in the keychain and the
