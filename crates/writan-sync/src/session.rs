@@ -1,4 +1,4 @@
-//! Shell-agnostic sync session glue (ADR-0005 §§6–10).
+//! Shell-agnostic sync session glue (ADR-0005 §§6–10, ADR-0008).
 //!
 //! The Tauri app (`app/src-tauri`) and the GTK shell (`app-linux`) both talk
 //! to sync through this module: [`SyncConfig`] is the shape of the `sync`
@@ -8,6 +8,13 @@
 //! restart, resume from the OS keychain, one engine pass, and the status
 //! snapshot the UI renders. Keeping them here means the on-disk shapes and
 //! the user-facing error wording cannot drift between shells.
+//!
+//! Since ADR-0008 there is one password per vault: it both signs the account
+//! in (as an Argon2id verifier the server never sees the plaintext of) and
+//! unlocks the keyring. Joining a keyring created under an older password
+//! takes that old credential as a *fallback* ([`KeyringCredential`]) and
+//! appends a generation the new password opens; [`change_password`] and
+//! [`new_recovery_code`] do the same deliberately from the settings.
 
 use std::path::{Path, PathBuf};
 
@@ -21,13 +28,21 @@ use crate::server::{
 use crate::{
     FolderTarget, KeyringPurpose, S3Config, S3HttpTransport, S3Target, SyncReport, SyncState,
     SyncTarget, TargetError, bootstrap_keyring, generate_recovery_code, keyring_generations,
-    unlock_keyring,
+    push_generation, rewrap_generation, unlock_keyring,
 };
 
 /// File name of the local sync state inside the app-data directory. It is
 /// shared by both shells on purpose: a device has one identity whatever
 /// shell opened the vault.
 pub const SYNC_STATE_FILE: &str = "sync-state.json";
+
+/// The shortest the one password may be (ADR-0008 §1). The rule lives in the
+/// clients: the server only ever sees the verifier.
+pub const PASSWORD_MIN_LEN: usize = 8;
+
+/// The longest the one password may be (ADR-0008 §1): Argon2 cost grows with
+/// the input, so an enormous password is refused rather than hashed.
+pub const PASSWORD_MAX_LEN: usize = 1024;
 
 /// Which kind of target notes sync through.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -124,8 +139,20 @@ pub enum SessionError {
     NotConfigured,
     #[error("choose a sync folder first")]
     ChooseFolderFirst,
-    #[error("set a sync password first")]
+    #[error("set a password first")]
     PasswordFirst,
+    #[error("the password must be at least {PASSWORD_MIN_LEN} characters")]
+    PasswordTooShort,
+    #[error("the password must be at most {PASSWORD_MAX_LEN} characters")]
+    PasswordTooLong,
+    #[error("enter the current password first")]
+    CurrentPasswordFirst,
+    #[error("the current password is not right")]
+    CurrentPasswordWrong,
+    #[error(
+        "this vault was created with a different password — enter the old sync password or the recovery code to bring it forward"
+    )]
+    KeyringDifferentPassword,
     #[error("set the S3 endpoint first")]
     EndpointFirst,
     #[error("set the bucket first")]
@@ -138,8 +165,6 @@ pub enum SessionError {
     ServerUrlFirst,
     #[error("enter the account email first")]
     EmailFirst,
-    #[error("enter the account password first")]
-    AccountPasswordFirst,
     #[error("enter the pairing code first")]
     PairingCodeFirst,
     #[error("this device has no server token — sign in again")]
@@ -267,6 +292,32 @@ pub fn check_vault(config: &SyncConfig, current: Option<&Path>) -> Result<(), Se
     Ok(())
 }
 
+/// A credential that can open a keyring: the one password (ADR-0008 §1) or a
+/// recovery code. Joining a keyring that predates the one password accepts
+/// either as the *fallback* credential (ADR-0008 §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyringCredential {
+    Password(String),
+    Recovery(String),
+}
+
+impl KeyringCredential {
+    /// Which keyring wrap this credential opens.
+    pub fn purpose(&self) -> KeyringPurpose {
+        match self {
+            Self::Password(_) => KeyringPurpose::Password,
+            Self::Recovery(_) => KeyringPurpose::Recovery,
+        }
+    }
+
+    /// The secret itself.
+    pub fn secret(&self) -> &str {
+        match self {
+            Self::Password(secret) | Self::Recovery(secret) => secret,
+        }
+    }
+}
+
 /// What a successful connect produced: the config and session to install,
 /// plus the recovery code shown exactly once when a keyring was created
 /// (`None` when joining an existing one).
@@ -289,13 +340,11 @@ pub fn connect_folder(
     vault_path: Option<&Path>,
     state_path: &Path,
 ) -> Result<Connected, SessionError> {
-    if password.is_empty() {
-        return Err(SessionError::PasswordFirst);
-    }
+    check_password(password)?;
     let folder = FolderTarget::open(target)?;
     let generations = keyring_generations(&folder)?;
     let (vault_id, vault_key, recovery_code) =
-        create_or_join(&generations, &folder, password, None)?;
+        create_or_join(&generations, &folder, password, None, None)?;
     keychain::remember_vault_key(vault_id, &vault_key);
     let vault_path = vault_path.ok_or(SessionError::NoVaultOpen)?.to_path_buf();
     let config = SyncConfig {
@@ -351,9 +400,7 @@ pub fn connect_s3(
     if access_key.is_empty() || secret_key.is_empty() {
         return Err(SessionError::AccessKeyFirst);
     }
-    if password.is_empty() {
-        return Err(SessionError::PasswordFirst);
-    }
+    check_password(password)?;
     let cfg = S3Config {
         endpoint: endpoint.clone(),
         region: region.clone(),
@@ -364,7 +411,7 @@ pub fn connect_s3(
     let target = S3Target::new(S3HttpTransport::new(cfg));
     let generations = keyring_generations(&target).map_err(SessionError::ReachBucket)?;
     let (vault_id, vault_key, recovery_code) =
-        create_or_join(&generations, &target, password, None)?;
+        create_or_join(&generations, &target, password, None, None)?;
     keychain::remember_vault_key(vault_id, &vault_key);
     keychain::remember_s3_secret(&endpoint, &bucket, &secret_key);
     let vault_path = vault_path.ok_or(SessionError::NoVaultOpen)?.to_path_buf();
@@ -390,28 +437,31 @@ pub fn connect_s3(
 }
 
 /// The raw noteserver connection details as typed by the user; trimmed and
-/// validated here (ADR-0007 §§2–3, 5).
+/// validated here (ADR-0007 §§2–3, 5). The password is the *one* password
+/// (ADR-0008 §1): it signs the account in (as a verifier) and unlocks the
+/// keyring.
 #[derive(Debug, Clone, Default)]
 pub struct ServerConnect {
     /// The server root, e.g. `https://notes.example.com`.
     pub url: String,
     pub email: String,
-    /// The *account* password (ADR-0007 §2) — not the sync password.
-    pub account_password: String,
     pub device_name: String,
     /// Register the account when the server does not know the email yet.
     pub create_account: bool,
 }
 
-/// Connect this vault to a writan-server (ADR-0007). Signs in — or registers,
-/// with `create_account` — this device, makes sure the account has a vault
-/// (creating a fresh one on the first device), then runs the same keyring
-/// flow as the other targets: create fresh (returning the recovery code once)
-/// or unlock the existing keyring. The device token goes to the OS keychain,
-/// never to `config.json`.
+/// Connect this vault to a writan-server (ADR-0007, ADR-0008). Signs in — or
+/// registers, with `create_account` — this device, makes sure the account has
+/// a vault (creating a fresh one on the first device), then runs the keyring
+/// flow: create fresh (returning the recovery code once) or unlock with the
+/// one password. A keyring created under an older password is adopted when
+/// `fallback` (the old sync password or the recovery code) opens it
+/// (ADR-0008 §5). The device token goes to the OS keychain, never to
+/// `config.json`.
 pub fn connect_server(
     details: &ServerConnect,
-    sync_password: &str,
+    password: &str,
+    fallback: Option<&KeyringCredential>,
     vault_path: Option<&Path>,
     state_path: &Path,
 ) -> Result<Connected, SessionError> {
@@ -423,12 +473,7 @@ pub fn connect_server(
     if email.is_empty() || !email.contains('@') {
         return Err(SessionError::EmailFirst);
     }
-    if details.account_password.is_empty() {
-        return Err(SessionError::AccountPasswordFirst);
-    }
-    if sync_password.is_empty() {
-        return Err(SessionError::PasswordFirst);
-    }
+    check_password(password)?;
     // The server sees this device's sync id, so signing in here keeps the
     // identity the engine uses (ADR-0007 §3); the state file remembers it
     // before the first call so a later bind_session reuses the same uuid.
@@ -439,7 +484,7 @@ pub fn connect_server(
     let login = ServerLogin {
         url: url.clone(),
         email: email.clone(),
-        password: details.account_password.clone(),
+        password: password.to_string(),
         device_id: device,
         device_name: details.device_name.trim().to_string(),
     };
@@ -464,7 +509,7 @@ pub fn connect_server(
     }));
     let generations = keyring_generations(&target).map_err(SessionError::ServerKeyring)?;
     let (keyring_vault, vault_key, recovery_code) =
-        create_or_join(&generations, &target, sync_password, Some(vault_id))?;
+        create_or_join(&generations, &target, password, fallback, Some(vault_id))?;
     if keyring_vault != vault_id {
         return Err(SessionError::DifferentVault);
     }
@@ -502,11 +547,12 @@ pub struct ServerPairing {
 /// Join an account with a pairing code instead of its password: redeem the
 /// code for this device's token, discover the account's vault, then run the
 /// same keyring exchange as [`connect_server`]. The code grants blob access
-/// only — the vault key never travels, so the sync password (or recovery
-/// code) is still needed (ADR-0007 §4).
+/// only — the vault key never travels, so the one password (or a recovery
+/// code) is still needed to open the keyring (ADR-0007 §4, ADR-0008 §§1, 5).
 pub fn join_with_code(
     details: &ServerPairing,
-    sync_password: &str,
+    password: &str,
+    fallback: Option<&KeyringCredential>,
     vault_path: Option<&Path>,
     state_path: &Path,
 ) -> Result<Connected, SessionError> {
@@ -522,9 +568,7 @@ pub fn join_with_code(
     if email.is_empty() || !email.contains('@') {
         return Err(SessionError::EmailFirst);
     }
-    if sync_password.is_empty() {
-        return Err(SessionError::PasswordFirst);
-    }
+    check_password(password)?;
     let device_name = if details.device_name.trim().is_empty() {
         "paired device"
     } else {
@@ -553,7 +597,7 @@ pub fn join_with_code(
     }));
     let generations = keyring_generations(&target).map_err(SessionError::ServerKeyring)?;
     let (keyring_vault, vault_key, recovery_code) =
-        create_or_join(&generations, &target, sync_password, Some(vault_id))?;
+        create_or_join(&generations, &target, password, fallback, Some(vault_id))?;
     if keyring_vault != vault_id {
         return Err(SessionError::DifferentVault);
     }
@@ -675,11 +719,16 @@ pub fn status(config: &SyncConfig, session: Option<&SyncSession>, state_path: &P
 }
 
 /// Create the keyring when the target has none (returning the recovery code
-/// that must be shown once), otherwise unlock it with the password.
+/// that must be shown once), otherwise unlock it with the one password. When
+/// the keyring predates the one password, `fallback` (the old sync password or
+/// the recovery code) may open it once: a generation for the new password is
+/// then appended — the vault key is unchanged — so the vault adopts it
+/// (ADR-0008 §5).
 fn create_or_join(
     generations: &[(u32, Vec<u8>)],
     target: &impl SyncTarget,
     password: &str,
+    fallback: Option<&KeyringCredential>,
     wanted: Option<Uuid>,
 ) -> Result<(Uuid, [u8; 32], Option<String>), SessionError> {
     if generations.is_empty() {
@@ -691,10 +740,133 @@ fn create_or_join(
             .map_err(SessionError::CreateKeyring)?;
         Ok((vault_id, key, Some(code)))
     } else {
-        let unlocked = unlock_keyring(generations, KeyringPurpose::Password, password, None)
-            .map_err(SessionError::JoinKeyring)?;
-        Ok((unlocked.vault_id, unlocked.vault_key, None))
+        match unlock_keyring(generations, KeyringPurpose::Password, password, None) {
+            Ok(unlocked) => Ok((unlocked.vault_id, unlocked.vault_key, None)),
+            Err(KeyringError::Locked) => {
+                let Some(fallback) = fallback else {
+                    return Err(SessionError::KeyringDifferentPassword);
+                };
+                let adopted =
+                    unlock_keyring(generations, fallback.purpose(), fallback.secret(), None)
+                        .map_err(SessionError::JoinKeyring)?;
+                let generation = next_generation(generations);
+                let file = rewrap_generation(
+                    adopted.vault_id,
+                    &adopted.vault_key,
+                    generation,
+                    KeyringPurpose::Password,
+                    password,
+                )
+                .map_err(SessionError::CreateKeyring)?;
+                push_generation(target, &file).map_err(SessionError::CreateKeyring)?;
+                Ok((adopted.vault_id, adopted.vault_key, None))
+            }
+            Err(other) => Err(SessionError::JoinKeyring(other)),
+        }
     }
+}
+
+/// The generation number after the newest one on the target.
+fn next_generation(generations: &[(u32, Vec<u8>)]) -> u32 {
+    generations
+        .iter()
+        .map(|(generation, _)| *generation)
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+/// Change the one password (ADR-0008 §6): keyring first — the current password
+/// must open it, which yields the vault key — then a generation only the new
+/// password opens, then the account verifier on a server target. An
+/// interrupted change leaves an extra generation, never a vault the new
+/// password cannot open; older generations keep opening with the old password
+/// (the recorded v1 limitation).
+pub fn change_password(
+    config: &SyncConfig,
+    session: &SyncSession,
+    old_password: &str,
+    new_password: &str,
+) -> Result<(), SessionError> {
+    if old_password.is_empty() {
+        return Err(SessionError::CurrentPasswordFirst);
+    }
+    check_password(new_password)?;
+    let target = open_target(config, Some(session.vault_id))?;
+    let generations = keyring_generations(&target)?;
+    if generations.is_empty() {
+        return Err(SessionError::NoKeyring);
+    }
+    let unlocked = unlock_keyring(
+        &generations,
+        KeyringPurpose::Password,
+        old_password,
+        Some(session.vault_id),
+    )
+    .map_err(|error| match error {
+        KeyringError::Locked => SessionError::CurrentPasswordWrong,
+        other => SessionError::Unlock(other),
+    })?;
+    let generation = next_generation(&generations);
+    let file = rewrap_generation(
+        unlocked.vault_id,
+        &unlocked.vault_key,
+        generation,
+        KeyringPurpose::Password,
+        new_password,
+    )
+    .map_err(SessionError::CreateKeyring)?;
+    push_generation(&target, &file).map_err(SessionError::CreateKeyring)?;
+    if matches!(config.kind, SyncKind::Server) {
+        let server = config.server.as_ref().ok_or(SessionError::NotConfigured)?;
+        let token = keychain::recall_server_token(&server.url, &server.email)
+            .ok_or(SessionError::MissingServerToken)?;
+        crate::server::change_verifier(&server.url, &token, old_password, new_password)?;
+    }
+    Ok(())
+}
+
+/// Mint a fresh recovery code and append a generation only it opens
+/// (ADR-0008 §7). The code is returned for the one-time display; the old code
+/// keeps opening older generations. Requires an unlocked session: the vault
+/// key is already in memory, so no password is asked for.
+pub fn new_recovery_code(
+    config: &SyncConfig,
+    session: &SyncSession,
+) -> Result<String, SessionError> {
+    let target = open_target(config, Some(session.vault_id))?;
+    let generations = keyring_generations(&target)?;
+    if generations.is_empty() {
+        return Err(SessionError::NoKeyring);
+    }
+    let code = generate_recovery_code();
+    let generation = next_generation(&generations);
+    let file = rewrap_generation(
+        session.vault_id,
+        &session.vault_key,
+        generation,
+        KeyringPurpose::Recovery,
+        &code,
+    )
+    .map_err(SessionError::CreateKeyring)?;
+    push_generation(&target, &file).map_err(SessionError::CreateKeyring)?;
+    Ok(code)
+}
+
+/// The client-side password policy (ADR-0008 §1): at least
+/// [`PASSWORD_MIN_LEN`] and at most [`PASSWORD_MAX_LEN`] bytes. The server
+/// cannot enforce it — it only ever sees the verifier.
+fn check_password(password: &str) -> Result<(), SessionError> {
+    if password.is_empty() {
+        return Err(SessionError::PasswordFirst);
+    }
+    if password.len() < PASSWORD_MIN_LEN {
+        return Err(SessionError::PasswordTooShort);
+    }
+    if password.len() > PASSWORD_MAX_LEN {
+        return Err(SessionError::PasswordTooLong);
+    }
+    Ok(())
 }
 
 /// Load (or start) the local state for `vault_id`, refusing a device that
@@ -765,6 +937,17 @@ mod tests {
         PathBuf::from("/nonexistent/writan-test/sync-state.json")
     }
 
+    fn folder_config(dir: &Path) -> SyncConfig {
+        SyncConfig {
+            kind: SyncKind::Folder,
+            target: Some(dir.to_path_buf()),
+            s3: None,
+            server: None,
+            vault_path: None,
+            enabled: true,
+        }
+    }
+
     #[test]
     fn server_config_roundtrips_and_older_configs_load() {
         let config = server_config();
@@ -798,7 +981,6 @@ mod tests {
         let base = ServerConnect {
             url: "https://notes.example.com".to_string(),
             email: "ada@example.com".to_string(),
-            account_password: "hunter2-plus".to_string(),
             device_name: "laptop".to_string(),
             create_account: true,
         };
@@ -807,7 +989,7 @@ mod tests {
             ..base.clone()
         };
         assert!(matches!(
-            connect_server(&no_scheme, "sync-password", None, &missing_state()),
+            connect_server(&no_scheme, "one-password", None, None, &missing_state()),
             Err(SessionError::ServerUrlFirst)
         ));
         let bad_email = ServerConnect {
@@ -815,25 +997,173 @@ mod tests {
             ..base.clone()
         };
         assert!(matches!(
-            connect_server(&bad_email, "sync-password", None, &missing_state()),
+            connect_server(&bad_email, "one-password", None, None, &missing_state()),
             Err(SessionError::EmailFirst)
         ));
-        let no_account_password = ServerConnect {
-            account_password: String::new(),
-            ..base.clone()
-        };
         assert!(matches!(
-            connect_server(
-                &no_account_password,
-                "sync-password",
-                None,
-                &missing_state()
-            ),
-            Err(SessionError::AccountPasswordFirst)
-        ));
-        assert!(matches!(
-            connect_server(&base, "", None, &missing_state()),
+            connect_server(&base, "", None, None, &missing_state()),
             Err(SessionError::PasswordFirst)
         ));
+        assert!(matches!(
+            connect_server(&base, "short", None, None, &missing_state()),
+            Err(SessionError::PasswordTooShort)
+        ));
+    }
+
+    #[test]
+    fn a_fallback_password_adopts_the_new_password() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = FolderTarget::open(dir.path()).expect("target");
+        let vault_id = Uuid::new_v4();
+        let code = generate_recovery_code();
+        let (_file, key) =
+            bootstrap_keyring(&target, vault_id, "old password", &code).expect("bootstrap");
+        let generations = keyring_generations(&target).expect("generations");
+
+        // The new password alone does not open the existing keyring.
+        let locked = create_or_join(&generations, &target, "new password", None, Some(vault_id));
+        assert!(matches!(
+            locked,
+            Err(SessionError::KeyringDifferentPassword)
+        ));
+
+        // The old password as the fallback does — and the vault adopts the new
+        // one, so the next sign-in only needs it.
+        let adopted = create_or_join(
+            &generations,
+            &target,
+            "new password",
+            Some(&KeyringCredential::Password("old password".to_string())),
+            Some(vault_id),
+        )
+        .expect("adopt");
+        assert_eq!(adopted.0, vault_id);
+        assert_eq!(adopted.1, key);
+        assert!(adopted.2.is_none(), "adoption is not a creation");
+        let generations = keyring_generations(&target).expect("generations");
+        let unlocked = unlock_keyring(
+            &generations,
+            KeyringPurpose::Password,
+            "new password",
+            Some(vault_id),
+        )
+        .expect("the new password opens the newest generation");
+        assert_eq!(unlocked.generation, 2);
+        assert_eq!(unlocked.vault_key, key);
+    }
+
+    #[test]
+    fn a_fallback_recovery_code_adopts_the_new_password() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = FolderTarget::open(dir.path()).expect("target");
+        let vault_id = Uuid::new_v4();
+        let code = generate_recovery_code();
+        let (_file, key) =
+            bootstrap_keyring(&target, vault_id, "old password", &code).expect("bootstrap");
+        let generations = keyring_generations(&target).expect("generations");
+
+        let adopted = create_or_join(
+            &generations,
+            &target,
+            "new password",
+            Some(&KeyringCredential::Recovery(code.clone())),
+            Some(vault_id),
+        )
+        .expect("adopt");
+        assert_eq!(adopted.0, vault_id);
+        assert_eq!(adopted.1, key);
+        let generations = keyring_generations(&target).expect("generations");
+        let unlocked = unlock_keyring(
+            &generations,
+            KeyringPurpose::Password,
+            "new password",
+            Some(vault_id),
+        )
+        .expect("the new password opens the newest generation");
+        assert_eq!(unlocked.generation, 2);
+    }
+
+    #[test]
+    fn change_password_appends_a_generation_for_the_new_password() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = FolderTarget::open(dir.path()).expect("target");
+        let vault_id = Uuid::new_v4();
+        let code = generate_recovery_code();
+        let (_file, key) =
+            bootstrap_keyring(&target, vault_id, "old password", &code).expect("bootstrap");
+        let config = folder_config(dir.path());
+        let session =
+            bind_session(&dir.path().join("app-data/state.json"), vault_id, key).expect("session");
+
+        // A wrong current password changes nothing.
+        let wrong = change_password(&config, &session, "not the password", "brand new password");
+        assert!(matches!(wrong, Err(SessionError::CurrentPasswordWrong)));
+        assert_eq!(
+            keyring_generations(&target).expect("generations").len(),
+            1,
+            "nothing is written when the current password does not open the keyring"
+        );
+        assert!(matches!(
+            change_password(&config, &session, "old password", "short"),
+            Err(SessionError::PasswordTooShort)
+        ));
+
+        change_password(&config, &session, "old password", "brand new password").expect("change");
+        let generations = keyring_generations(&target).expect("generations");
+        let newest = unlock_keyring(
+            &generations,
+            KeyringPurpose::Password,
+            "brand new password",
+            Some(vault_id),
+        )
+        .expect("the new password opens the newest generation");
+        assert_eq!(newest.generation, 2);
+        assert_eq!(newest.vault_key, key);
+        // The old password keeps opening the older generation (the recorded
+        // v1 limitation: no vault-key rollover).
+        let older = unlock_keyring(
+            &generations,
+            KeyringPurpose::Password,
+            "old password",
+            Some(vault_id),
+        )
+        .expect("the old password still opens generation 1");
+        assert_eq!(older.generation, 1);
+        assert_eq!(older.vault_key, key);
+    }
+
+    #[test]
+    fn new_recovery_code_appends_a_recovery_generation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = FolderTarget::open(dir.path()).expect("target");
+        let vault_id = Uuid::new_v4();
+        let first = generate_recovery_code();
+        let (_file, key) =
+            bootstrap_keyring(&target, vault_id, "old password", &first).expect("bootstrap");
+        let config = folder_config(dir.path());
+        let session =
+            bind_session(&dir.path().join("app-data/state.json"), vault_id, key).expect("session");
+
+        let fresh = new_recovery_code(&config, &session).expect("a new code");
+        assert_ne!(fresh, first);
+        let generations = keyring_generations(&target).expect("generations");
+        let unlocked = unlock_keyring(
+            &generations,
+            KeyringPurpose::Recovery,
+            &fresh,
+            Some(vault_id),
+        )
+        .expect("the new code opens the newest generation");
+        assert_eq!(unlocked.generation, 2);
+        assert_eq!(unlocked.vault_key, key);
+        // The password still opens it too, by the older wrap.
+        let password = unlock_keyring(
+            &generations,
+            KeyringPurpose::Password,
+            "old password",
+            Some(vault_id),
+        )
+        .expect("the password still opens generation 1");
+        assert_eq!(password.generation, 1);
     }
 }

@@ -301,8 +301,37 @@ pub fn bootstrap_keyring(
     decode_recovery_code(recovery_code)?;
     let vault_key = random_key();
     let file = create_keyring(vault_id, &vault_key, password, recovery_code, 1)?;
-    target.write(&keyring_path(1), &serde_json::to_vec_pretty(&file)?)?;
+    push_generation(target, &file)?;
     Ok((file, vault_key))
+}
+
+/// Build one generation that re-wraps `vault_key` for a single credential: the
+/// given `purpose`'s wrap answers to `credential`, the other wrap is sealed
+/// under a fresh random key nobody holds (ADR-0008 §§5–7). Fresh salts and the
+/// pinned KDF parameters come from [`create_keyring`], so the file shape of
+/// ADR-0005 §9 is unchanged. Append-only: existing generations are untouched.
+pub fn rewrap_generation(
+    vault_id: Uuid,
+    vault_key: &[u8; KEY_LEN],
+    generation: u32,
+    purpose: KeyringPurpose,
+    credential: &str,
+) -> Result<KeyringFile, KeyringError> {
+    let unused = generate_recovery_code();
+    let (password, recovery) = match purpose {
+        KeyringPurpose::Password => (credential, unused.as_str()),
+        KeyringPurpose::Recovery => (unused.as_str(), credential),
+    };
+    create_keyring(vault_id, vault_key, password, recovery, generation)
+}
+
+/// Write one generation to a target (create-only, like every keyring write).
+pub fn push_generation(target: &impl SyncTarget, file: &KeyringFile) -> Result<(), KeyringError> {
+    target.write(
+        &keyring_path(file.generation),
+        &serde_json::to_vec_pretty(file)?,
+    )?;
+    Ok(())
 }
 
 /// A fresh recovery code for the user to export (shown once).
