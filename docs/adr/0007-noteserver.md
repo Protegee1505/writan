@@ -2,6 +2,11 @@
 
 Status: accepted. Date: 2026-10-18.
 
+> Note (2026-10-18): decision 2 (accounts and passwords) is superseded by
+> [ADR-0008](0008-one-password-signin.md) — one password, derived client-side
+> into the KEK and a server verifier; that ADR is also the recorded exception
+> to decision 12's new-prefix rule.
+
 ## Context
 
 - M4's scope (PLAN.md): axum + SQLite server with email+password and QR

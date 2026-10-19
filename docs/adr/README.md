@@ -13,4 +13,5 @@ changes.
 | 0004 | [Native Linux shell (GTK4)](0004-linux-native-shell.md) | Accepted — spike passed 2026-10-16 | 2026-10-16 |
 | 0005 | [Sync blob format and key hierarchy](0005-sync-blob-format.md) | Accepted | 2026-10-17 |
 | 0006 | [S3 sync target](0006-s3-target.md) | Accepted | 2026-10-17 |
-| 0007 | [noteserver — protocol, authentication, storage](0007-noteserver.md) | Accepted | 2026-10-18 |
+| 0007 | [noteserver — protocol, authentication, storage](0007-noteserver.md) | Accepted — auth (§2) superseded by [ADR-0008](0008-one-password-signin.md) (which is the §12 exception) | 2026-10-18 |
+| 0008 | [One-password sign-in (verifier auth, password-derived vault key)](0008-one-password-signin.md) | Accepted | 2026-10-18 |
