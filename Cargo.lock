@@ -5988,7 +5988,7 @@ checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "writan-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6004,7 +6004,7 @@ dependencies = [
 
 [[package]]
 name = "writan-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "notify",
@@ -6020,7 +6020,7 @@ dependencies = [
 
 [[package]]
 name = "writan-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -6031,7 +6031,7 @@ dependencies = [
 
 [[package]]
 name = "writan-linux"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gtk4",
  "libadwaita",
@@ -6045,7 +6045,7 @@ dependencies = [
 
 [[package]]
 name = "writan-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6068,7 +6068,7 @@ dependencies = [
 
 [[package]]
 name = "writan-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
