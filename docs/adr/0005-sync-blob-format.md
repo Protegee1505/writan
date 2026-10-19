@@ -140,3 +140,13 @@ id, value = base64 vault key) and `com.writan.desktop.s3` (account =
 `endpoint/bucket`). The shipped local state path is
 `<state-dir>/sync-state.json` — the §6 sketch said `<state-dir>/sync/…`; the
 location (app-data) is as decided, only the file name differs.
+
+## Amendment (2026-10-19)
+
+§2's "full version vector" is load-bearing for convergence, not only for
+concurrency detection: the version a merge keeps or adopts must carry the
+union of *both* sides' vectors. A fast-forward that kept one side's vector
+alone left the pair permanently concurrent, so the two devices re-merged the
+same note on every sweep — the nightly soak's `m=1` loop, fixed in `bcf90ff`
+(`crates/writan-sync/src/merge.rs`, `resolve`; regression
+`crates/writan-sync/tests/fixpoint.rs`).
