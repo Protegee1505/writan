@@ -367,7 +367,9 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slice 1; nightly sync soak fixed).
   15/15 local release soak runs green where 5/15 failed before. The soak's
   failure dump also became self-explaining (per-file recorded vs on-disk
   digests, each target entry with its vector and digest; `note_digest` /
-  `blob_digest` are public for it).
+  `blob_digest` are public for it). Evidence: commit `bcf90ff`, nightly run
+  [39240627614](https://github.com/Protegee1505/writan/actions/runs/39240627614)
+  green on folder and bucket; ADR-0005 amended.
 
 ## Current state
 
