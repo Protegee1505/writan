@@ -55,6 +55,8 @@ pub fn run() {
             commands::sync_pairing_code,
             commands::sync_unlock,
             commands::sync_unlock_recovery,
+            commands::sync_change_password,
+            commands::sync_new_recovery_code,
             commands::sync_now,
             commands::sync_lock,
             commands::sync_disable,

@@ -289,6 +289,47 @@ const commands: Record<string, Command> = {
     };
     return { recoveryCode: "MOCK-RECOVERY-CODE-0000", status: sync };
   },
+  sync_connect_server: (args): SyncConnectResult => {
+    // An address with "legacy" in it plays the vault whose keyring was made
+    // with an older password, so the mock loop can show the fallback prompt
+    // the real connect raises (ADR-0008 §5).
+    if (!args.keyringCredential && String(args.url ?? "").toLowerCase().includes("legacy")) {
+      throw new Error(
+        "this vault was created with a different password — enter the old sync password or the recovery code to bring it forward",
+      );
+    }
+    sync = {
+      ...sync,
+      enabled: true,
+      unlocked: true,
+      kind: "server",
+      target: String(args.url ?? ""),
+      serverUrl: String(args.url ?? ""),
+      serverEmail: String(args.email ?? ""),
+      vaultId: "mock-vault",
+    };
+    return { recoveryCode: null, status: sync };
+  },
+  sync_join_server: (): SyncConnectResult => {
+    sync = {
+      ...sync,
+      enabled: true,
+      unlocked: true,
+      kind: "server",
+      target: "https://notes.example.com",
+      serverUrl: "https://notes.example.com",
+      serverEmail: "you@example.com",
+      vaultId: "mock-vault",
+    };
+    return { recoveryCode: null, status: sync };
+  },
+  sync_change_password: (args): SyncStatus => {
+    if (String(args.newPassword ?? "").length < 8) {
+      throw new Error("the password must be at least 8 characters");
+    }
+    return sync;
+  },
+  sync_new_recovery_code: (): string => "MOCK-4CEF-9A20-77B1-C0DE",
   sync_unlock: (): SyncStatus => setUnlocked(true),
   sync_unlock_recovery: (): SyncStatus => setUnlocked(true),
   sync_now: (): SyncReport => {
