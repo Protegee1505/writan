@@ -356,8 +356,8 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fix
   Android first run at 390×844 (8 artefacts, 0 failures; routine in
   `docs/ANDROID.md`). Local DoD green: fmt/clippy/223 tests (3 ignored),
   `svelte-check` 0/0, frontend build OK.
-- **M5 slice 2a — Android share target** (2026-10-19, commit `<2a>`): ADR-0010
-  (decisions 1–3). An in-repo Kotlin plugin
+- **M5 slice 2a — Android share target** (2026-10-19, commit `218ef5a`, fix
+  `44965db`): ADR-0010 (decisions 1–3). An in-repo Kotlin plugin
   (`app/src-tauri/gen/android/app/src/main/java/com/writan/desktop/WritanPlugin.kt`,
   package `com.writan.desktop`, registered by `register_android_plugin`) takes
   `ACTION_SEND` `text/plain` from `load()`/`onNewIntent()` and parks
@@ -373,7 +373,9 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fix
   script: a third document load in one driver session races the mock dev
   server). Verification: full local DoD green (`cargo fmt`/`clippy` clean,
   237 tests incl. 11 share unit + 1 integration, svelte-check 0/0, frontend
-  build OK) and both strict mock runs (`mobile.actions`, `mobile-share.actions`).
+  build OK) and both strict mock runs (`mobile.actions`, `mobile-share.actions`);
+  the arm64 debug APK job compiles the plugin's Kotlin green
+  ([39249980550](https://github.com/Protegee1505/writan/actions/runs/39249980550)).
 - **Sync fixpoint fix — a merge must dominate both sides** (2026-10-19): the
   nightly soak's `m=1`-per-sweep loop was `LwwDiff3`'s fast-forward keeping one
   side's vector alone, so the version it published never covered the other
@@ -388,7 +390,7 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fix
   `blob_digest` are public for it). Evidence: commit `bcf90ff`, nightly run
   [39240627614](https://github.com/Protegee1505/writan/actions/runs/39240627614)
   green on folder and bucket; ADR-0005 amended.
-- **M5 slice 2b — Keystore-backed keychain** (2026-10-19, commit `<2b>`):
+- **M5 slice 2b — Keystore-backed keychain** (2026-10-19, commit `c5f9112`):
   ADR-0010 decisions 4–5, plus the dated note in ADR-0009 §8. On Android
   `crates/writan-sync/src/keychain.rs` resolves to `keyring-core` with
   `android-native-keyring-store` (SharedPreferences + Keystore AES-GCM) behind
@@ -403,7 +405,9 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fix
   aarch64-linux-android` for `writan-sync`/`writan-app` clean; strict mock runs
   (`mobile.actions` incl. the new Android sync settings step, and
   `mobile-share.actions`) green; desktop DoD green (fmt/clippy, 237 tests,
-  svelte-check 0/0, frontend build OK).
+  svelte-check 0/0, frontend build OK); `ci.yml`, the Docker image and the
+  arm64 debug APK job all green
+  ([39250831846](https://github.com/Protegee1505/writan/actions/runs/39250831846)).
 
 ## Current state
 
