@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4 complete + the sync-setup panel fix).
+Last updated: 2026-10-19 (M4 complete, M4.5 complete).
 
 ## Milestone history
 
@@ -308,6 +308,21 @@ Last updated: 2026-10-19 (M4 complete + the sync-setup panel fix).
   (`app/src/lib/components/SyncSection.svelte:30`); the browser mock's
   `sync_disable` kept a stale `target: null`, which is why the mock loop never
   showed it (`app/src/lib/mock.ts:308`).
+- **M4.5 — one-password sign-in + one-command server** (2026-10-19): ADR-0008
+  removes account passwords: one password derives both the keyring KEK and an
+  Argon2id verifier, and the server stores a salt plus SHA-256(verifier) and
+  runs no KDF per request (schema v2; `db::open` migrates a v1 store, and a
+  pre-v0.2 account is unlocked by one `reset-password` run, which revokes its
+  devices). `writan-sync` gained bring-forward adoption of a keyring made with
+  an older password, `change_password` (append the keyring generation first,
+  then `POST /api/v1/account/verifier`; every other device must sign in again)
+  and `new_recovery_code`. Both shells show one Password field, the
+  bring-forward prompt, and Change password / New recovery code rows.
+  Releases gain a `writan-server` binary (glibc 2.35 floor) and
+  `scripts/server-install.sh` (SHA-256-verified download, systemd unit, Caddy
+  `--domain`); a personal build can bake `WRITAN_DEFAULT_SERVER`. Version
+  0.2.0. Verification: `cargo test --workspace` 223 tests green (3 ignored),
+  `svelte-check` 0/0, frontend build OK.
 
 ## Current state
 
@@ -316,22 +331,29 @@ Last updated: 2026-10-19 (M4 complete + the sync-setup panel fix).
   waits on the user's laptop (`docs/REAL-HARDWARE.md`). M4 noteserver complete
   (`crates/writan-server`, ADR-0007): accounts, blob API, change feed/SSE, the
   server sync target, pairing codes, the QR display and the settings wiring in
-  both shells, and the Docker image + `docs/SERVER.md` (chunks A–H).
-  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 206 tests
+  both shells, and the Docker image + `docs/SERVER.md` (chunks A–H). M4.5
+  complete (ADR-0008): one password for sign-in and keyring, keyring rotation,
+  and a release server binary with a one-command installer.
+  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 223 tests
   green (3 ignored), `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
-  `%APPDATA%\com.writan.desktop`). Workspace MSRV: Rust 1.90.
+  `%APPDATA%\com.writan.desktop`). Workspace MSRV: Rust 1.90; version 0.2.0
+  since M4.5.
 - CI is the compiler: this box re-images regularly and carries rustup minimal +
-  rustfmt only (no MSVC Build Tools since 2026-10-17) — locally run `cargo fmt`,
-  `cargo fetch`/`cargo metadata` (lockfile) and the npm frontend checks; CI
-  compiles, lints and tests everything.
+  rustfmt only — locally run `cargo fmt`, `cargo fetch`/`cargo metadata`
+  (lockfile) and the npm frontend checks; CI compiles, lints and tests
+  everything. The full local DoD works after one passwordless-sudo apt line
+  (`libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libgtk-3-dev
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev`);
+  run `sudo apt-get update` first — a stale index 404s the fetch.
 - CI map: `ci.yml` (fmt/clippy/tests on windows-latest + ubuntu-latest, a
   release search-perf step, cargo-deny), `artifacts.yml` (Windows installers +
   `writan-linux-x64` binary and `measure.txt`; manual dispatch or a `v*` tag,
   kept 90 days), `nightly.yml` (three-device sync soak, folder + bucket, cron
   `17 3 * * *`), `docker.yml` (the writan-server image; builds every push,
   pushes GHCR on `v*` tags or a manual run), `web.yml` (static SPA → GitHub
-  Pages preview). The ubuntu job is the free Linux compiler for `app-linux/`.
+  Pages preview). The ubuntu job is the free Linux compiler for `app-linux/`;
+  `artifacts.yml` and the visual workflow also cover the shell.
 - Cloud-first dev: **Google Cloud Shell** is the agent host
   (`scripts/cloudshell-setup.sh`, `docs/CLOUD.md`); the free `opencode/*` models
   answer from its IP but are rate-limited from Codespaces' — the codespace
