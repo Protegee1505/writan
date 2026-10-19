@@ -1,8 +1,8 @@
 name: web
 
 # Static SPA build of app/ for the browser — the GitHub Pages preview.
-# - main pushes touching app/ redeploy the preview
-# - tags and manual runs also deploy
+# - main pushes touching app/ redeploy the preview; manual runs too
+# - tags build the SPA without deploying (the Pages environment rejects a tag)
 # - pull requests build without deploying, so frontend regressions show here
 on:
   push:
@@ -70,7 +70,8 @@ jobs:
         run: npm --prefix app run build
 
   deploy:
-    if: github.event_name != 'pull_request'
+    # A tag cannot deploy: the github-pages environment only admits branches.
+    if: github.event_name != 'pull_request' && github.ref_type == 'branch'
     needs: build
     runs-on: ubuntu-latest
     environment:
