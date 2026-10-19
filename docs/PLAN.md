@@ -8,6 +8,10 @@ settings search). M4
 noteserver complete (2026-10-18): accounts, blob API, change feed + SSE, the
 server sync target, pairing codes, the QR display and the settings wiring in
 both shells, and the Docker image + `docs/SERVER.md` deploy doc (chunks A–H).
+M4.5 one-password sign-in and server setup complete (2026-10-19): ADR-0008
+verifier auth (schema v2, legacy migration), client keyring rotation
+(change password, new recovery code, bring-forward on an older keyring), one
+Password field in both shells, and the release binary + `server-install.sh`.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -42,6 +46,7 @@ Order is a suggestion, not a constraint.
 |---|-------|---------------|
 | M3.5 | Native Linux shell (1.5–3 wk) | `app-linux/` GTK4 + libadwaita + GtkSourceView (ADR-0004): three-pane UI, Markdown highlighting + rendered preview pane, command palette, settings (same app-data `config.json`), trash, attachments; parity checklist vs the Tauri shell green; Linux idle RAM < 100 MB measured; IME verified with ibus + fcitx5 on real hardware. |
 | M4 | noteserver (1–2 wk) — **done 2026-10-18** | axum + SQLite server: email+password and QR pairing, blob API, SSE change events; Docker image; deploy doc for free tiers (Oracle Always Free caveat: idle reclaim — run companions or switch to PAYG). |
+| M4.5 | one-password sign-in + one-command server (3 days) — **done 2026-10-19** | ADR-0008: one password derives both the keyring KEK and the sign-in verifier; the server stores a salt + verifier hash and runs no KDF per request (schema v2 migrates v1 stores; a pre-v0.2 account is unlocked by one `reset-password` run). Keyring rotation in `writan-sync` (`change_password`, `new_recovery_code`, bring-forward adoption of an older keyring). One Password field in both shells. Release `writan-server` binary + `scripts/server-install.sh` (SHA-256 verified, systemd, Caddy `--domain`). |
 | M5 | Android (2–3 wk) | Tauri Android build (NDK r27+), responsive layout, share-target capture, Keystore-backed unlock, opt-in 15-min WorkManager sync; APK attached to releases (F-Droid metadata later). |
 | M6 | Hardening & release (1–2 wk) | Perf budgets verified; MSI/.deb/Flatpak/AppImage/APK pipelines; desktop updater (not on Android); export/backup; LICENSE files; docs. |
 
