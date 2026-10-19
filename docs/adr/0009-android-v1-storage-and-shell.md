@@ -60,6 +60,10 @@ Status: accepted. Date: 2026-10-19.
    rather than a private Kotlin channel.
 8. **Sync setup is visible but marked not-yet-supported on Android** until the
    Keystore-backed unlock (M5 slice 2) replaces the keyring's mock store there.
+   *(2026-10-19: M5 slice 2b does exactly that — the keychain is backed by
+   `android-native-keyring-store` (`ADR-0010` §4–5), the settings hint is gone
+   and the folder target is hidden on Android because there is no folder
+   picker there.)*
 
 ## Consequences
 

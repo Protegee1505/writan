@@ -28,3 +28,9 @@ uuid = "1"
 writan-core = { path = "../../crates/writan-core" }
 writan-crypto = { path = "../../crates/writan-crypto" }
 writan-sync = { path = "../../crates/writan-sync" }
+
+# The JNI shim that hands the Android app context to `ndk-context` (ADR-0010
+# §5), so the Keystore-backed keyring store can be created from Rust.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"

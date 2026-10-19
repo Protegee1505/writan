@@ -16,8 +16,9 @@ M5 Android started (2026-10-19): `app/src-tauri/gen/android` is committed and
 CI builds an arm64 debug APK (`writan-android-arm64`); slice 1 landed — the
 Svelte shell works one pane at a time at phone width, and a fresh install uses
 an app-private vault instead of a folder picker (ADR-0009). Slice 2a landed —
-text/URL shares become notes (ADR-0010); Keystore-backed unlock and opt-in
-background sync are next.
+text/URL shares become notes, and slice 2b — the keychain is Keystore-backed,
+so sync unlocks without the password (ADR-0010). Opt-in background sync is
+next.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -41,14 +42,13 @@ Order is a suggestion, not a constraint.
    (task 1).
 3. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
    commit as every shell change.
-4. **M5 slice 2b/2c — Keystore unlock, then background sync** (ADR-0010): the
-   share half is done; next is the Keystore-backed keychain under
-   `cfg(target_os = "android")` (then the settings hint at
-   `app/src/lib/components/SettingsPanel.svelte:253` goes away and folder-sync
-   is hidden there), and after it the opt-in 15-minute WorkManager sync
-   (JNI worker reusing the `sync_now` pass, `background_sync` in `AppConfig`).
-   Sideload the `writan-android-arm64` APK to check slice 1 + the share flow on
-   a phone first — the routine is `docs/ANDROID.md`.
+4. **M5 slice 2c — opt-in background sync** (ADR-0010): share capture and the
+   Keystore-backed keychain are in; next is the 15-minute WorkManager run —
+   `androidx.work` + a `SyncWorker` calling a JNI sync pass that reuses the
+   `sync_now` path, `background_sync` in `AppConfig`, the Android-only toggle
+   in `SyncSection.svelte`, and the schedule reconciled on launch. Then
+   sideload the `writan-android-arm64` APK and check slice 1 + share + unlock +
+   background sync on a phone — the routine is `docs/ANDROID.md`.
 
 ## Upcoming milestones
 

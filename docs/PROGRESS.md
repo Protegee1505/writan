@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a; nightly sync soak fixed).
+Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a + 2b; nightly sync soak fixed).
 
 ## Milestone history
 
@@ -388,6 +388,22 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a; nightly sync soak fixed).
   `blob_digest` are public for it). Evidence: commit `bcf90ff`, nightly run
   [39240627614](https://github.com/Protegee1505/writan/actions/runs/39240627614)
   green on folder and bucket; ADR-0005 amended.
+- **M5 slice 2b — Keystore-backed keychain** (2026-10-19, commit `<2b>`):
+  ADR-0010 decisions 4–5, plus the dated note in ADR-0009 §8. On Android
+  `crates/writan-sync/src/keychain.rs` resolves to `keyring-core` with
+  `android-native-keyring-store` (SharedPreferences + Keystore AES-GCM) behind
+  `cfg(target_os = "android")`; desktop keeps `keyring` 3 and the service names
+  (`com.writan.desktop.sync`/`.s3`/`.server`) are unchanged. Because
+  tauri/tao/wry never initialize `ndk-context`, `Keyring.kt` (from
+  `MainActivity.onCreate`) and `app/src-tauri/src/android.rs` hand it the
+  `applicationContext` once — a later slice-2c call is a no-op. The manifest
+  gains `android:allowBackup="false"` (a Keystore key cannot leave the device),
+  Android sync setup offers S3/server only, and the "keystore bridge not built"
+  hint is gone. Verification: `cargo check` + `clippy --target
+  aarch64-linux-android` for `writan-sync`/`writan-app` clean; strict mock runs
+  (`mobile.actions` incl. the new Android sync settings step, and
+  `mobile-share.actions`) green; desktop DoD green (fmt/clippy, 237 tests,
+  svelte-check 0/0, frontend build OK).
 
 ## Current state
 
@@ -403,7 +419,8 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a; nightly sync soak fixed).
   install opens an app-private vault (ADR-0009); the Android project is
   committed and `artifacts.yml` builds the arm64 debug APK. Slice 2a adds the
   share target: text/URL shares become notes, kept natively until a vault
-  exists (ADR-0010).
+  exists (ADR-0010). Slice 2b backs the sync secrets with the Android keystore,
+  so a restart unlocks sync without the password.
   Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 237 tests
   green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under

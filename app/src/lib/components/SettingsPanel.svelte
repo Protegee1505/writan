@@ -252,12 +252,6 @@
                 {/each}
               </div>
             {:else if section === "sync"}
-              {#if store.android}
-                <p class="hint">
-                  Sync needs the Android keystore bridge, which is not built yet — this device
-                  keeps every note to itself for now.
-                </p>
-              {/if}
               <SyncSection />
             {:else if section === "advanced"}
               <div class="rows">

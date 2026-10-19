@@ -8,8 +8,14 @@
 //!
 //! Both shells (Tauri and the GTK app) share these service names and account
 //! formats, so a key remembered by one is found by the other.
+//!
+//! Android has no keyring-3 store, so there `keyring` below is really
+//! `keyring_core` pointed at the app's Keystore-backed store (ADR-0010 §4–5).
 
 use uuid::Uuid;
+
+#[cfg(target_os = "android")]
+use keyring_core as keyring;
 
 /// Keychain service name for remembered vault keys; the account is the vault
 /// id.
@@ -22,8 +28,27 @@ const S3_SECRET_SERVICE: &str = "com.writan.desktop.s3";
 const SERVER_TOKEN_SERVICE: &str = "com.writan.desktop.server";
 
 fn entry(service: &str, account: &str) -> Option<keyring::Entry> {
+    init_store();
     keyring::Entry::new(service, account).ok()
 }
+
+/// Point `keyring-core` at the Android Keystore-backed store once (ADR-0010
+/// §4–5). Before this, entries have no default store and every call fails —
+/// which only means sync stays locked. The store needs the ndk context the
+/// Kotlin `Keyring` object hands over in `MainActivity.onCreate`.
+#[cfg(target_os = "android")]
+fn init_store() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        if let Ok(store) = android_native_keyring_store::Store::new() {
+            keyring_core::set_default_store(store);
+        }
+    });
+}
+
+#[cfg(not(target_os = "android"))]
+fn init_store() {}
 
 /// Best-effort: remember the vault key so a restart can unlock without the
 /// password. Failure is fine — the password still works.

@@ -3,7 +3,12 @@
   import { api, type KeyringFallback, type PairingInfo } from "$lib/api";
   import { store } from "$lib/store.svelte";
 
-  let kind = $state<"folder" | "s3" | "server">("folder");
+  // No folder target on Android: there is no folder picker there (ADR-0009
+  // §2), so the picker opens on the server form instead (ADR-0010 §4).
+  let kind = $state<"folder" | "s3" | "server">(store.android ? "server" : "folder");
+  $effect(() => {
+    if (store.android && kind === "folder") kind = "server";
+  });
   let target = $state("");
   let s3Endpoint = $state("");
   let s3Bucket = $state("");
@@ -344,14 +349,21 @@
       <div class="meta">
         <span class="label">Where notes sync</span>
         <span class="desc">
-          A folder every device can reach (a synced drive, a network share) or an S3-compatible
-          bucket. Notes go in encrypted; the target never holds plaintext.
+          {#if store.android}
+            An S3-compatible bucket or a Writan server. Notes go in encrypted; the target never
+            holds plaintext.
+          {:else}
+            A folder every device can reach (a synced drive, a network share) or an S3-compatible
+            bucket. Notes go in encrypted; the target never holds plaintext.
+          {/if}
         </span>
       </div>
       <div class="control">
-        <button class="btn" class:selected={kind === "folder"} onclick={() => (kind = "folder")}>
-          Shared folder
-        </button>
+        {#if !store.android}
+          <button class="btn" class:selected={kind === "folder"} onclick={() => (kind = "folder")}>
+            Shared folder
+          </button>
+        {/if}
         <button class="btn" class:selected={kind === "s3"} onclick={() => (kind = "s3")}>
           S3 bucket
         </button>

@@ -61,6 +61,22 @@ assert !document.body.innerText.includes("Use this device's storage")
 assert !document.querySelector("section.pane")
 shot 60-android-vault
 
+# Sync on Android offers S3/server only: no shared-folder target, and the
+# "not built yet" keystore note is gone (M5 slice 2b, ADR-0010 §4).
+click More actions
+wait 300
+click Settings
+wait 400
+click Sync
+wait 300
+assert !document.body.innerText.includes("Shared folder")
+assert !document.body.innerText.includes("keystore bridge")
+assert document.body.innerText.includes("S3 bucket")
+shot 65-android-sync
+key Escape
+wait 300
+assert !document.querySelector(".panel")
+
 # The vault button and "Change notes folder" make no sense without a picker.
 assert !document.body.innerText.includes("Change notes folder")
 click More actions

@@ -63,12 +63,21 @@ walk `tools/visual/actions/mobile-share.actions` or open
 ?mock=1&platform=android&share=Hello&subject=From%20the%20share%20sheet
 ```
 
+## Sync (M5 slice 2b)
+
+Sync works on Android with the S3 and Writan-server targets. The vault key,
+the S3 secret and the server token live in the app's Keystore-backed store
+(`android-native-keyring-store`, ADR-0010 §4–5), whose entries survive a
+restart, so sync unlocks without the password. The app context the store needs
+is handed to Rust from `MainActivity.onCreate` (`Keyring.kt` → `android.rs`).
+Android backup stays off (`android:allowBackup="false"`): a Keystore key cannot
+leave the device, and the vault is app-private. The shared-folder target is
+desktop-only — Android has no folder picker (ADR-0009 §2).
+
 ## Not yet
 
-- **Sync** — it needs the Keystore-backed unlock (M5 slice 2); the keyring
-  falls back to its mock store on Android, so the settings panel says so.
 - **Background sync** — the opt-in 15-minute WorkManager run lands later in
-  slice 2, on top of the Keystore unlock.
+  slice 2, on top of this Keystore unlock.
 - **Hardware back button** — Tauri 2.11 exposes no hook; the drawer closes by
   tapping a row or the scrim. Follow-up in slice 2.
 - Keyboard shortcuts, image/file shares, export/backup, release signing.

@@ -11,7 +11,6 @@ base64 = { workspace = true }
 blake3 = { workspace = true }
 diffy = { workspace = true }
 hmac = { workspace = true }
-keyring = { workspace = true }
 quick-xml = { workspace = true }
 qrcode = { workspace = true }
 serde = { workspace = true }
@@ -24,6 +23,16 @@ uuid = { workspace = true }
 writan-core = { workspace = true }
 writan-crypto = { workspace = true }
 zeroize = { workspace = true }
+
+# Desktop keychains: keyring 3's native stores (ADR-0005 §10).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = { workspace = true }
+
+# Android: the app's own Keystore-backed store (ADR-0010 §4–5). keyring 3 has
+# no Android store, so `keychain.rs` aliases `keyring_core` as `keyring` there.
+[target.'cfg(target_os = "android")'.dependencies]
+android-native-keyring-store = "1"
+keyring-core = "1"
 
 [dev-dependencies]
 tempfile = "3"

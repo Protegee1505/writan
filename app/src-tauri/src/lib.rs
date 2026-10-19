@@ -2,6 +2,9 @@ mod commands;
 mod share;
 mod state;
 
+#[cfg(target_os = "android")]
+mod android;
+
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
