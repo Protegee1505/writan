@@ -18,7 +18,18 @@ the same engine as WebView2, so this is also a good preview of the Windows
 app. In OpenChamber, the browser panel can drive the same URL
 (`browser.snapshot` / `browser.capture`).
 
-Not covered here: watcher events, real files on disk, E2EE, huge vaults.
+Two more parameters shape the session: `?platform=android` presents the phone
+build (app-private vault, no folder picker) and `&welcome=1` starts with no
+vault open, as on a fresh install. With `--size` the same runner covers the
+phone shell:
+
+```sh
+scripts/mock-shot.sh --serve --size 390x844 \
+  --actions tools/visual/actions/mobile.actions --strict
+```
+
+Not covered here: watcher events, real files on disk, E2EE, huge vaults, and
+anything the phone build alone can show (touch feel, the real keyboard).
 
 ## 2. Linux app loop (about a minute) — the GTK shell
 
@@ -65,8 +76,14 @@ shot 10-search    # -> <out>/10-search.png
 click Notes       # click by role/text            (cdp backend only)
 dump 30-dom       # visible text -> <out>/30-dom.txt (cdp backend only)
 assert-contains ok # fail unless the page shows it  (cdp backend only)
+assert expr       # fail unless the JS expression is truthy (cdp backend)
+eval expr         # print the JS expression's value, as JSON (cdp backend)
 goto <url>        # navigate                      (cdp backend only)
 ```
+
+`assert`/`eval` are how a walkthrough checks geometry the way a user would feel
+it — e.g. `assert document.querySelector(".sidebar.hidden")` or
+`eval window.innerWidth` (see `actions/mobile.actions`).
 
 Two backends: `--backend x11` (xdotool + ImageMagick, Linux/Xvfb) and
 `--backend cdp` (playwright-core; anything launched with

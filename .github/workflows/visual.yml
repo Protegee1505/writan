@@ -2,7 +2,8 @@
 # machine) can look at the UI instead of guessing: tools/visual/README.md.
 #
 # Manual trigger, not on every push — the Windows debug build takes a few
-# minutes. Both jobs upload PNGs (+ a DOM text dump on Windows):
+# minutes, and the phone job only needs the mock frontend. All jobs upload
+# PNGs (+ a DOM text dump on Windows):
 #   gh workflow run visual.yml -R Protegee1505/writan
 #   gh run download <run-id> -n writan-windows-shots
 name: visual
@@ -21,6 +22,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  phone-ui:
+    name: Phone shell screenshots (mock backend, 390x844)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            tools/visual/package-lock.json
+      - name: Frontend + driver dependencies
+        run: |
+          npm ci --prefix app
+          npm ci --prefix tools/visual
+      - name: Headless browser
+        run: npx --prefix tools/visual playwright install --with-deps chromium-headless-shell
+      - name: Phone walkthrough (one pane, drawer, Android first run)
+        run: >
+          scripts/mock-shot.sh --serve --size 390x844
+          --actions tools/visual/actions/mobile.actions --strict --out shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: writan-phone-shots
+          path: shots
+          if-no-files-found: error
+
   linux-ui:
     name: Linux GTK shell screenshots
     runs-on: ubuntu-latest

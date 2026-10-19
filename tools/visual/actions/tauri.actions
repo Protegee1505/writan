@@ -2,6 +2,8 @@
 # dev server in a browser). Works through the CDP backend.
 wait 1500
 shot 00-startup
+# The three-pane desktop layout: no phone override on this window size.
+assert !document.documentElement.hasAttribute("data-narrow")
 key ctrl+p
 wait 600
 shot 10-command-palette

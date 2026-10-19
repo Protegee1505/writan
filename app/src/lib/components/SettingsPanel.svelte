@@ -252,6 +252,12 @@
                 {/each}
               </div>
             {:else if section === "sync"}
+              {#if store.android}
+                <p class="hint">
+                  Sync needs the Android keystore bridge, which is not built yet — this device
+                  keeps every note to itself for now.
+                </p>
+              {/if}
               <SyncSection />
             {:else if section === "advanced"}
               <div class="rows">
@@ -264,13 +270,15 @@
                   </div>
                   <div class="control">
                     <code class="path">{store.status.dataDir || "…"}</code>
-                    <button
-                      class="btn"
-                      disabled={!store.status.dataDir}
-                      onclick={() => store.status.dataDir && void openPath(store.status.dataDir)}
-                    >
-                      Open
-                    </button>
+                    {#if !store.android}
+                      <button
+                        class="btn"
+                        disabled={!store.status.dataDir}
+                        onclick={() => store.status.dataDir && void openPath(store.status.dataDir)}
+                      >
+                        Open
+                      </button>
+                    {/if}
                   </div>
                 </div>
                 <div class="row column">
@@ -720,5 +728,67 @@
     padding: 24px 12px;
     text-align: center;
     color: var(--fg-muted);
+  }
+
+  /* Phone layout: a full-screen sheet with the sections as a horizontal
+     strip, so rows keep their width instead of being squeezed. */
+  :global(:root[data-narrow]) .overlay {
+    padding-top: 0;
+    align-items: stretch;
+  }
+
+  :global(:root[data-narrow]) .panel {
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  :global(:root[data-narrow]) header {
+    gap: 8px;
+    padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+  }
+
+  :global(:root[data-narrow]) .body {
+    flex-direction: column;
+  }
+
+  :global(:root[data-narrow]) .tabs {
+    width: auto;
+    flex-direction: row;
+    gap: 6px;
+    padding: 8px 10px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  :global(:root[data-narrow]) .tab {
+    padding: 10px 12px;
+    white-space: nowrap;
+  }
+
+  :global(:root[data-narrow]) .content {
+    padding: 6px 12px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  :global(:root[data-narrow]) .row {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 6px;
+  }
+
+  :global(:root[data-narrow]) .close {
+    padding: 10px 12px;
+  }
+
+  :global(:root[data-narrow]) select {
+    min-width: 0;
+  }
+
+  :global(:root[data-narrow]) input[type="range"] {
+    width: 130px;
   }
 </style>

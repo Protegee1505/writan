@@ -10,6 +10,10 @@
  * It implements the commands in `lib/api.ts` plus the plugin commands the app
  * calls (dialog, opener, event). Nothing here is shipped behaviour: the import
  * is dynamic and only happens when the query parameter is present.
+ *
+ * Two more parameters shape the session: `&platform=android` makes the shell
+ * behave like the phone build (app-private vault, no folder picker), and
+ * `&welcome=1` starts with no vault open, as on a fresh install.
  */
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
@@ -27,6 +31,23 @@ import type {
 } from "./api";
 
 const VAULT = "/home/mock/Notes";
+
+/** `?mock=1&platform=android` makes the shell behave like the phone build. */
+const params = new URLSearchParams(typeof location === "undefined" ? "" : location.search);
+const platform = params.get("platform") ?? "linux";
+/** Where `open_default_vault` lands; mirrors the Android build's data dir. */
+const DEFAULT_VAULT = platform === "android" ? "/data/user/0/com.writan.desktop/files/vault" : VAULT;
+/** `&welcome=1` starts with no vault open, like a fresh install. */
+let vaultPath: string | null = params.get("welcome") ? null : VAULT;
+
+function statusOf(): Status {
+  return {
+    vaultPath,
+    noteCount: notes.length,
+    dataDir: "/home/mock/.local/share/com.writan.desktop",
+    platform,
+  };
+}
 
 interface MockNote extends Note {
   deletedAt?: string;
@@ -168,17 +189,20 @@ function update(id: string, body: string, tags: string[]): Note {
 type Command = (args: Record<string, unknown>) => unknown;
 
 const commands: Record<string, Command> = {
-  get_status: (): Status => ({
-    vaultPath: VAULT,
-    noteCount: notes.length,
-    dataDir: "/home/mock/.local/share/com.writan.desktop",
-  }),
+  get_status: statusOf,
   get_settings: () => settings,
   save_settings: (args) => {
     settings = (args.settings as Record<string, unknown>) ?? {};
     return null;
   },
-  open_vault: () => ({ vaultPath: VAULT, noteCount: notes.length, dataDir: "/home/mock/.local/share" }),
+  open_vault: (args) => {
+    vaultPath = (args.path as string) ?? VAULT;
+    return statusOf();
+  },
+  open_default_vault: () => {
+    vaultPath = DEFAULT_VAULT;
+    return statusOf();
+  },
   list_notes: (args) => sorted().slice(0, (args.limit as number) ?? 200).map(summary),
   search_notes: (args) => search(args as SearchFilters),
   get_note: (args) => notes.find((n) => n.id === args.id) ?? null,
@@ -193,6 +217,21 @@ const commands: Record<string, Command> = {
       created: new Date().toISOString(),
       updated: new Date().toISOString(),
       body: `# ${title}\n`,
+    };
+    notes.push(note);
+    return summary(note);
+  },
+  duplicate_note: (args) => {
+    const source = notes.find((n) => n.id === args.id);
+    if (!source) throw new Error(`mock: no note ${args.id}`);
+    const title = `${source.title} (copy)`;
+    const note: MockNote = {
+      ...source,
+      id: `mock-${counter++}`,
+      relPath: `${title}.md`,
+      title,
+      created: new Date().toISOString(),
+      updated: new Date().toISOString(),
     };
     notes.push(note);
     return summary(note);

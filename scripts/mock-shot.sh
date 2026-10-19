@@ -4,19 +4,22 @@
 #   scripts/mock-shot.sh --serve          # starts Vite too, stops it afterwards
 #   scripts/mock-shot.sh                  # uses an already running dev server
 #   scripts/mock-shot.sh --url http://127.0.0.1:5173/?mock=1
+#   scripts/mock-shot.sh --size 390x844   # phone-sized window (mobile.actions)
 #
 # This is the fastest loop in the harness: seconds per iteration, real Svelte
 # UI, in-memory backend (app/src/lib/mock.ts). Chromium is the same engine as
 # WebView2, so what it renders is a close preview of the Windows app.
 #
 # Needs a Chromium binary: either set CHROME_BIN, or `npx playwright install
-# chromium` once (the script finds it under ~/.cache/ms-playwright).
+# chromium-headless-shell` once (the script finds it under the Playwright
+# browsers cache, $XDG_CACHE_HOME/ms-playwright or ~/.cache/ms-playwright).
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 url="http://127.0.0.1:5173/?mock=1"
 out="/tmp/writan-mock-shots"
 actions="$repo/tools/visual/actions/tauri.actions"
+size="1200,800"
 port="9222"
 serve=""
 strict=""
@@ -26,27 +29,29 @@ while [ $# -gt 0 ]; do
     --url) url="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --actions) actions="$2"; shift 2 ;;
+    --size) size="$2"; shift 2 ;;
     --serve) serve=1; shift ;;
     --strict) strict="--strict"; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "mock-shot: unknown option $1" >&2; exit 2 ;;
   esac
 done
 
 chrome="$(
   if [ -n "${CHROME_BIN:-}" ]; then echo "$CHROME_BIN";
-  else find "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}" "$HOME/.cache/ms-playwright" \
-      -maxdepth 3 -type f \( -name chrome -o -name headless_shell \) 2>/dev/null |
+  else find "${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}" \
+      "$HOME/.cache/ms-playwright" \
+      -maxdepth 3 -type f \( -name chrome -o -name chrome-headless-shell -o -name headless_shell \) 2>/dev/null |
     sort | sed -n 1p || true;
   fi
 )"
 [ -n "$chrome" ] || {
-  echo "mock-shot: no Chromium found; run: npx playwright install chromium, or set CHROME_BIN" >&2
+  echo "mock-shot: no Chromium found; run: npx playwright install chromium-headless-shell, or set CHROME_BIN" >&2
   exit 1
 }
 # The playwright headless shell is always headless and rejects --headless flags.
 headless="--headless=new"
-case "$(basename "$chrome")" in headless_shell) headless="" ;; esac
+case "$(basename "$chrome")" in headless_shell | chrome-headless-shell) headless="" ;; esac
 
 [ -d "$repo/tools/visual/node_modules" ] || {
   echo "mock-shot: driver deps missing; run: npm ci --prefix tools/visual" >&2
@@ -76,7 +81,7 @@ profile="$(mktemp -d /tmp/writan-chrome-XXXXXX)"
   $headless --no-sandbox --disable-gpu --hide-scrollbars \
   --user-data-dir="$profile" \
   --remote-debugging-port="$port" \
-  --window-size=1200,800 \
+  --window-size="$size" \
   "$url" >/tmp/writan-chrome.log 2>&1 &
 chrome_pid=$!
 

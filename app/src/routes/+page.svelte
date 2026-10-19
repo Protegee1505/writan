@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { store } from "$lib/store.svelte";
+  import { viewport } from "$lib/viewport.svelte";
   import { matchesAction } from "$lib/keymap";
   import TopBar from "$lib/components/TopBar.svelte";
   import NoteList from "$lib/components/NoteList.svelte";
@@ -15,6 +16,21 @@
   let paletteOpen = $state(false);
   let settingsOpen = $state(false);
   let settingsFocus = $state<string | null>(null);
+  /** On a phone the list slides over the editor as a drawer (see `listMode`). */
+  let drawerOpen = $state(false);
+
+  // One pane at a time on a phone: the editor owns the window whenever a note
+  // is open, and the list is either that pane (no note) or an overlay drawer.
+  const showListPane = $derived(!viewport.narrow || !store.note);
+  const showDrawer = $derived(viewport.narrow && Boolean(store.note) && drawerOpen);
+  const listMode = $derived<"pane" | "drawer" | "hidden">(
+    showListPane ? "pane" : showDrawer ? "drawer" : "hidden",
+  );
+
+  // The drawer only exists on top of an open note in a narrow window.
+  $effect(() => {
+    if (!viewport.narrow || !store.note) drawerOpen = false;
+  });
 
   onMount(() => {
     void (async () => {
@@ -35,6 +51,10 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && drawerOpen) {
+      drawerOpen = false;
+      return;
+    }
     if (matchesAction(e, "command-palette")) {
       e.preventDefault();
       paletteOpen = true;
@@ -81,16 +101,30 @@
       <Logo size={44} />
       <h1>Writan</h1>
       <p class="tagline">A fast, local-first notebook. Your notes are plain Markdown files in a folder you own.</p>
-      <button class="cta" onclick={() => store.chooseVault()}>Choose notes folder</button>
-      <p class="hint">Nothing leaves your machine.</p>
+      {#if store.android}
+        <button class="cta" onclick={() => store.useDefaultVault()}>Use this device's storage</button>
+        <p class="hint">Writan keeps its notes folder in the app's own storage here — plain Markdown, no account.</p>
+      {:else}
+        <button class="cta" onclick={() => store.chooseVault()}>Choose notes folder</button>
+        <p class="hint">Nothing leaves your machine.</p>
+      {/if}
     </div>
   </main>
 {:else}
   <div class="app">
-    <TopBar onsettings={() => openSettings(null)} />
+    <TopBar
+      onsettings={() => openSettings(null)}
+      drawerOpen={showDrawer}
+      ondrawer={() => (drawerOpen = !drawerOpen)}
+    />
     <div class="main">
-      <NoteList />
-      <EditorPane />
+      <NoteList mode={listMode} onopen={() => (drawerOpen = false)} />
+      {#if !viewport.narrow || store.note}
+        <EditorPane />
+      {/if}
+      {#if showDrawer}
+        <div class="scrim" role="presentation" onclick={() => (drawerOpen = false)}></div>
+      {/if}
     </div>
     {#if store.trashOpen}
       <TrashPanel />
@@ -118,7 +152,7 @@
 
 <style>
   .splash {
-    height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -130,7 +164,7 @@
   }
 
   .welcome {
-    height: 100vh;
+    height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -181,19 +215,29 @@
   .app {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    /* dvh follows the on-screen keyboard; the viewport meta asks Android to
+       resize the layout instead of panning it (app.html). */
+    height: 100dvh;
   }
 
   .main {
     display: flex;
     flex: 1;
     min-height: 0;
+    position: relative; /* anchors the note list when it works as a drawer */
+  }
+
+  .scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 65;
+    background: rgba(0, 0, 0, 0.32);
   }
 
   .toast {
     position: fixed;
     left: 50%;
-    bottom: 20px;
+    bottom: calc(20px + env(safe-area-inset-bottom));
     transform: translateX(-50%);
     display: flex;
     align-items: center;
@@ -217,5 +261,27 @@
     padding: 3px 8px;
     border-radius: 7px;
     border: 1px solid var(--border);
+  }
+
+  /* Phone layout: the first-run card fills the width and the button is
+     thumb-sized; dvh keeps both clear of the on-screen keyboard. */
+  :global(:root[data-narrow]) .welcome {
+    align-items: flex-start;
+    padding: calc(48px + env(safe-area-inset-top)) 16px 24px;
+  }
+
+  :global(:root[data-narrow]) .card {
+    width: 100%;
+    padding: 28px 20px;
+    border-radius: var(--radius);
+  }
+
+  :global(:root[data-narrow]) .cta {
+    width: 100%;
+    padding: 14px 20px;
+  }
+
+  :global(:root[data-narrow]) .toast {
+    max-width: calc(100vw - 24px);
   }
 </style>

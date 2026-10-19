@@ -174,4 +174,30 @@
     text-align: center;
     color: var(--fg-muted);
   }
+
+  /* Phone layout: the restore/purge buttons and the rows must be tappable. */
+  :global(:root[data-narrow]) .panel {
+    width: 100%;
+    max-height: 88vh;
+    border-radius: 14px 14px 0 0;
+    align-self: flex-end;
+  }
+
+  :global(:root[data-narrow]) header {
+    padding: calc(12px + env(safe-area-inset-top)) 12px 12px;
+  }
+
+  :global(:root[data-narrow]) .close,
+  :global(:root[data-narrow]) .quiet {
+    padding: 10px 12px;
+  }
+
+  :global(:root[data-narrow]) .row {
+    padding: 12px;
+    min-height: 56px;
+  }
+
+  :global(:root[data-narrow]) .actions button {
+    padding: 10px 12px;
+  }
 </style>

@@ -6,7 +6,7 @@ export type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 class AppStore {
   ready = $state(false);
-  status = $state<Status>({ vaultPath: null, noteCount: 0, dataDir: "" });
+  status = $state<Status>({ vaultPath: null, noteCount: 0, dataDir: "", platform: "" });
   notes = $state<Summary[]>([]);
   hits = $state<Hit[] | null>(null);
   query = $state("");
@@ -47,6 +47,11 @@ class AppStore {
     return settings.dark ? "dark" : "light";
   }
 
+  /** True on the Android build, which has no folder picker (ADR-0009). */
+  get android(): boolean {
+    return this.status.platform === "android";
+  }
+
   async init() {
     await settings.init();
     try {
@@ -81,8 +86,21 @@ class AppStore {
   async chooseVault() {
     const path = await openDialog({ directory: true, title: "Choose your notes folder" });
     if (typeof path !== "string") return;
+    await this.adoptVault(() => api.openVault(path));
+  }
+
+  /**
+   * Open the vault inside the app's own data directory (ADR-0009). The Android
+   * build has no folder picker, so a fresh install starts here.
+   */
+  async useDefaultVault() {
+    await this.adoptVault(() => api.openDefaultVault());
+  }
+
+  /** Switch to another vault and start from a clean view of it. */
+  private async adoptVault(open: () => Promise<Status>) {
     try {
-      this.status = await api.openVault(path);
+      this.status = await open();
       this.note = null;
       this.selectedId = null;
       this.query = "";

@@ -27,6 +27,8 @@
  *   click Notes         click an element by role/text        (cdp only)
  *   dump 30-dom         write visible text -> <out>/30-dom.txt (cdp only)
  *   assert-contains ok  fail unless the page shows that text  (cdp only)
+ *   assert expr         fail unless the JS expression is truthy (cdp only)
+ *   eval expr           evaluate JS, print its JSON result    (cdp only)
  *   goto <url>          navigate                             (cdp only)
  *
  * Steps that the backend does not support are reported and skipped. By
@@ -223,6 +225,8 @@ async function x11Setup() {
         case "click":
         case "dump":
         case "assert-contains":
+        case "assert":
+        case "eval":
         case "goto":
           notes.push(`line ${action.n}: "${action.verb}" is cdp-only, skipped in x11 mode`);
           return;
@@ -342,6 +346,16 @@ async function cdpSetup() {
             action.rest,
           );
           if (!shown) fail(`line ${action.n} assert-contains`, `page does not show "${action.rest}"`);
+          return;
+        }
+        case "assert": {
+          const ok = await page.evaluate(action.rest);
+          if (!ok) fail(`line ${action.n} assert`, `${action.rest} is not true`);
+          return;
+        }
+        case "eval": {
+          const value = await page.evaluate(action.rest);
+          console.log(`eval line ${action.n}: ${JSON.stringify(value)}`);
           return;
         }
         case "shot": {

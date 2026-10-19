@@ -290,4 +290,22 @@
     color: var(--fg-muted);
     font-size: 13px;
   }
+
+  /* Phone layout: full-width sheet near the top, thumb-sized rows. */
+  :global(:root[data-narrow]) .overlay {
+    padding-top: calc(6px + env(safe-area-inset-top));
+  }
+
+  :global(:root[data-narrow]) .palette {
+    width: 100%;
+  }
+
+  :global(:root[data-narrow]) .list {
+    max-height: 60dvh;
+  }
+
+  :global(:root[data-narrow]) .row {
+    padding: 12px;
+    min-height: 48px;
+  }
 </style>

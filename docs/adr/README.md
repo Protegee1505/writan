@@ -15,3 +15,4 @@ changes.
 | 0006 | [S3 sync target](0006-s3-target.md) | Accepted | 2026-10-17 |
 | 0007 | [noteserver — protocol, authentication, storage](0007-noteserver.md) | Accepted — auth (§2) superseded by [ADR-0008](0008-one-password-signin.md) (which is the §12 exception) | 2026-10-18 |
 | 0008 | [One-password sign-in (verifier auth, password-derived vault key)](0008-one-password-signin.md) | Accepted | 2026-10-18 |
+| 0009 | [Android v1 — app-private vault and a one-pane shell](0009-android-v1-storage-and-shell.md) | Accepted | 2026-10-19 |

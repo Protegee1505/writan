@@ -42,7 +42,7 @@
       lineHeight: "var(--editor-line-height)",
     },
     ".cm-content": { padding: "22px 0", caretColor: "var(--accent)" },
-    ".cm-line": { padding: "0 28px" },
+    ".cm-line": { padding: "0 var(--editor-pad)" },
     "&.cm-focused": { outline: "none" },
     ".cm-activeLine": { backgroundColor: "transparent" },
     ".cm-selectionBackground, .cm-content ::selection": {
@@ -347,7 +347,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 16px 10px 28px;
+    padding: 10px 16px 10px var(--editor-pad);
     border-bottom: 1px solid var(--border);
   }
 
@@ -409,7 +409,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding: 7px 16px 7px 28px;
+    padding: 7px 16px 7px var(--editor-pad);
     border-bottom: 1px solid var(--border);
     min-height: 35px;
   }
@@ -467,5 +467,31 @@
     border-radius: 5px;
     padding: 1px 5px;
     background: var(--bg);
+  }
+
+  /* Phone layout: the title takes its own row above the note's controls,
+     and the controls grow to finger size. */
+  :global(:root[data-narrow]) .header {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+
+  :global(:root[data-narrow]) .titleInput {
+    flex: 1 1 100%;
+    font-size: 17px;
+    padding: 6px 0 2px;
+  }
+
+  :global(:root[data-narrow]) .meta {
+    flex: 1;
+  }
+
+  :global(:root[data-narrow]) .pinBtn,
+  :global(:root[data-narrow]) .danger {
+    padding: 10px 13px;
+  }
+
+  :global(:root[data-narrow]) .tagRow {
+    padding-bottom: 10px;
   }
 </style>

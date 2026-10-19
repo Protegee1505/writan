@@ -1,0 +1,67 @@
+# Phone shell at 390x844 against the mock backend (?mock=1).
+#
+#   scripts/mock-shot.sh --serve --size 390x844 \
+#     --actions tools/visual/actions/mobile.actions --strict
+#
+# Two runs in one script: the narrow layout with a note open (the list is a
+# drawer over the editor), then a fresh Android install — no vault yet — whose
+# welcome card opens the app's own storage instead of a folder picker.
+
+# --- one pane at a time, list as a drawer (desktop phone-sized window) ---
+wait 1500
+assert document.documentElement.hasAttribute("data-narrow")
+eval window.innerWidth
+shot 00-note
+# A note is open (the first one is selected on startup), so the editor owns
+# the window and the list is mounted off-screen.
+assert document.querySelector("section.pane")
+assert document.querySelector(".sidebar.hidden")
+
+click Notes list
+wait 300
+assert document.querySelector(".sidebar.drawer")
+shot 10-drawer
+
+# Opening another note closes the drawer again.
+click Design review
+wait 300
+assert document.querySelector(".sidebar.hidden")
+shot 20-note
+
+# The overflow menu carries the desktop bar's actions.
+click More actions
+wait 300
+assert document.querySelector(".menu")
+assert-contains Change notes folder
+shot 30-menu
+click Settings
+wait 400
+assert !document.querySelector(".menu")
+assert document.querySelector(".panel").getBoundingClientRect().width === innerWidth
+shot 40-settings
+key Escape
+wait 300
+assert !document.querySelector(".panel")
+
+# --- fresh Android install: no folder picker, the app's own storage ---
+goto http://127.0.0.1:5173/?mock=1&platform=android&welcome=1
+wait 1500
+assert document.documentElement.hasAttribute("data-narrow")
+assert-contains Use this device's storage
+shot 50-android-welcome
+
+click Use this device's storage
+wait 800
+assert !document.body.innerText.includes("Use this device's storage")
+# No note is open, so the list owns the window and there is no editor pane.
+assert document.querySelector("aside.sidebar.pane")
+assert !document.querySelector("section.pane")
+shot 60-android-vault
+
+# The vault button and "Change notes folder" make no sense without a picker.
+assert !document.body.innerText.includes("Change notes folder")
+click More actions
+wait 300
+assert document.querySelector(".menu")
+assert !document.body.innerText.includes("Change notes folder")
+shot 70-android-menu

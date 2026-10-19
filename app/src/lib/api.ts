@@ -4,6 +4,8 @@ export interface Status {
   vaultPath: string | null;
   noteCount: number;
   dataDir: string;
+  /** The OS the app runs on: "linux", "macos", "windows", "android", "ios". */
+  platform: string;
 }
 
 export interface Summary {
@@ -120,6 +122,7 @@ export const api = {
   saveSettings: (settings: Record<string, unknown>) =>
     invoke<void>("save_settings", { settings }),
   openVault: (path: string) => invoke<Status>("open_vault", { path }),
+  openDefaultVault: () => invoke<Status>("open_default_vault"),
   list: (limit?: number) => invoke<Summary[]>("list_notes", { limit }),
   search: (filters: SearchFilters = {}) =>
     invoke<Hit[]>("search_notes", {

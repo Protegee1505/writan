@@ -4,6 +4,17 @@
   import { fmtDate, highlightParts } from "$lib/format";
   import { settings } from "$lib/settings.svelte";
   import { store } from "$lib/store.svelte";
+  import { viewport } from "$lib/viewport.svelte";
+
+  let {
+    mode = "pane",
+    onopen,
+  }: {
+    /** "pane" fills the window, "drawer" slides over the editor, "hidden" is off-screen. */
+    mode?: "pane" | "drawer" | "hidden";
+    /** Called after a row is opened, so a drawer can close itself. */
+    onopen?: () => void;
+  } = $props();
 
   const items = $derived(store.visible);
 
@@ -69,7 +80,12 @@
 <aside
   class="sidebar"
   class:compact={settings.value.view.listDensity === "compact"}
-  style="width: {settings.value.view.sidebarWidth}px"
+  class:pane={mode === "pane"}
+  class:drawer={mode === "drawer"}
+  class:hidden={mode === "hidden"}
+  style={!viewport.narrow && mode === "pane"
+    ? `width: ${settings.value.view.sidebarWidth}px`
+    : ""}
 >
   {#if store.tags.length || store.folders.length || store.filtered}
     <div class="filters">
@@ -135,7 +151,10 @@
       <button
         class="item"
         class:selected={item.id === store.selectedId}
-        onclick={() => store.select(item.id)}
+        onclick={() => {
+          void store.select(item.id);
+          onopen?.();
+        }}
         oncontextmenu={(event) => openMenu(event, item)}
       >
         <span class="titleRow">
@@ -237,6 +256,33 @@
     flex-direction: column;
     min-height: 0;
     background: var(--bg);
+  }
+
+  /* Phone layout: one pane at a time. "pane" is the whole window; "drawer"
+     slides in over the editor; "hidden" stays mounted off-screen. */
+  :global(:root[data-narrow]) .sidebar.pane {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    border-right: none;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .sidebar.drawer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 70;
+    width: min(86vw, 340px);
+    min-width: 0;
+    max-width: none;
+    padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  }
+
+  .sidebar.hidden {
+    display: none;
   }
 
   .filters {
@@ -379,6 +425,26 @@
     padding: 0 1px;
   }
 
+  /* Phone layout: rows and chips grow to finger size. */
+  :global(:root[data-narrow]) .item {
+    padding: 12px;
+    gap: 4px;
+    min-height: 48px;
+  }
+
+  :global(:root[data-narrow]) .compact .item {
+    min-height: 44px;
+  }
+
+  :global(:root[data-narrow]) .chip {
+    padding: 7px 11px;
+    font-size: 12.5px;
+  }
+
+  :global(:root[data-narrow]) .filters {
+    max-height: 30vh;
+  }
+
   .compact .item {
     padding: 5px 9px;
     gap: 2px;
@@ -443,5 +509,9 @@
 
   .menuItem.danger {
     color: var(--danger);
+  }
+
+  :global(:root[data-narrow]) .menuItem {
+    padding: 13px 12px;
   }
 </style>

@@ -17,6 +17,8 @@
   --editor-font: var(--font-mono);
   --editor-font-size: 14.5px;
   --editor-line-height: 1.7;
+  /* Horizontal padding of the editor's header, tags row and text. */
+  --editor-pad: 28px;
 }
 
 :root[data-theme="dark"] {
@@ -82,4 +84,25 @@ input {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/*
+ * Phone layout. `lib/viewport.svelte.ts` mirrors its breakpoint onto
+ * `<html data-narrow>`; components style themselves from the same attribute.
+ * The shell is one pane at a time down here, so the panes get the whole
+ * window, the text gets narrower gutters and the scrollbars -- which Android
+ * paints on top of the content -- go away.
+ */
+:root[data-narrow] {
+  --editor-pad: 14px;
+}
+
+:root[data-narrow] body {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:root[data-narrow] ::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }

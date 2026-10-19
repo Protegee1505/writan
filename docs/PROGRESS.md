@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 Android in CI).
+Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 slice 1 done).
 
 ## Milestone history
 
@@ -340,6 +340,22 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 Android in CI).
   arm64-only `app-universal-debug.apk` (208 MB debug). Known gap: `keyring`
   resolves to its `mock` store on Android, so no key persistence until the
   M5 Keystore task.
+- **M5 slice 1 — responsive phone shell + app-private vault** (2026-10-19,
+  commit `d83d579`): ADR-0009. One breakpoint (`(max-width: 700px)` →
+  `:root[data-narrow]`, `app/src/lib/viewport.svelte.ts`): one pane at a time,
+  the list returns as a drawer with a scrim, touch targets ≥44 px (rows ≥48),
+  `100dvh` + `interactive-widget=resizes-content` for the keyboard, safe-area
+  insets, and phone-sized settings/trash/palette surfaces; above 700 px the
+  desktop three-pane layout is unchanged. `Status.platform` (from
+  `std::env::consts::OS`, mocked by `?platform=android`) tells the shell it is
+  on Android: the welcome card offers "Use this device's storage" and a new
+  `open_default_vault` command opens `<app data dir>/vault`; folder-picking
+  affordances are hidden there and sync setup says it waits for the Keystore
+  slice. Harness: `drive.mjs` gained `eval`/`assert`, `mock-shot.sh --size`,
+  and `tools/visual/actions/mobile.actions` walks the phone shell and the
+  Android first run at 390×844 (8 artefacts, 0 failures; routine in
+  `docs/ANDROID.md`). Local DoD green: fmt/clippy/223 tests (3 ignored),
+  `svelte-check` 0/0, frontend build OK.
 
 ## Current state
 
@@ -350,9 +366,10 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 Android in CI).
   server sync target, pairing codes, the QR display and the settings wiring in
   both shells, and the Docker image + `docs/SERVER.md` (chunks A–H). M4.5
   complete (ADR-0008): one password for sign-in and keyring, keyring rotation,
-  and a release server binary with a one-command installer. M5 has started:
-  the Android project is committed and `artifacts.yml` builds the arm64 debug
-  APK.
+  and a release server binary with a one-command installer. M5 slice 1 is done:
+  the Svelte shell works one pane at a time at phone width and a fresh Android
+  install opens an app-private vault (ADR-0009); the Android project is
+  committed and `artifacts.yml` builds the arm64 debug APK.
   Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 223 tests
   green (3 ignored), `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
@@ -393,8 +410,11 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 Android in CI).
   software-rendered measure is ≈131 MB) need the user's Linux laptop. The app
   has not run on Linux interactively yet — the spike runs headless in CI.
   The routine is in `docs/REAL-HARDWARE.md`; append the outcome to ADR-0004.
-- **Android untouched** (parked for M5): no `tauri android init` yet — needs
-  JDK 17 + Android SDK/NDK.
+- **Android on-device acceptance**: the phone shell has only been driven in
+  Chromium so far (`tools/visual/actions/mobile.actions`, `docs/ANDROID.md`);
+  touch feel, the real on-screen keyboard and the app-private vault need the
+  sideloaded `writan-android-arm64` APK on a phone — the routine is in
+  `docs/ANDROID.md`.
 
 ## How to run & verify
 

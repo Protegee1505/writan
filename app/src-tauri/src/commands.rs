@@ -40,6 +40,8 @@ pub struct StatusDto {
     pub vault_path: Option<String>,
     pub note_count: usize,
     pub data_dir: String,
+    /// The OS the app runs on ("linux", "macos", "windows", "android", "ios").
+    pub platform: String,
 }
 
 #[derive(serde::Serialize)]
@@ -119,6 +121,7 @@ pub fn get_status(state: State<'_, AppState>) -> CmdResult<StatusDto> {
         .inner
         .lock()
         .map_err(|_| "state lock poisoned".to_string())?;
+    let platform = std::env::consts::OS.to_string();
     match inner.workspace.as_ref() {
         Some(workspace) => Ok(StatusDto {
             vault_path: inner
@@ -128,11 +131,13 @@ pub fn get_status(state: State<'_, AppState>) -> CmdResult<StatusDto> {
                 .map(|p| p.display().to_string()),
             note_count: workspace.index().count().map_err(|e| e.to_string())? as usize,
             data_dir: state.state_dir.display().to_string(),
+            platform,
         }),
         None => Ok(StatusDto {
             vault_path: None,
             note_count: 0,
             data_dir: state.state_dir.display().to_string(),
+            platform,
         }),
     }
 }
@@ -144,6 +149,16 @@ pub fn open_vault(
     path: String,
 ) -> CmdResult<StatusDto> {
     let dir = PathBuf::from(&path);
+    state.open_vault(&dir)?;
+    crate::spawn_watcher(&app, dir);
+    get_status(state)
+}
+
+/// Open the vault inside the app's private data directory. The Android build
+/// has no folder picker, so a fresh install starts here (ADR-0009).
+#[tauri::command]
+pub fn open_default_vault(app: AppHandle, state: State<'_, AppState>) -> CmdResult<StatusDto> {
+    let dir = state.state_dir.join("vault");
     state.open_vault(&dir)?;
     crate::spawn_watcher(&app, dir);
     get_status(state)

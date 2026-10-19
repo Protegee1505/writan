@@ -27,6 +27,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::open_vault,
+            commands::open_default_vault,
             commands::list_notes,
             commands::search_notes,
             commands::get_note,
