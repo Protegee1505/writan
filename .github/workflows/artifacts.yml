@@ -156,7 +156,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
@@ -170,8 +169,17 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - name: Install frontend dependencies
         run: npm ci --prefix app
-      - name: Install the NDK
-        run: sdkmanager --install "ndk;27.3.13750724"
+      - name: Install Android packages
+        # ubuntu-latest ships the SDK with ANDROID_HOME set; only the NDK and
+        # SDK 37 pieces are missing. (setup-android@v3 fails here — it asks
+        # sdkmanager for the removed `tools` package.)
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "ndk;27.3.13750724"
       - name: Build the debug APK
         run: |
           export NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.3.13750724"
