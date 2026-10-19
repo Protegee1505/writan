@@ -22,6 +22,8 @@ Usage:
   writan-server --help | -h          print this help
 
 Environment:
+  WRITAN_BIND              address to listen on (default 0.0.0.0; set
+                           127.0.0.1 when a reverse proxy terminates TLS)
   WRITAN_PORT              port to listen on (default 8787)
   WRITAN_DATA_DIR          directory holding writan-server.sqlite
                            (default `writan-data`)
@@ -81,8 +83,8 @@ fn serve() -> Result<(), String> {
         .map_err(|error| format!("cannot create {}: {error}", config.data_dir.display()))?;
     let conn = db::open(&database_path(&config)).map_err(reason)?;
     let state = AppState::new(conn, config.clone()).map_err(reason)?;
-    let listener = std::net::TcpListener::bind(("0.0.0.0", config.port))
-        .map_err(|error| format!("cannot bind port {}: {error}", config.port))?;
+    let listener = std::net::TcpListener::bind((config.bind, config.port))
+        .map_err(|error| format!("cannot bind {}:{}: {error}", config.bind, config.port))?;
     let address = listener
         .local_addr()
         .map_err(|error| format!("cannot read the local address: {error}"))?;
