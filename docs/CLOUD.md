@@ -133,9 +133,15 @@ IP gates can decay — a blocked host is worth re-trying a day later.
 - **Publishing** — pushing a `v*` tag makes `artifacts.yml` attach every
   artifact plus `SHA256SUMS.txt` to that tag's GitHub release; a manual
   dispatch only produces artifacts and never publishes.
-- **Android (M5)** — run `tauri android init` inside a codespace (add JDK 17
-  + SDK/NDK then), commit `app/src-tauri/gen/android`, add the `android` job
-  (debug APK). Device install = sideload.
+- **Android (M5)** — the generated project is committed
+  (`app/src-tauri/gen/android`, AGP 9.3.1 / Gradle 9.6.1, minSdk 24, targetSdk
+  37); `scripts/android-setup.sh` installs JDK 17 + SDK 37 + NDK r27.3.13750724
+  on a fresh box into `/opt/android-sdk` (not `$HOME`), and `artifacts.yml`'s
+  `android` job uploads `writan-android-arm64` (arm64 debug APK). Rebuild
+  locally with the exports the script prints and
+  `GRADLE_USER_HOME=/opt/gradle-home CARGO_TARGET_DIR=/opt/writan-target-android
+  npm --prefix app run tauri -- android build --debug --apk --target aarch64`.
+  Device install = sideload the APK. Release signing is still open.
 - **Web** — `web.yml` → Pages build of the static SPA shell
   (https://protegee1505.github.io/writan/). Making it *functional* in the
   browser (the `invoke`-based code paths) is a scope decision + ADR, planned

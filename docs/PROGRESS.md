@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4 complete, M4.5 complete).
+Last updated: 2026-10-19 (M4 complete, M4.5 complete, M5 Android in CI).
 
 ## Milestone history
 
@@ -325,6 +325,21 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete).
   223 tests green (3 ignored), `svelte-check` 0/0, frontend build OK,
   `gtk-shell-test` 62/62 (its sync section drives the one-password flow end to
   end, including a second device joining the keyring).
+- **M5 prep — Android project + arm64 debug APK in CI** (2026-10-19, commits
+  `eb2c441`, `1e44acb`): `scripts/android-setup.sh` reproduces the toolchain
+  (JDK 17, cmdline-tools, SDK 37, NDK 27.3.13750724) under `/opt` — Cloud
+  Shell's home is 5 GB. `tauri android init` generated
+  `app/src-tauri/gen/android` (AGP 9.3.1, Gradle 9.6.1, `com.writan.desktop`,
+  minSdk 24, targetSdk 37), committed so CI skips init; the root `.gitignore`
+  ignores only `gen/schemas`. `artifacts.yml` gains an `android` job (Temurin
+  17, `setup-android` v4, NDK r27, aarch64) that uploads
+  `writan-android-arm64` (51 MB artifact), and `release` now waits on it.
+  Evidence: run
+  [39218160803](https://github.com/Protegee1505/writan/actions/runs/39218160803);
+  a local `tauri android build --debug --apk --target aarch64` produced an
+  arm64-only `app-universal-debug.apk` (208 MB debug). Known gap: `keyring`
+  resolves to its `mock` store on Android, so no key persistence until the
+  M5 Keystore task.
 
 ## Current state
 
@@ -335,7 +350,9 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete).
   server sync target, pairing codes, the QR display and the settings wiring in
   both shells, and the Docker image + `docs/SERVER.md` (chunks A–H). M4.5
   complete (ADR-0008): one password for sign-in and keyring, keyring rotation,
-  and a release server binary with a one-command installer.
+  and a release server binary with a one-command installer. M5 has started:
+  the Android project is committed and `artifacts.yml` builds the arm64 debug
+  APK.
   Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 223 tests
   green (3 ignored), `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
@@ -349,9 +366,10 @@ Last updated: 2026-10-19 (M4 complete, M4.5 complete).
   libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev`);
   run `sudo apt-get update` first — a stale index 404s the fetch.
 - CI map: `ci.yml` (fmt/clippy/tests on windows-latest + ubuntu-latest, a
-  release search-perf step, cargo-deny), `artifacts.yml` (Windows installers +
-  `writan-linux-x64` binary and `measure.txt`; manual dispatch or a `v*` tag,
-  kept 90 days), `nightly.yml` (three-device sync soak, folder + bucket, cron
+  release search-perf step, cargo-deny), `artifacts.yml` (Windows installers,
+  `writan-linux-x64` binary + `measure.txt` + bundles, `writan-server-linux-x64`,
+  `writan-android-arm64` debug APK; manual dispatch or a `v*` tag, kept 90
+  days), `nightly.yml` (three-device sync soak, folder + bucket, cron
   `17 3 * * *`), `docker.yml` (the writan-server image; builds every push,
   pushes GHCR on `v*` tags or a manual run), `web.yml` (static SPA → GitHub
   Pages preview). The ubuntu job is the free Linux compiler for `app-linux/`;
@@ -428,3 +446,10 @@ scripts/gtk-shell-test.sh --bin target/release/writan  # 62-check shell acceptan
   the OS app-data directory — never in the vault, never in the repo.
 - Git LF→CRLF warnings on commit (`core.autocrlf`) are harmless. Tauri 2
   converts camelCase JS arguments to snake_case Rust parameters automatically.
+- Android on a small box: the SDK/NDK belong outside `$HOME`
+  (`scripts/android-setup.sh` puts them in `/opt/android-sdk`) and a debug
+  build needs `GRADLE_USER_HOME` and `CARGO_TARGET_DIR` off the home partition
+  too — Gradle's own cache overruns Cloud Shell's 5 GB home on its own.
+- In CI, `android-actions/setup-android` must be `@v4`: v3 runs `sdkmanager
+  tools`, and that package no longer exists, so the job dies before setting
+  anything up (v4.0.2 fixed it).

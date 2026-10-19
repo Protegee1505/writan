@@ -12,6 +12,8 @@ M4.5 one-password sign-in and server setup complete (2026-10-19): ADR-0008
 verifier auth (schema v2, legacy migration), client keyring rotation
 (change password, new recovery code, bring-forward on an older keyring), one
 Password field in both shells, and the release binary + `server-install.sh`.
+M5 Android started (2026-10-19): `app/src-tauri/gen/android` is committed and
+CI builds an arm64 debug APK (`writan-android-arm64`).
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -35,10 +37,12 @@ Order is a suggestion, not a constraint.
    (task 1).
 3. **Parity checklist** (`docs/PARITY.md`) is green; keep it so in the same
    commit as every shell change.
-4. **Android init** (M5 prep, when the toolchain is available):
-   `npm --prefix app run tauri -- android init` with JDK 17 + Android SDK/NDK,
-   commit `app/src-tauri/gen/android`, then add an `android` job to
-   `artifacts.yml` (debug APK upload).
+4. **M5 slice 1 — responsive layout**: sideload `writan-android-arm64` and make
+   the Svelte shell work at phone width (one pane at a time, drawer
+   navigation, touch targets, on-screen keyboard) before adding M5 features.
+5. **M5 slice 2 — share-target capture**: an Android share intent (text or
+   URL) creates a note in the vault, then Keystore-backed unlock and the
+   opt-in 15-minute WorkManager sync (M5 exit criteria below).
 
 ## Upcoming milestones
 
