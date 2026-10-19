@@ -27,8 +27,9 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use writan_core::vault::{Note, Vault};
 use writan_sync::{
-    FolderTarget, FolderVault, S3Config, S3HttpTransport, S3Target, SyncReport, SyncState,
-    SyncTarget, sync as run_engine,
+    BlobKind, FolderTarget, FolderVault, S3Config, S3HttpTransport, S3Target, SyncReport,
+    SyncState, SyncTarget, VersionVector, blob_digest, blob_path, note_digest, open_note,
+    open_tombstone, parse_blob_path, sync as run_engine,
 };
 
 const KEY: [u8; 32] = [9u8; 32];
@@ -131,6 +132,144 @@ fn device(root: &Path, name: &str, seed: u128) -> Device {
     }
 }
 
+fn short(id: Uuid) -> String {
+    let simple = id.simple().to_string();
+    simple[simple.len() - 8..].to_string()
+}
+
+/// First eight characters of a hex digest.
+fn hex8(digest: &str) -> &str {
+    &digest[..digest.len().min(8)]
+}
+
+fn vv_text(vv: &VersionVector) -> String {
+    vv.0.iter()
+        .map(|(device, counter)| format!("{}:{counter}", short(*device)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Why a red sweep explains itself: every device's recorded state next to its
+/// files, and every target entry with its vector and digest — the whole sync
+/// cell, so a failure does not need a rerun to be understood.
+fn dump_failure(label: &str, devices: &[Device], target: &impl SyncTarget) {
+    for (i, dev) in devices.iter().enumerate() {
+        let state = SyncState::load(&dev.state_path).unwrap_or_default();
+        for rel in dev.vault.walk_notes().unwrap_or_default() {
+            let Ok(note) = dev.vault.read(&rel) else {
+                continue;
+            };
+            let id = note.meta.id;
+            let recorded = state
+                .digests
+                .get(&id)
+                .map_or_else(|| "-".to_string(), |digest| hex8(digest).to_string());
+            let base = state.bases.get(&id).map_or_else(
+                || "-".to_string(),
+                |reference| {
+                    let path = blob_path(BlobKind::Item, id, reference.device, reference.counter);
+                    let blob = target
+                        .read(&path)
+                        .ok()
+                        .and_then(|bytes| open_note(&KEY, id, &bytes).ok());
+                    match blob {
+                        Some(blob) => format!(
+                            "{}/c{} dig={} updated={}",
+                            short(reference.device),
+                            reference.counter,
+                            hex8(&blob_digest(&blob)),
+                            blob.updated.as_deref().unwrap_or("-"),
+                        ),
+                        None => format!("{}/c{}", short(reference.device), reference.counter),
+                    }
+                },
+            );
+            eprintln!(
+                "{label} dev {i} file {} ({rel}) {:?} updated={}: dig={} recorded={} vv={} base={base}",
+                short(id),
+                note.meta.title,
+                note.meta.updated.as_deref().unwrap_or("-"),
+                hex8(&note_digest(&note)),
+                recorded,
+                state
+                    .vectors
+                    .get(&id)
+                    .map_or_else(|| "-".to_string(), vv_text),
+            );
+        }
+        for (id, digest) in &state.digests {
+            if dev.find(*id).is_none() {
+                eprintln!(
+                    "{label} dev {i} file {}: missing, recorded={} vv={}",
+                    short(*id),
+                    hex8(digest),
+                    state
+                        .vectors
+                        .get(id)
+                        .map_or_else(|| "-".to_string(), vv_text),
+                );
+            }
+        }
+    }
+
+    let mut rows: Vec<(Uuid, u64, usize, Uuid, String)> = Vec::new();
+    for path in target.list().unwrap_or_default() {
+        let Some(parsed) = parse_blob_path(&path) else {
+            continue;
+        };
+        let Ok(bytes) = target.read(&path) else {
+            continue;
+        };
+        let row = match parsed.kind {
+            BlobKind::Item => match open_note(&KEY, parsed.note, &bytes) {
+                Ok(note) => {
+                    let total: u64 = note.vv.0.values().sum();
+                    let tail = note.vv.0.keys().next_back().copied().unwrap_or(Uuid::nil());
+                    (
+                        parsed.note,
+                        total,
+                        note.vv.0.len(),
+                        tail,
+                        format!(
+                            "item {} {:?} dev {} c{} vv={} dig={} updated={}",
+                            short(parsed.note),
+                            note.title,
+                            short(parsed.device),
+                            parsed.counter,
+                            vv_text(&note.vv),
+                            hex8(&blob_digest(&note)),
+                            note.updated.as_deref().unwrap_or("-"),
+                        ),
+                    )
+                }
+                Err(_) => continue,
+            },
+            BlobKind::Tombstone => match open_tombstone(&KEY, parsed.note, &bytes) {
+                Ok(tombstone) => (
+                    parsed.note,
+                    0,
+                    0,
+                    Uuid::nil(),
+                    format!(
+                        "tombstone {} dev {} c{} vv={} deleted={}",
+                        short(parsed.note),
+                        short(parsed.device),
+                        parsed.counter,
+                        vv_text(&tombstone.vv),
+                        tombstone.deleted_at,
+                    ),
+                ),
+                Err(_) => continue,
+            },
+        };
+        rows.push(row);
+    }
+    rows.sort_by_key(|row| (row.0, row.1, row.2, row.3));
+    for (.., text) in rows {
+        eprintln!("{label} target {text}");
+    }
+}
+
 /// The soak loop shared by the folder and bucket variants; the bucket must
 /// be empty, since the fixpoint assertions assume a fresh target.
 fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
@@ -215,26 +354,7 @@ fn run_soak<T: SyncTarget>(root: &Path, target: &T, label: &str) {
         }
     }
     if !converged {
-        for entry in target.list().unwrap_or_default() {
-            eprintln!("{label} leftover target entry: {entry}");
-        }
-        for (i, dev) in devices.iter().enumerate() {
-            if let Ok(state) = SyncState::load(&dev.state_path) {
-                let value = serde_json::to_value(&state).unwrap_or_default();
-                let count = |key: &str| {
-                    value
-                        .get(key)
-                        .and_then(|v| v.as_object())
-                        .map_or(0, |o| o.len())
-                };
-                eprintln!(
-                    "{label} dev {i} state: {} vectors, {} bases, {} digests",
-                    count("vectors"),
-                    count("bases"),
-                    count("digests")
-                );
-            }
-        }
+        dump_failure(label, &devices, target);
     }
     assert!(converged, "devices never reached a clean fixpoint");
 

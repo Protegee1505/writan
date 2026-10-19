@@ -313,7 +313,7 @@ pub fn sync(
     let local = vault.load()?;
     let local_digests: BTreeMap<String, NoteId> = local
         .iter()
-        .map(|file| (digest_of_note(&file.note), file.id))
+        .map(|file| (note_digest(&file.note), file.id))
         .collect();
 
     let Scan { items, tombstones } = scan_target(vault_key, target, &mut report)?;
@@ -339,7 +339,7 @@ pub fn sync(
         if !local_ids.insert(file.id) {
             continue; // duplicate id: first file wins
         }
-        let digest_now = digest_of_note(&file.note);
+        let digest_now = note_digest(&file.note);
         let locally_changed = state.digests.get(&file.id) != Some(&digest_now);
 
         if deleted_ids.contains(&file.id) {
@@ -392,7 +392,7 @@ pub fn sync(
             .unwrap_or_else(VersionVector::new);
 
         if best.vv.contains(&local_vv) {
-            let best_digest = digest_of_blob(best);
+            let best_digest = blob_digest(best);
             if best_digest == digest_now {
                 report.unchanged += 1;
                 state.vectors.insert(file.id, best.vv.clone());
@@ -436,7 +436,7 @@ pub fn sync(
                 )?;
             }
         } else if !local_vv.0.is_empty() && local_vv.contains(&best.vv) {
-            if digest_of_blob(best) == digest_now {
+            if blob_digest(best) == digest_now {
                 report.unchanged += 1;
             } else {
                 let blob = note_blob_from(file, local_vv);
@@ -464,7 +464,7 @@ pub fn sync(
             continue;
         }
         let best = &item.note;
-        let best_digest = digest_of_blob(best);
+        let best_digest = blob_digest(best);
         if local_digests.contains_key(&best_digest) {
             report.unchanged += 1;
             continue;
@@ -500,7 +500,7 @@ pub fn sync(
                 publisher.publish_tombstone(*id, now_rfc3339(), vector.clone())?;
                 report.deleted += 1;
             }
-            Some(item) if state.digests.get(id) == Some(&digest_of_blob(&item.note)) => {
+            Some(item) if state.digests.get(id) == Some(&blob_digest(&item.note)) => {
                 let mut seed = vector.clone();
                 seed.merge(&item.note.vv);
                 publisher.publish_tombstone(*id, now_rfc3339(), seed)?;
@@ -542,7 +542,7 @@ fn merge_flow<T: SyncTarget, V: VaultIo>(
     vault.write(&kept_note)?;
 
     if let Some(copy) = plan.conflict_copy {
-        let copy_digest = digest_of_blob(&copy);
+        let copy_digest = blob_digest(&copy);
         if !local_digests.contains_key(&copy_digest) {
             let rel = vault.free_path(&copy.title, copy.id, None);
             let mut copy = copy;
@@ -563,7 +563,7 @@ fn merge_flow<T: SyncTarget, V: VaultIo>(
 
     let kept_id = kept.id;
     let (reference, published) = publisher.publish_note(kept)?;
-    state.digests.insert(kept_id, digest_of_blob(&published));
+    state.digests.insert(kept_id, blob_digest(&published));
     state.bases.insert(kept_id, reference);
     state.vectors.insert(kept_id, published.vv);
     report.merged += 1;
@@ -579,7 +579,7 @@ fn publish_and_record<T: SyncTarget>(
     let (reference, published) = publisher.publish_note(blob)?;
     state.vectors.insert(id, published.vv.clone());
     state.bases.insert(id, reference);
-    state.digests.insert(id, digest_of_blob(&published));
+    state.digests.insert(id, blob_digest(&published));
     Ok(())
 }
 
@@ -692,7 +692,10 @@ fn content_digest(
     hasher.finalize().to_hex().to_string()
 }
 
-fn digest_of_note(note: &Note) -> String {
+/// The sync content digest of a vault note: what the engine records in
+/// [`SyncState::digests`] and compares on the next pass. Public so tests and
+/// diagnostics can print recorded and on-disk digests side by side.
+pub fn note_digest(note: &Note) -> String {
     content_digest(
         &note.meta.title,
         &note.meta.tags,
@@ -703,7 +706,9 @@ fn digest_of_note(note: &Note) -> String {
     )
 }
 
-fn digest_of_blob(blob: &NoteBlob) -> String {
+/// The sync content digest of a published blob; the counterpart of
+/// [`note_digest`] for versions on the target.
+pub fn blob_digest(blob: &NoteBlob) -> String {
     content_digest(
         &blob.title,
         &blob.tags,
@@ -750,15 +755,15 @@ mod tests {
         );
         let mut b = a.clone();
         b.rel_path = "deep/b.md".to_string();
-        assert_eq!(digest_of_blob(&a), digest_of_blob(&b));
+        assert_eq!(blob_digest(&a), blob_digest(&b));
 
         let mut c = a.clone();
         c.body = "other".to_string();
-        assert_ne!(digest_of_blob(&a), digest_of_blob(&c));
+        assert_ne!(blob_digest(&a), blob_digest(&c));
 
         let mut d = a.clone();
         d.tags = vec!["x".to_string()];
-        assert_ne!(digest_of_blob(&a), digest_of_blob(&d));
+        assert_ne!(blob_digest(&a), blob_digest(&d));
     }
 
     #[test]

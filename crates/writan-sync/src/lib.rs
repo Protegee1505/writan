@@ -36,7 +36,10 @@ pub use blob::{
     blob_aad, blob_path, open_blob, open_note, open_tombstone, parse_blob_path, seal_blob,
     seal_note, seal_tombstone,
 };
-pub use engine::{EngineError, FolderVault, NoteFile, SyncReport, SyncState, VaultIo, sync};
+pub use engine::{
+    EngineError, FolderVault, NoteFile, SyncReport, SyncState, VaultIo, blob_digest, note_digest,
+    sync,
+};
 pub use keys::{
     FORMAT_KEYRING, KdfParams, KeyringError, KeyringFile, KeyringPurpose, KeyringWrap, Unlocked,
     bootstrap_keyring, create_keyring, decode_recovery_code, encode_recovery_code,
