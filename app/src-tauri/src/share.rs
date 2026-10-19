@@ -24,6 +24,8 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     let builder = tauri::plugin::Builder::<R>::new("writan");
     #[cfg(target_os = "android")]
     let builder = builder.setup(|app, api| {
+        use tauri::Manager;
+
         let handle = api.register_android_plugin("com.writan.desktop", "WritanPlugin")?;
         app.manage(ShareBridge(handle));
         Ok(())
