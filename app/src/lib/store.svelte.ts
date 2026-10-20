@@ -1,6 +1,19 @@
 import { api, type CountEntry, type Hit, type Note, type Status, type Summary, type SyncReport, type SyncStatus, type TrashEntry } from "./api";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { settings } from "./settings.svelte";
+
+/** "1.2 MB" — sizes in notices only, so one decimal is plenty. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
 
 export type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
@@ -211,9 +224,69 @@ class AppStore {
     }
   }
 
-  /** Refresh the sync status shown in settings and the command palette. */
-  async refreshSync() {
+  /**
+   * Export every note and attachment as one zip (ADR-0011). Plain files
+   * already on disk — the dialog says the copy is unencrypted.
+   */
+  async exportBackup() {
+    if (this.android) return;
+    const today = new Date().toISOString().slice(0, 10);
+    let path: string | null;
     try {
+      path = await saveDialog({
+        title: "Export backup (unencrypted)",
+        defaultPath: `writan-backup-${today}.zip`,
+        filters: [{ name: "Writan backup", extensions: ["zip"] }],
+      });
+    } catch (e) {
+      this.error = String(e);
+      return;
+    }
+    if (!path) return;
+    try {
+      const report = await api.exportBackup(path);
+      const parts = [`${report.notes} notes`, `${report.attachments} attachments`];
+      if (report.skipped) parts.push(`${report.skipped} skipped`);
+      this.notify(`Exported ${parts.join(", ")} (${formatBytes(report.bytes)}).`);
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
+  /**
+   * Import a backup zip or a Markdown file (ADR-0011). Nothing here is ever
+   * overwritten: notes that clash get a new id and a " (imported)" title.
+   */
+  async importBackup() {
+    if (this.android) return;
+    let path: string | null;
+    try {
+      path = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "Import notes or a backup",
+        filters: [{ name: "Writan backup or Markdown", extensions: ["zip", "md", "markdown"] }],
+      });
+    } catch (e) {
+      this.error = String(e);
+      return;
+    }
+    if (typeof path !== "string") return;
+    try {
+      const report = await api.importBackup(path);
+      const parts = [`${report.notes} notes`, `${report.attachments} attachments`];
+      if (report.renamed) parts.push(`${report.renamed} renamed`);
+      if (report.skipped) parts.push(`${report.skipped} skipped`);
+      this.notify(`Imported ${parts.join(", ")}.`);
+      await this.refresh();
+      void this.loadFacets();
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
+  /** Refresh the sync status shown in settings and the command palette. */
+  async refreshSync() {    try {
       this.sync = await api.syncStatus();
     } catch {
       this.sync = null;

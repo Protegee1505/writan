@@ -68,6 +68,8 @@ pub fn run() {
             commands::empty_trash,
             commands::set_pinned,
             commands::rebuild_index,
+            commands::export_backup,
+            commands::import_backup,
             commands::list_tags,
             commands::list_folders,
             commands::save_attachment,

@@ -83,6 +83,18 @@ pub const KEY_ACTIONS: &[KeyAction] = &[
         default_binding: None,
         aliases: &[],
     },
+    KeyAction {
+        id: "export-backup",
+        label: "Export backup",
+        default_binding: None,
+        aliases: &[],
+    },
+    KeyAction {
+        id: "import-notes",
+        label: "Import notes",
+        default_binding: None,
+        aliases: &[],
+    },
 ];
 
 /// Text-editing keys we never hijack at the app level (keymap.ts parity).

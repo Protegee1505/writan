@@ -18,7 +18,9 @@ export type ActionId =
   | "toggle-trash"
   | "pin-note"
   | "duplicate-note"
-  | "sync-now";
+  | "sync-now"
+  | "export-backup"
+  | "import-notes";
 
 export interface KeyAction {
   id: ActionId;
@@ -40,6 +42,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "pin-note", label: "Pin / unpin note", defaultBinding: null },
   { id: "duplicate-note", label: "Duplicate note", defaultBinding: null },
   { id: "sync-now", label: "Sync now", defaultBinding: null },
+  { id: "export-backup", label: "Export backup", defaultBinding: null },
+  { id: "import-notes", label: "Import notes", defaultBinding: null },
 ];
 
 /** Text-editing keys we never hijack at the app level. */

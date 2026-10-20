@@ -18,7 +18,9 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
   CountEntry,
+  ExportReport,
   Hit,
+  ImportReport,
   Note,
   ReconcileStats,
   SearchFilters,
@@ -321,6 +323,19 @@ const commands: Record<string, Command> = {
     unchanged: notes.length,
     errors: 0,
   }),
+  export_backup: (): ExportReport => ({
+    notes: notes.length,
+    attachments: 0,
+    skipped: 0,
+    bytes: 1024 * 1024,
+  }),
+  import_backup: (): ImportReport => ({
+    notes: 1,
+    attachments: 0,
+    renamed: 0,
+    skipped: 0,
+    bytes: 2048,
+  }),
   list_tags: () => counts(notes.flatMap((n) => n.tags)),
   list_folders: () => {
     const folders = notes
@@ -424,7 +439,7 @@ const commands: Record<string, Command> = {
     return sync;
   },
   "plugin:dialog|open": () => VAULT,
-  "plugin:dialog|save": () => `${VAULT}/export.md`,
+  "plugin:dialog|save": () => `${VAULT}/writan-backup-2026-10-20.zip`,
   "plugin:opener|open_path": () => null,
   "plugin:event|listen": () => 1,
   "plugin:event|unlisten": () => null,

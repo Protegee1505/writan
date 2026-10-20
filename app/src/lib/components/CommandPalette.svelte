@@ -76,6 +76,20 @@
         hint: "Maintenance",
         run: () => store.rebuildIndex(),
       });
+      if (!store.android) {
+        all.push({
+          id: "export-backup",
+          label: "Export backup…",
+          hint: keyHint("export-backup") || "Unencrypted zip",
+          run: () => store.exportBackup(),
+        });
+        all.push({
+          id: "import-notes",
+          label: "Import backup or Markdown…",
+          hint: keyHint("import-notes") || "Adds copies",
+          run: () => store.importBackup(),
+        });
+      }
       if (store.sync?.unlocked) {
         all.push({
           id: "sync-now",

@@ -870,6 +870,23 @@ fn build(application: &adw::Application) {
         application.add_action(&duplicate_action);
         apply_accels(application, &overrides, "duplicate-note");
     }
+    // Backup actions, bindable like every other action (unbound by default).
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let export_action = gtk::gio::SimpleAction::new("export-backup", None);
+        export_action.connect_activate(move |_, _| export_backup(&state, &ui));
+        application.add_action(&export_action);
+        apply_accels(application, &overrides, "export-backup");
+    }
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        let import_action = gtk::gio::SimpleAction::new("import-notes", None);
+        import_action.connect_activate(move |_, _| import_notes(&state, &ui));
+        application.add_action(&import_action);
+        apply_accels(application, &overrides, "import-notes");
+    }
 
     // Settings (Ctrl+,): the header gear and the palette's "Open settings…".
     {
@@ -2596,6 +2613,17 @@ fn setup_palette(state: &Rc<RefCell<State>>, ui: &Ui) {
 
 /// The palette's items, in the Tauri palette's order: actions first, then
 /// the notes the sidebar shows, each with its key hint.
+/// A palette row's hint: the action's current binding, or a short noun when
+/// it is unbound by default.
+fn palette_hint(id: &str, overrides: &keymap::ShortcutOverrides, fallback: &str) -> String {
+    let hint = keymap::hint(id, overrides);
+    if hint.is_empty() {
+        fallback.to_string()
+    } else {
+        hint
+    }
+}
+
 fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
     let st = state.borrow();
     let overrides = &st.overrides;
@@ -2651,6 +2679,16 @@ fn palette_items(state: &Rc<RefCell<State>>, ui: &Ui) -> Vec<PaletteItem> {
             label: "Rebuild search index".to_string(),
             hint: "Maintenance".to_string(),
             command: PaletteCommand::RebuildIndex,
+        });
+        items.push(PaletteItem {
+            label: "Export backup…".to_string(),
+            hint: palette_hint("export-backup", overrides, "Unencrypted zip"),
+            command: PaletteCommand::ExportBackup,
+        });
+        items.push(PaletteItem {
+            label: "Import notes or a backup…".to_string(),
+            hint: palette_hint("import-notes", overrides, "Adds copies"),
+            command: PaletteCommand::ImportNotes,
         });
         if let Some(note) = st.current.as_ref() {
             items.push(PaletteItem {
@@ -2794,6 +2832,8 @@ fn run_palette_command(state: &Rc<RefCell<State>>, ui: &Ui, command: PaletteComm
         PaletteCommand::OpenSetting(id) => open_settings_or_reveal(state, ui, Some(id)),
         PaletteCommand::OpenTrash => open_trash_or_focus(state, ui),
         PaletteCommand::RebuildIndex => rebuild_index(state, ui),
+        PaletteCommand::ExportBackup => export_backup(state, ui),
+        PaletteCommand::ImportNotes => import_notes(state, ui),
         PaletteCommand::TogglePin => toggle_pin(state, ui),
         PaletteCommand::DuplicateNote => duplicate_note(state, ui),
         PaletteCommand::SyncNow => sync_now_or_settings(state, ui),
@@ -2828,6 +2868,146 @@ fn rebuild_index(state: &Rc<RefCell<State>>, ui: &Ui) {
         }
         None => {}
     }
+}
+
+/// "1.2 MB" — sizes in toasts only, so one decimal is plenty.
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let units = ["KB", "MB", "GB"];
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < units.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if value < 10.0 {
+        format!("{value:.1} {}", units[unit])
+    } else {
+        format!("{value:.0} {}", units[unit])
+    }
+}
+
+/// `writan-backup-YYYY-MM-DD.zip`, the same default name as the Tauri shell.
+fn backup_default_name() -> String {
+    let today = time::OffsetDateTime::now_utc();
+    format!(
+        "writan-backup-{:04}-{:02}-{:02}.zip",
+        today.year(),
+        u8::from(today.month()),
+        today.day()
+    )
+}
+
+/// Export the vault as one plaintext zip (ADR-0011), off the main thread.
+fn export_backup(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let Some(root) = current_vault_root(state) else {
+        ui.toast
+            .add_toast(adw::Toast::new("Open a notes folder first"));
+        return;
+    };
+    let dialog = gtk::FileDialog::builder()
+        .title("Export backup (unencrypted)")
+        .initial_name(backup_default_name())
+        .build();
+    let ui = ui.clone();
+    let parent = ui.window.clone();
+    dialog.save(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
+        let Ok(file) = result else {
+            return;
+        };
+        let Some(dest) = file.path() else {
+            return;
+        };
+        let handle =
+            gtk::gio::spawn_blocking(move || writan_core::backup::export_archive(&root, &dest));
+        let ui = ui.clone();
+        gtk::glib::spawn_future_local(async move {
+            let message = match handle.await {
+                Ok(Ok(report)) => {
+                    let mut parts = vec![
+                        format!("{} notes", report.notes),
+                        format!("{} attachments", report.attachments),
+                    ];
+                    if report.skipped > 0 {
+                        parts.push(format!("{} skipped", report.skipped));
+                    }
+                    format!(
+                        "Exported {} ({}).",
+                        parts.join(", "),
+                        format_bytes(report.bytes)
+                    )
+                }
+                Ok(Err(error)) => format!("Export failed: {error}"),
+                Err(_) => "Export failed: the worker stopped unexpectedly.".to_string(),
+            };
+            ui.toast.add_toast(adw::Toast::new(&message));
+        });
+    });
+}
+
+/// Import a backup zip or a Markdown file (ADR-0011): additive only, then the
+/// index is reconciled so the new notes reach the sidebar.
+fn import_notes(state: &Rc<RefCell<State>>, ui: &Ui) {
+    let Some(root) = current_vault_root(state) else {
+        ui.toast
+            .add_toast(adw::Toast::new("Open a notes folder first"));
+        return;
+    };
+    let dialog = gtk::FileDialog::builder()
+        .title("Import notes or a backup")
+        .build();
+    let state = state.clone();
+    let ui = ui.clone();
+    let parent = ui.window.clone();
+    dialog.open(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
+        let Ok(file) = result else {
+            return;
+        };
+        let Some(source) = file.path() else {
+            return;
+        };
+        let handle =
+            gtk::gio::spawn_blocking(move || writan_core::backup::import_path(&root, &source));
+        let state = state.clone();
+        let ui = ui.clone();
+        gtk::glib::spawn_future_local(async move {
+            let message = match handle.await {
+                Ok(Ok(report)) => {
+                    let mut parts = vec![
+                        format!("{} notes", report.notes),
+                        format!("{} attachments", report.attachments),
+                    ];
+                    if report.renamed > 0 {
+                        parts.push(format!("{} renamed", report.renamed));
+                    }
+                    if report.skipped > 0 {
+                        parts.push(format!("{} skipped", report.skipped));
+                    }
+                    let reconciled = state
+                        .borrow_mut()
+                        .workspace
+                        .as_mut()
+                        .map(|workspace| workspace.reconcile());
+                    match reconciled {
+                        Some(Ok(_)) => refresh(&state, &ui, false),
+                        Some(Err(error)) => {
+                            ui.toast.add_toast(adw::Toast::new(&format!(
+                                "Imported, but the index refresh failed: {error}"
+                            )));
+                            return;
+                        }
+                        None => return,
+                    }
+                    format!("Imported {}.", parts.join(", "))
+                }
+                Ok(Err(error)) => format!("Import failed: {error}"),
+                Err(_) => "Import failed: the worker stopped unexpectedly.".to_string(),
+            };
+            ui.toast.add_toast(adw::Toast::new(&message));
+        });
+    });
 }
 
 /// A settings row the "Search settings…" filter can hide; a group hides too
@@ -2951,6 +3131,13 @@ const SETTINGS_INDEX: &[SettingEntry] = &[
         section: "Advanced",
         label: "Search index",
         keywords: "rebuild maintenance",
+        registry: None,
+    },
+    SettingEntry {
+        id: "advanced.backup",
+        section: "Advanced",
+        label: "Backup",
+        keywords: "export import zip archive restore copy",
         registry: None,
     },
     SettingEntry {
@@ -3620,6 +3807,37 @@ fn open_settings(
         &filterables,
         "advanced.rebuildIndex",
         &rebuild_row,
+        &advanced_group,
+    );
+
+    let backup_row = adw::ActionRow::new();
+    backup_row.set_title("Backup");
+    backup_row.set_subtitle(
+        "One unencrypted zip of the Markdown files and attachments. Import always adds — nothing is overwritten.",
+    );
+    let export_button = gtk::Button::with_label("Export…");
+    export_button.add_css_class("flat");
+    export_button.set_sensitive(state.borrow().workspace.is_some());
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        export_button.connect_clicked(move |_| export_backup(&state, &ui));
+    }
+    let import_button = gtk::Button::with_label("Import…");
+    import_button.add_css_class("flat");
+    import_button.set_sensitive(state.borrow().workspace.is_some());
+    {
+        let state = state.clone();
+        let ui = ui.clone();
+        import_button.connect_clicked(move |_| import_notes(&state, &ui));
+    }
+    backup_row.add_suffix(&export_button);
+    backup_row.add_suffix(&import_button);
+    advanced_group.add(&backup_row);
+    track_row(
+        &filterables,
+        "advanced.backup",
+        &backup_row,
         &advanced_group,
     );
 
@@ -5381,6 +5599,8 @@ enum PaletteCommand {
     OpenSetting(&'static str),
     OpenTrash,
     RebuildIndex,
+    ExportBackup,
+    ImportNotes,
     TogglePin,
     DuplicateNote,
     SyncNow,

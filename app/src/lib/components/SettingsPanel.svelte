@@ -213,7 +213,7 @@
                 cannot clash with another action or with text editing keys.
               </p>
               <div class="rows">
-                {#each KEY_ACTIONS as action (action.id)}
+                {#each KEY_ACTIONS.filter((action) => !store.android || (action.id !== "export-backup" && action.id !== "import-notes")) as action (action.id)}
                   <div class="row" class:flash={flashPath === `shortcuts.${action.id}`} id={`set-shortcuts.${action.id}`}>
                     <div class="meta">
                       <span class="label">{action.label}</span>
@@ -288,6 +288,25 @@
                     </button>
                   </div>
                 </div>
+                {#if !store.android}
+                  <div class="row column">
+                    <div class="meta">
+                      <span class="label">Backup</span>
+                      <span class="desc">
+                        One unencrypted zip of the Markdown files and attachments. Import always
+                        adds — nothing here is overwritten.
+                      </span>
+                    </div>
+                    <div class="control">
+                      <button class="btn" onclick={() => void store.exportBackup()}>
+                        Export…
+                      </button>
+                      <button class="btn" onclick={() => void store.importBackup()}>
+                        Import…
+                      </button>
+                    </div>
+                  </div>
+                {/if}
                 <div class="row column">
                   <div class="meta">
                     <span class="label">Reset all settings</span>

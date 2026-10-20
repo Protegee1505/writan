@@ -412,6 +412,48 @@ pub fn rebuild_index(state: State<'_, AppState>) -> CmdResult<ReconcileDto> {
     })
 }
 
+/// Export the vault as one plaintext zip (ADR-0011). The file holds exactly
+/// what is already on disk, so this runs off the UI thread: a big vault takes
+/// a while to compress.
+#[tauri::command]
+pub async fn export_backup(
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<writan_core::ExportReport> {
+    let root = state
+        .workspace_root()
+        .ok_or_else(|| "no vault is open".to_string())?;
+    let dest = PathBuf::from(path);
+    tauri::async_runtime::spawn_blocking(move || writan_core::backup::export_archive(&root, &dest))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Import a backup zip or a Markdown file (ADR-0011). Nothing is overwritten;
+/// the index is reconciled before the UI refreshes, so the new notes show up.
+#[tauri::command]
+pub async fn import_backup(
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<writan_core::ImportReport> {
+    let root = state
+        .workspace_root()
+        .ok_or_else(|| "no vault is open".to_string())?;
+    let source = PathBuf::from(path);
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        writan_core::backup::import_path(&root, &source)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    with_ws(&state, |workspace| {
+        workspace.reconcile().map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
+    Ok(report)
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CountDto {

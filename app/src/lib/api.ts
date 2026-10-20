@@ -98,6 +98,20 @@ export interface SyncConnectResult {
   status: SyncStatus;
 }
 
+/** What an export wrote. The zip is plain text — exactly what is on disk. */
+export interface ExportReport {
+  notes: number;
+  attachments: number;
+  /** Dotfiles, symlinks and OS junk the walk passed over. */
+  skipped: number;
+  bytes: number;
+}
+
+/** What an import added. `renamed` counts notes whose id was already taken. */
+export interface ImportReport extends ExportReport {
+  renamed: number;
+}
+
 /**
  * The older credential a retry carries after a connect failed with "this vault
  * was created with a different password" (ADR-0008 §5): the password the
@@ -148,6 +162,8 @@ export const api = {
   emptyTrash: () => invoke<number>("empty_trash"),
   setPinned: (id: string, pinned: boolean) => invoke<Note>("set_pinned", { id, pinned }),
   rebuild: () => invoke<ReconcileStats>("rebuild_index"),
+  exportBackup: (path: string) => invoke<ExportReport>("export_backup", { path }),
+  importBackup: (path: string) => invoke<ImportReport>("import_backup", { path }),
   listTags: () => invoke<CountEntry[]>("list_tags"),
   listFolders: () => invoke<CountEntry[]>("list_folders"),
   saveAttachment: (fileName: string, bytes: number[]) =>

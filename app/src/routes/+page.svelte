@@ -84,6 +84,12 @@
     } else if (matchesAction(e, "sync-now") && store.status.vaultPath) {
       e.preventDefault();
       void store.syncNow();
+    } else if (matchesAction(e, "export-backup") && store.status.vaultPath && !store.android) {
+      e.preventDefault();
+      void store.exportBackup();
+    } else if (matchesAction(e, "import-notes") && store.status.vaultPath && !store.android) {
+      e.preventDefault();
+      void store.importBackup();
     }
   }
 </script>
