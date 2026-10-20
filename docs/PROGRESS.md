@@ -3,7 +3,7 @@
 Milestone-level history and current state. Plans and upcoming tasks:
 `docs/PLAN.md`. Decisions: `docs/adr/README.md`. Agent rules: `AGENTS.md`.
 
-Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c and the release APK lane; nightly sync soak fixed).
+Last updated: 2026-10-20 (M6 slice 1: license files and export/import in both shells).
 
 ## Milestone history
 
@@ -438,6 +438,18 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c and the release APK la
   (`docs/ANDROID.md`). Verification: artifacts
   [39255545481](https://github.com/Protegee1505/writan/actions/runs/39255545481)
   green including the new release job.
+- **M6 slice 1 — licenses + export/import** (2026-10-20, commits `3f3012a`,
+  `8d94d87`, `a64a554`): the MIT and Apache-2.0 license files land (README
+  links both). `writan-core::backup` (ADR-0011) writes one plaintext
+  `writan-backup/1` zip — manifest first, dotfiles/symlinks/OS junk skipped,
+  caps at 100k entries / 2 GiB — and imports additively: id clashes get a
+  fresh UUID plus a `(imported)` title suffix, path clashes a unique name, and
+  encrypted archives are refused before any write. Both shells expose
+  Export/Import in the palette and Advanced settings, run them off the UI
+  thread, reconcile the index after an import, and hide the rows on Android.
+  Verification: 11 unit + 2 integration backup tests, `cargo test --workspace`
+  251 passed / 3 ignored, clippy clean, `svelte-check` 0/0, frontend build OK,
+  `scripts/gtk-shell-test.sh` 62/62 green.
 
 ## Current state
 
@@ -459,7 +471,10 @@ Last updated: 2026-10-19 (M4, M4.5, M5 slices 1 + 2a–2c and the release APK la
   own, off unless the panel says on. An arm64 release APK lane is in place
   (R8; keystore-signed once the `WRITAN_ANDROID_*` secrets are set, debug key
   otherwise), so M5 is left with the phone acceptance pass alone.
-  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 238 tests
+  M6 slice 1 is done: the license files and `writan-core::backup` with
+  Export/Import in both shells (ADR-0011); Flatpak, the desktop updater and the
+  perf re-check remain.
+  Verification: `cargo fmt`/`clippy` clean, `cargo test --workspace` 251 tests
   green, `svelte-check` 0/0, frontend build OK.
 - Bundle id `com.writan.desktop` (was `com.writan.app`; app data lives under
   `%APPDATA%\com.writan.desktop`). Workspace MSRV: Rust 1.90; version 0.2.0

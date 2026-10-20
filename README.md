@@ -21,8 +21,12 @@ creates/edits/searches/pins/trashes notes with autosave and external-edit
 tracking, and syncs them end-to-end-encrypted to a plain folder, an
 S3-compatible bucket or your own server (`docs/SERVER.md`; M4 and M4.5
 complete — one password signs the device in and wraps the vault key, and the
-server installs with one command). The native Linux shell (M3.5) is in place,
-awaiting a real-hardware acceptance pass. Next: Android (M5).
+server installs with one command). The native Linux shell (M3.5) awaits a
+real-hardware IME/RAM pass. Android (M5) is in place — share-target
+capture, Keystore-backed unlock, opt-in background sync and a signed release
+APK lane — awaiting a phone pass. M6 hardening has started: export/import
+(plaintext backup zip, additive restore) and the license files are in; Flatpak,
+the desktop updater and the performance re-check are next.
 
 - Milestones & upcoming tasks: [`docs/PLAN.md`](docs/PLAN.md)
 - Progress log: [`docs/PROGRESS.md`](docs/PROGRESS.md)

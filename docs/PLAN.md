@@ -20,6 +20,10 @@ text/URL shares become notes, the keychain is Keystore-backed so sync unlocks
 without the password, and background sync is an opt-in 15-minute WorkManager
 job (ADR-0010). Left: on-device acceptance — the release APK lane is in place
 (keystore-signed once its secrets are set, debug-key fallback otherwise).
+M6 hardening started (2026-10-20): the MIT/Apache-2.0 license files are in and
+export/import ships in both shells — a plaintext `writan-backup/1` zip,
+additive restore (ADR-0011); Flatpak, the desktop updater and the perf re-check
+remain.
 History and evidence: `docs/PROGRESS.md`. Decisions: `docs/adr/README.md`. Stack
 rationale: `docs/adr/0001-stack.md`. Workspace MSRV: Rust 1.90.
 
@@ -52,6 +56,10 @@ Order is a suggestion, not a constraint.
    do the phone pass — share from another app (cold and warm), kill the app
    and watch sync unlock from the Keystore, enable background sync and watch a
    run land.
+5. **M6 remaining — Flatpak, updater, perf pass**: a Flatpak manifest for the
+   GTK shell, the desktop updater (Tauri; never Android), and the recorded
+   cold-start/search/RAM re-check before release. Licenses and export/import
+   are done (ADR-0011).
 
 ## Upcoming milestones
 
