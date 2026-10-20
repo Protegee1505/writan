@@ -159,12 +159,19 @@ impl Vault {
     pub fn parse_file(&self, rel: &str) -> Result<ParsedFile, VaultError> {
         let path = self.abs_path(rel);
         let text = fs::read_to_string(&path).map_err(|e| io_err(&path, e))?;
+        Self::parse_text(rel, &text)
+    }
+
+    /// Parse note text that is not (yet) on disk, e.g. an entry from a backup
+    /// archive. `rel` is only used for the title fallback and error messages.
+    pub fn parse_text(rel: &str, text: &str) -> Result<ParsedFile, VaultError> {
+        let path = PathBuf::from(rel);
         let hash = content_hash(text.as_bytes());
-        let (frontmatter, body) = split_frontmatter(&text);
+        let (frontmatter, body) = split_frontmatter(text);
 
         let mut parsed = ParsedFile {
             body: body.to_string(),
-            text: text.clone(),
+            text: text.to_string(),
             meta: None,
             title: None,
             tags: Vec::new(),
@@ -418,7 +425,7 @@ fn is_forbidden(ch: char) -> bool {
     ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
 }
 
-fn is_markdown(name: &str) -> bool {
+pub(crate) fn is_markdown(name: &str) -> bool {
     name.len() > 3 && name.to_ascii_lowercase().ends_with(".md")
 }
 

@@ -56,6 +56,8 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1.53", features = ["macros", "net", "rt-multi-thread", "sync"] }
 ureq = "3"
 uuid = { version = "1.28", features = ["serde", "v4"] }
+# Backups are zip files; only plain deflate is needed (no AES, zstd, …).
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 zeroize = "1.9"
 
 # Release builds prioritise size and speed (moved here from the Tauri

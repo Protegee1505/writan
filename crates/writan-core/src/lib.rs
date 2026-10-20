@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod attachments;
+pub mod backup;
 pub mod index;
 pub mod share;
 pub mod trash;
@@ -14,6 +15,7 @@ pub mod vault;
 pub mod watch;
 pub mod workspace;
 
+pub use backup::{BackupError, ExportReport, ImportReport};
 pub use index::{Index, IndexError, IndexedNote, SearchHit, SearchQuery};
 pub use share::{ShareDraft, ShareError, draft_from_share};
 pub use trash::{Trash, TrashEntry, TrashError};
